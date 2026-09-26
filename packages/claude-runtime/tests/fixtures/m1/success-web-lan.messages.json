@@ -1,0 +1,920 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "cwd": "/tmp/m1-probe-path",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "tools": [
+      "StructuredOutput",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "mcp_servers": [],
+    "model": "claude-sonnet-5",
+    "permissionMode": "bypassPermissions",
+    "slash_commands": [
+      "design",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "schedule",
+      "claude-api",
+      "run",
+      "run-skill-generator",
+      "advisor",
+      "agents",
+      "auto-mode-setup",
+      "autocompact",
+      "clear",
+      "color",
+      "compact",
+      "config",
+      "output-style",
+      "context",
+      "effort",
+      "fast",
+      "focus",
+      "heapdump",
+      "init",
+      "mcp",
+      "import",
+      "model",
+      "__remote-workflow",
+      "workflow-launch-exec",
+      "reload-plugins",
+      "reload-skills",
+      "rename",
+      "ultrareview",
+      "security-review",
+      "usage-credits",
+      "extra-usage",
+      "usage",
+      "insights",
+      "recap",
+      "skill-doctor",
+      "goal",
+      "design-consent",
+      "design-revoke",
+      "list-agents",
+      "team-onboarding"
+    ],
+    "terminal_slash_commands": [
+      "doctor",
+      "color",
+      "focus",
+      "reload-plugins"
+    ],
+    "apiKeySource": "none",
+    "claude_code_version": "2.1.283",
+    "output_style": "default",
+    "agents": [
+      "claude",
+      "Explore",
+      "general-purpose",
+      "Plan",
+      "statusline-setup"
+    ],
+    "skills": [
+      "design",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "schedule",
+      "claude-api",
+      "run",
+      "run-skill-generator"
+    ],
+    "plugins": [
+      {
+        "name": "agents-md",
+        "path": "builtin",
+        "source": "agents-md@builtin"
+      },
+      {
+        "name": "telemetry",
+        "path": "builtin",
+        "source": "telemetry@builtin"
+      }
+    ],
+    "capabilities": [
+      "interrupt_receipt_v1",
+      "interrupt_cancel_queued_v1",
+      "msg_lifecycle_v1",
+      "mcp_read_resource_v1",
+      "mcp_tool_ui_meta_v1"
+    ],
+    "analytics_disabled": false,
+    "product_feedback_disabled": false,
+    "uuid": "94c68a2f-c3ca-47bf-a762-090a47c93299",
+    "messaging_socket_path": "/tmp/cc-socks/1933817.sock",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "per_turn_effort_active": false,
+    "view_mode": "default"
+  },
+  {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+      "status": "allowed",
+      "resetsAt": 1790395200,
+      "rateLimitType": "five_hour",
+      "overageStatus": "rejected",
+      "overageDisabledReason": "org_level_disabled",
+      "isUsingOverage": false,
+      "unifiedWindows": {
+        "five_hour": {
+          "utilization": 0.02,
+          "resetsAt": 1790395200
+        },
+        "seven_day": {
+          "utilization": 0.01,
+          "resetsAt": 1790866800
+        }
+      }
+    },
+    "uuid": "4dd9a0f1-3079-4fbb-8211-52bedc8c2fed",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCi2MVwQWMvANWyEfUx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_013WGrMo2Tdjq4QdKhQCG81a",
+          "name": "WebFetch",
+          "input": {
+            "url": "https://git.owner.example/users/sign_in",
+            "prompt": "Return the page title and any visible content."
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2603,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2603
+        },
+        "output_tokens": 17,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "0e8223b9-3004-48e9-8e49-a8b7de590b49",
+    "timestamp": "2026-09-26T01:43:14.010Z",
+    "request_id": "req_011CfRCi1zBC1Cirb163Q7Rg",
+    "wire_tool_inputs": {
+      "toolu_013WGrMo2Tdjq4QdKhQCG81a": {
+        "url": "https://git.owner.example/users/sign_in",
+        "prompt": "Return the page title and any visible content."
+      }
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "WebFetch",
+    "tool_use_id": "toolu_013WGrMo2Tdjq4QdKhQCG81a",
+    "decision_reason_type": "rule",
+    "message": "WebFetch denied access to domain:git.owner.example.",
+    "uuid": "21cd6729-11a2-424f-a5c0-695ea64cfaa2",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "WebFetch denied access to domain:git.owner.example.",
+          "is_error": true,
+          "tool_use_id": "toolu_013WGrMo2Tdjq4QdKhQCG81a"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "c3fd06d7-d5a1-419c-b663-a2d9a4fe455f",
+    "timestamp": "2026-09-26T01:43:14.016Z",
+    "tool_use_result": "Error: WebFetch denied access to domain:git.owner.example.",
+    "tool_result_meta": [
+      {
+        "id": "toolu_013WGrMo2Tdjq4QdKhQCG81a",
+        "non_execution_kind": "permission-rule"
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCi2MVwQWMvANWyEfUx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01NF1sZeFEyqZXCvHpmBCWX5",
+          "name": "WebFetch",
+          "input": {
+            "url": "https://127.0.0.1:18190/healthz",
+            "prompt": "Return the page title and any visible content."
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2603,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2603
+        },
+        "output_tokens": 17,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "7b1a2576-a8bf-4ce8-9905-3044fb793f46",
+    "timestamp": "2026-09-26T01:43:14.550Z",
+    "request_id": "req_011CfRCi1zBC1Cirb163Q7Rg",
+    "wire_tool_inputs": {
+      "toolu_01NF1sZeFEyqZXCvHpmBCWX5": {
+        "url": "https://127.0.0.1:18190/healthz",
+        "prompt": "Return the page title and any visible content."
+      }
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "WebFetch",
+    "tool_use_id": "toolu_01NF1sZeFEyqZXCvHpmBCWX5",
+    "decision_reason_type": "rule",
+    "message": "WebFetch denied access to domain:127.0.0.1.",
+    "uuid": "e31cfbfd-2f53-489e-80e3-c405097c5e6c",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "WebFetch denied access to domain:127.0.0.1.",
+          "is_error": true,
+          "tool_use_id": "toolu_01NF1sZeFEyqZXCvHpmBCWX5"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "00f72483-bd6d-44da-937f-b8769652b66e",
+    "timestamp": "2026-09-26T01:43:14.553Z",
+    "tool_use_result": "Error: WebFetch denied access to domain:127.0.0.1.",
+    "tool_result_meta": [
+      {
+        "id": "toolu_01NF1sZeFEyqZXCvHpmBCWX5",
+        "non_execution_kind": "permission-rule"
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCi2MVwQWMvANWyEfUx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_018J5FaG96zYNjuXoE5c8Nok",
+          "name": "WebFetch",
+          "input": {
+            "url": "https://10.0.0.10:18190/healthz",
+            "prompt": "Return the page title and any visible content."
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2603,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2603
+        },
+        "output_tokens": 17,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "3ce3667d-2939-4827-b50b-c1c86d83fa65",
+    "timestamp": "2026-09-26T01:43:15.097Z",
+    "request_id": "req_011CfRCi1zBC1Cirb163Q7Rg",
+    "wire_tool_inputs": {
+      "toolu_018J5FaG96zYNjuXoE5c8Nok": {
+        "url": "https://10.0.0.10:18190/healthz",
+        "prompt": "Return the page title and any visible content."
+      }
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "WebFetch",
+    "tool_use_id": "toolu_018J5FaG96zYNjuXoE5c8Nok",
+    "decision_reason_type": "rule",
+    "message": "WebFetch denied access to domain:10.0.0.10.",
+    "uuid": "1990ed70-6d8f-485a-9479-369d3a828b0c",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "WebFetch denied access to domain:10.0.0.10.",
+          "is_error": true,
+          "tool_use_id": "toolu_018J5FaG96zYNjuXoE5c8Nok"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "decb3d56-da84-42e8-82f3-4b88cadc00a9",
+    "timestamp": "2026-09-26T01:43:15.099Z",
+    "tool_use_result": "Error: WebFetch denied access to domain:10.0.0.10.",
+    "tool_result_meta": [
+      {
+        "id": "toolu_018J5FaG96zYNjuXoE5c8Nok",
+        "non_execution_kind": "permission-rule"
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCi2MVwQWMvANWyEfUx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_012bLLsrwomcu2pk4mvh1194",
+          "name": "WebFetch",
+          "input": {
+            "url": "https://10.0.0.1/",
+            "prompt": "Return the page title and any visible content."
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2603,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2603
+        },
+        "output_tokens": 17,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "abd98e08-74c8-44cf-8d50-02aec4b43ea0",
+    "timestamp": "2026-09-26T01:43:15.598Z",
+    "request_id": "req_011CfRCi1zBC1Cirb163Q7Rg",
+    "wire_tool_inputs": {
+      "toolu_012bLLsrwomcu2pk4mvh1194": {
+        "url": "https://10.0.0.1/",
+        "prompt": "Return the page title and any visible content."
+      }
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "WebFetch",
+    "tool_use_id": "toolu_012bLLsrwomcu2pk4mvh1194",
+    "decision_reason_type": "rule",
+    "message": "WebFetch denied access to domain:10.0.0.1.",
+    "uuid": "832b37a4-5139-4421-bda9-92c44bfc34ce",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "WebFetch denied access to domain:10.0.0.1.",
+          "is_error": true,
+          "tool_use_id": "toolu_012bLLsrwomcu2pk4mvh1194"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "15f9ef5f-2310-441b-9134-7654ad8c216f",
+    "timestamp": "2026-09-26T01:43:15.600Z",
+    "tool_use_result": "Error: WebFetch denied access to domain:10.0.0.1.",
+    "tool_result_meta": [
+      {
+        "id": "toolu_012bLLsrwomcu2pk4mvh1194",
+        "non_execution_kind": "permission-rule"
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCi2MVwQWMvANWyEfUx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_015jukju9WqQLkgZYQghY9Yd",
+          "name": "WebFetch",
+          "input": {
+            "url": "https://10-0-0-10.nip.io:18190/healthz",
+            "prompt": "Return the page title and any visible content."
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2603,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2603
+        },
+        "output_tokens": 17,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "ba5ea4f9-8557-495b-9fd2-fdc4f826f31c",
+    "timestamp": "2026-09-26T01:43:16.088Z",
+    "request_id": "req_011CfRCi1zBC1Cirb163Q7Rg",
+    "wire_tool_inputs": {
+      "toolu_015jukju9WqQLkgZYQghY9Yd": {
+        "url": "https://10-0-0-10.nip.io:18190/healthz",
+        "prompt": "Return the page title and any visible content."
+      }
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "WebFetch",
+    "tool_use_id": "toolu_015jukju9WqQLkgZYQghY9Yd",
+    "decision_reason_type": "rule",
+    "message": "WebFetch denied access to domain:10-0-0-10.nip.io.",
+    "uuid": "cb782833-04f8-47e2-8692-3ab56e37228d",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b"
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "WebFetch denied access to domain:10-0-0-10.nip.io.",
+          "is_error": true,
+          "tool_use_id": "toolu_015jukju9WqQLkgZYQghY9Yd"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "cb48fada-511b-4025-95bf-9580a1d80add",
+    "timestamp": "2026-09-26T01:43:16.091Z",
+    "tool_use_result": "Error: WebFetch denied access to domain:10-0-0-10.nip.io.",
+    "tool_result_meta": [
+      {
+        "id": "toolu_015jukju9WqQLkgZYQghY9Yd",
+        "non_execution_kind": "permission-rule"
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCiJpT5Cz4NxziGR6v4",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "All five WebFetch calls were made exactly once, and every one was denied/blocked by the sandbox (including the nip.io hostname that resolves to a private address, and the unrelated external domain, which was denied for other reasons). None returned actual page content."
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 764,
+        "cache_read_input_tokens": 2603,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 764
+        },
+        "output_tokens": 1,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "72c98771-4a32-46f3-9b3c-83fb3dac8909",
+    "timestamp": "2026-09-26T01:43:18.339Z",
+    "request_id": "req_011CfRCiJPf6JqMBMKRs9MwU"
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-sonnet-5",
+      "id": "msg_011CfRCiJpT5Cz4NxziGR6v4",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01RACameSiWnM1ggakD2mwrb",
+          "name": "StructuredOutput",
+          "input": {
+            "results": [
+              {
+                "url": "https://git.owner.example/users/sign_in",
+                "fetched": false
+              },
+              {
+                "url": "https://127.0.0.1:18190/healthz",
+                "fetched": false
+              },
+              {
+                "url": "https://10.0.0.10:18190/healthz",
+                "fetched": false
+              },
+              {
+                "url": "https://10.0.0.1/",
+                "fetched": false
+              },
+              {
+                "url": "https://10-0-0-10.nip.io:18190/healthz",
+                "fetched": false
+              }
+            ]
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 764,
+        "cache_read_input_tokens": 2603,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 764
+        },
+        "output_tokens": 1,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "ded3b899-2b95-45cd-ae91-be8faea367a7",
+    "timestamp": "2026-09-26T01:43:19.337Z",
+    "request_id": "req_011CfRCiJPf6JqMBMKRs9MwU",
+    "wire_tool_inputs": {
+      "toolu_01RACameSiWnM1ggakD2mwrb": {
+        "results": [
+          {
+            "url": "https://git.owner.example/users/sign_in",
+            "fetched": false
+          },
+          {
+            "url": "https://127.0.0.1:18190/healthz",
+            "fetched": false
+          },
+          {
+            "url": "https://10.0.0.10:18190/healthz",
+            "fetched": false
+          },
+          {
+            "url": "https://10.0.0.1/",
+            "fetched": false
+          },
+          {
+            "url": "https://10-0-0-10.nip.io:18190/healthz",
+            "fetched": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_01RACameSiWnM1ggakD2mwrb",
+          "type": "tool_result",
+          "content": "Structured output provided successfully"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "uuid": "a500bcb0-80c5-4947-ab87-fd1389106533",
+    "timestamp": "2026-09-26T01:43:19.342Z",
+    "tool_use_result": "Structured output provided successfully"
+  },
+  {
+    "duration_api_ms": 8747,
+    "stop_reason": "tool_use",
+    "session_id": "9a6ead3c-15c8-4e3b-8a7e-a21e63f0b77b",
+    "total_cost_usd": 0.022515599999999997,
+    "usage": {
+      "input_tokens": 4,
+      "cache_creation_input_tokens": 3367,
+      "cache_read_input_tokens": 2603,
+      "output_tokens": 749,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 3367,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "not_available",
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 274,
+          "cache_read_input_tokens": 2603,
+          "cache_creation_input_tokens": 764,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 764
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 974,
+        "outputTokens": 11,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.001029,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      },
+      "claude-sonnet-5": {
+        "inputTokens": 4,
+        "outputTokens": 749,
+        "cacheReadInputTokens": 2603,
+        "cacheCreationInputTokens": 3367,
+        "webSearchRequests": 0,
+        "costUSD": 0.021486599999999998,
+        "contextWindow": 1000000,
+        "maxOutputTokens": 64000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-sonnet-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      }
+    },
+    "permission_denials": [
+      {
+        "tool_name": "WebFetch",
+        "tool_use_id": "toolu_013WGrMo2Tdjq4QdKhQCG81a",
+        "tool_input": {
+          "url": "https://git.owner.example/users/sign_in",
+          "prompt": "Return the page title and any visible content."
+        }
+      },
+      {
+        "tool_name": "WebFetch",
+        "tool_use_id": "toolu_01NF1sZeFEyqZXCvHpmBCWX5",
+        "tool_input": {
+          "url": "https://127.0.0.1:18190/healthz",
+          "prompt": "Return the page title and any visible content."
+        }
+      },
+      {
+        "tool_name": "WebFetch",
+        "tool_use_id": "toolu_018J5FaG96zYNjuXoE5c8Nok",
+        "tool_input": {
+          "url": "https://10.0.0.10:18190/healthz",
+          "prompt": "Return the page title and any visible content."
+        }
+      },
+      {
+        "tool_name": "WebFetch",
+        "tool_use_id": "toolu_012bLLsrwomcu2pk4mvh1194",
+        "tool_input": {
+          "url": "https://10.0.0.1/",
+          "prompt": "Return the page title and any visible content."
+        }
+      },
+      {
+        "tool_name": "WebFetch",
+        "tool_use_id": "toolu_015jukju9WqQLkgZYQghY9Yd",
+        "tool_input": {
+          "url": "https://10-0-0-10.nip.io:18190/healthz",
+          "prompt": "Return the page title and any visible content."
+        }
+      }
+    ],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "subagent_stats": {
+      "spawned": 0,
+      "requested": {
+        "background": 0,
+        "foreground": 0,
+        "unset": 0
+      },
+      "started_in_background": 0,
+      "max_depth": 0,
+      "spawned_by_subagents": 0,
+      "completed": 0,
+      "failed": 0,
+      "killed": {
+        "parent": 0,
+        "user": 0,
+        "system": 0
+      },
+      "refused": {
+        "depth_limit": 0,
+        "concurrency_limit": 0,
+        "budget": 0
+      },
+      "by_type": {}
+    },
+    "is_error": false,
+    "num_turns": 7,
+    "subtype": "success",
+    "api_error_status": null,
+    "result": "{\"results\":[{\"url\":\"https://git.owner.example/users/sign_in\",\"fetched\":false},{\"url\":\"https://127.0.0.1:18190/healthz\",\"fetched\":false},{\"url\":\"https://10.0.0.10:18190/healthz\",\"fetched\":false},{\"url\":\"https://10.0.0.1/\",\"fetched\":false},{\"url\":\"https://10-0-0-10.nip.io:18190/healthz\",\"fetched\":false}]}",
+    "structured_output": {
+      "results": [
+        {
+          "url": "https://git.owner.example/users/sign_in",
+          "fetched": false
+        },
+        {
+          "url": "https://127.0.0.1:18190/healthz",
+          "fetched": false
+        },
+        {
+          "url": "https://10.0.0.10:18190/healthz",
+          "fetched": false
+        },
+        {
+          "url": "https://10.0.0.1/",
+          "fetched": false
+        },
+        {
+          "url": "https://10-0-0-10.nip.io:18190/healthz",
+          "fetched": false
+        }
+      ]
+    },
+    "ttft_ms": 2533,
+    "type": "result",
+    "duration_ms": 7885,
+    "uuid": "82e4de16-a691-42ec-97b1-32dd940836a2",
+    "ttft_stream_ms": 1883,
+    "time_to_request_ms": 75,
+    "first_content_frame_ms": 1883,
+    "queued_turn_count": 0,
+    "result_index": 0
+  }
+]

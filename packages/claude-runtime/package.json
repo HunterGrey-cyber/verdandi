@@ -1,0 +1,21 @@
+{
+  "name": "@verdandi/claude-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test 'dist/tests/**/*.test.js'",
+    "typecheck": "tsc --noEmit",
+    "test:real": "npm run build && RUN_REAL_CLAUDE_TESTS=1 node --test 'dist/tests/realSdk.*.integration.test.js'"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,655 @@
+{
+  "duration_api_ms": 56375,
+  "stop_reason": "tool_use",
+  "session_id": "fce89423-148b-4373-818c-69ee0592f937",
+  "total_cost_usd": 0.148208,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 17221,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 6747,
+    "output_tokens_details": {
+      "thinking_tokens": 3677
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 17221,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 6747,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 17221,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 17221
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 11770,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.01185,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "thinkingTokens": 0,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    },
+    "claude-sonnet-5": {
+      "inputTokens": 2,
+      "outputTokens": 6747,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 17221,
+      "webSearchRequests": 0,
+      "costUSD": 0.136358,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 3677,
+      "canonicalModel": "claude-sonnet-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+    },
+    "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+    },
+    "by_type": {}
+  },
+  "is_error": false,
+  "num_turns": 2,
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "{\"scores\":[{\"id\":\"c001\",\"score\":75},{\"id\":\"c002\",\"score\":60},{\"id\":\"c003\",\"score\":62},{\"id\":\"c004\",\"score\":45},{\"id\":\"c005\",\"score\":48},{\"id\":\"c006\",\"score\":70},{\"id\":\"c007\",\"score\":46},{\"id\":\"c008\",\"score\":55},{\"id\":\"c009\",\"score\":64},{\"id\":\"c010\",\"score\":56},{\"id\":\"c011\",\"score\":48},{\"id\":\"c012\",\"score\":52},{\"id\":\"c013\",\"score\":68},{\"id\":\"c014\",\"score\":58},{\"id\":\"c015\",\"score\":60},{\"id\":\"c016\",\"score\":38},{\"id\":\"c017\",\"score\":40},{\"id\":\"c018\",\"score\":66},{\"id\":\"c019\",\"score\":46},{\"id\":\"c020\",\"score\":55},{\"id\":\"c021\",\"score\":64},{\"id\":\"c022\",\"score\":56},{\"id\":\"c023\",\"score\":48},{\"id\":\"c024\",\"score\":52},{\"id\":\"c025\",\"score\":68},{\"id\":\"c026\",\"score\":58},{\"id\":\"c027\",\"score\":60},{\"id\":\"c028\",\"score\":38},{\"id\":\"c029\",\"score\":40},{\"id\":\"c030\",\"score\":66},{\"id\":\"c031\",\"score\":46},{\"id\":\"c032\",\"score\":55},{\"id\":\"c033\",\"score\":64},{\"id\":\"c034\",\"score\":56},{\"id\":\"c035\",\"score\":48},{\"id\":\"c036\",\"score\":52},{\"id\":\"c037\",\"score\":68},{\"id\":\"c038\",\"score\":58},{\"id\":\"c039\",\"score\":60},{\"id\":\"c040\",\"score\":38},{\"id\":\"c041\",\"score\":40},{\"id\":\"c042\",\"score\":66},{\"id\":\"c043\",\"score\":46},{\"id\":\"c044\",\"score\":55},{\"id\":\"c045\",\"score\":64},{\"id\":\"c046\",\"score\":56},{\"id\":\"c047\",\"score\":48},{\"id\":\"c048\",\"score\":52},{\"id\":\"c049\",\"score\":68},{\"id\":\"c050\",\"score\":58},{\"id\":\"c051\",\"score\":60},{\"id\":\"c052\",\"score\":38},{\"id\":\"c053\",\"score\":40},{\"id\":\"c054\",\"score\":66},{\"id\":\"c055\",\"score\":46},{\"id\":\"c056\",\"score\":55},{\"id\":\"c057\",\"score\":64},{\"id\":\"c058\",\"score\":56},{\"id\":\"c059\",\"score\":48},{\"id\":\"c060\",\"score\":52},{\"id\":\"c061\",\"score\":68},{\"id\":\"c062\",\"score\":58},{\"id\":\"c063\",\"score\":60},{\"id\":\"c064\",\"score\":38},{\"id\":\"c065\",\"score\":40},{\"id\":\"c066\",\"score\":66},{\"id\":\"c067\",\"score\":46},{\"id\":\"c068\",\"score\":55},{\"id\":\"c069\",\"score\":64},{\"id\":\"c070\",\"score\":56},{\"id\":\"c071\",\"score\":48},{\"id\":\"c072\",\"score\":52},{\"id\":\"c073\",\"score\":68},{\"id\":\"c074\",\"score\":58},{\"id\":\"c075\",\"score\":60},{\"id\":\"c076\",\"score\":38},{\"id\":\"c077\",\"score\":40},{\"id\":\"c078\",\"score\":66},{\"id\":\"c079\",\"score\":46},{\"id\":\"c080\",\"score\":55},{\"id\":\"c081\",\"score\":64},{\"id\":\"c082\",\"score\":56},{\"id\":\"c083\",\"score\":48},{\"id\":\"c084\",\"score\":52},{\"id\":\"c085\",\"score\":68},{\"id\":\"c086\",\"score\":58},{\"id\":\"c087\",\"score\":60},{\"id\":\"c088\",\"score\":38},{\"id\":\"c089\",\"score\":40},{\"id\":\"c090\",\"score\":66},{\"id\":\"c091\",\"score\":46},{\"id\":\"c092\",\"score\":55},{\"id\":\"c093\",\"score\":64},{\"id\":\"c094\",\"score\":56},{\"id\":\"c095\",\"score\":48},{\"id\":\"c096\",\"score\":52},{\"id\":\"c097\",\"score\":68},{\"id\":\"c098\",\"score\":58},{\"id\":\"c099\",\"score\":60},{\"id\":\"c100\",\"score\":38}],\"picks\":[{\"id\":\"c013\",\"summary_zh\":\"Neovim 宣布启用旧版配置格式，滚动版用户升级前需查看说明。\",\"reason_zh\":\"影响配置迁移，编辑器核心变更\"},{\"id\":\"c018\",\"summary_zh\":\"Pacman 弃用多光标编辑相关特性，涉及配置与打包脚本调整。\",\"reason_zh\":\"Arch 包管理器直接相关\"},{\"id\":\"c009\",\"summary_zh\":\"AI 编程助手项目重写结构化日志系统，影响配置与打包流程。\",\"reason_zh\":\"AI 编程工具用户关注度高\"},{\"id\":\"c015\",\"summary_zh\":\"终端模拟器新增增量解析支持，涉及配置文件调整。\",\"reason_zh\":\"终端体验改进，日常使用相关\"},{\"id\":\"c014\",\"summary_zh\":\"窗口管理器修复新插件 API 中的一处回归问题。\",\"reason_zh\":\"Linux 桌面稳定性修复\"},{\"id\":\"c025\",\"summary_zh\":\"Neovim 再次重写结构化日志模块，滚动发行版需留意兼容性。\",\"reason_zh\":\"编辑器底层变更值得跟进\"},{\"id\":\"c030\",\"summary_zh\":\"Pacman 修复新插件 API 中的一处回归问题。\",\"reason_zh\":\"包管理器可靠性修复\"},{\"id\":\"c033\",\"summary_zh\":\"AI 编程助手再次重写结构化日志，涉及打包脚本更新。\",\"reason_zh\":\"AI 工具链持续迭代\"},{\"id\":\"c010\",\"summary_zh\":\"语言服务器项目弃用多光标编辑功能，影响配置文件。\",\"reason_zh\":\"LSP 变更影响 Neovim 用户\"},{\"id\":\"c012\",\"summary_zh\":\"Git 项目宣布启动更快的性能，涉及配置与打包调整。\",\"reason_zh\":\"开发工具链基础组件更新\"},{\"id\":\"c045\",\"summary_zh\":\"AI 编程助手宣布启用旧版配置格式，升级前需查看说明。\",\"reason_zh\":\"影响 AI 编程配置迁移\"},{\"id\":\"c054\",\"summary_zh\":\"Pacman 再次修复新插件 API 中的回归问题。\",\"reason_zh\":\"包管理稳定性持续改善\"},{\"id\":\"c061\",\"summary_zh\":\"Neovim 宣布启用旧版配置格式，滚动版用户需关注兼容性。\",\"reason_zh\":\"核心编辑器配置变更\"},{\"id\":\"c008\",\"summary_zh\":\"Wayland 合成器对 GPU 加速渲染进行基准测试。\",\"reason_zh\":\"桌面图形性能评测相关\"}],\"events\":[{\"id\":\"c001\",\"summary_zh\":\"Neovim 重写结构化日志系统，改动涉及配置文件与打包脚本，滚动发行版用户升级前应阅读说明。\"},{\"id\":\"c002\",\"summary_zh\":\"某窗口管理器项目弃用多光标编辑功能，涉及配置文件调整，建议升级前查看变更说明。\"},{\"id\":\"c003\",\"summary_zh\":\"终端模拟器项目发布沙箱化构建版本，涉及打包脚本变化，滚动版用户需注意。\"},{\"id\":\"c004\",\"summary_zh\":\"包镜像项目宣称启动速度更快，涉及配置调整，建议关注兼容性。\"},{\"id\":\"c005\",\"summary_zh\":\"容器运行时项目宣布启用旧版配置格式，影响现有配置文件，升级前需留意。\"},{\"id\":\"c006\",\"summary_zh\":\"Pacman 修复新插件 API 中的一处回归问题，涉及打包脚本，Arch 用户应关注更新。\"}],\"weekly\":[{\"id\":\"c087\",\"summary_zh\":\"本周终端模拟器新增增量解析支持，持续改进配置兼容性。\"},{\"id\":\"c090\",\"summary_zh\":\"本周 Pacman 弃用多光标编辑相关特性，Arch 用户需留意打包脚本变化。\"},{\"id\":\"c091\",\"summary_zh\":\"本周内核调度器项目发布沙箱化构建，涉及配置调整。\"},{\"id\":\"c092\",\"summary_zh\":\"本周 Wayland 合成器宣称启动速度提升，影响桌面体验配置。\"},{\"id\":\"c093\",\"summary_zh\":\"本周 AI 编程助手宣布启用旧版配置格式，升级前需查看说明。\"},{\"id\":\"c094\",\"summary_zh\":\"本周语言服务器修复新插件 API 中的回归问题，影响编辑器集成。\"},{\"id\":\"c096\",\"summary_zh\":\"本周 Git 项目对 GPU 加速渲染进行基准测试，涉及打包脚本更新。\"},{\"id\":\"c097\",\"summary_zh\":\"本周 Neovim 再次重写结构化日志系统，滚动版用户需关注兼容性。\"},{\"id\":\"c098\",\"summary_zh\":\"本周窗口管理器弃用多光标编辑功能，涉及配置文件调整。\"},{\"id\":\"c099\",\"summary_zh\":\"本周终端模拟器发布沙箱化构建版本，涉及打包脚本变化。\"}]}",
+  "structured_output": {
+    "scores": [
+      {
+        "id": "c001",
+        "score": 75
+      },
+      {
+        "id": "c002",
+        "score": 60
+      },
+      {
+        "id": "c003",
+        "score": 62
+      },
+      {
+        "id": "c004",
+        "score": 45
+      },
+      {
+        "id": "c005",
+        "score": 48
+      },
+      {
+        "id": "c006",
+        "score": 70
+      },
+      {
+        "id": "c007",
+        "score": 46
+      },
+      {
+        "id": "c008",
+        "score": 55
+      },
+      {
+        "id": "c009",
+        "score": 64
+      },
+      {
+        "id": "c010",
+        "score": 56
+      },
+      {
+        "id": "c011",
+        "score": 48
+      },
+      {
+        "id": "c012",
+        "score": 52
+      },
+      {
+        "id": "c013",
+        "score": 68
+      },
+      {
+        "id": "c014",
+        "score": 58
+      },
+      {
+        "id": "c015",
+        "score": 60
+      },
+      {
+        "id": "c016",
+        "score": 38
+      },
+      {
+        "id": "c017",
+        "score": 40
+      },
+      {
+        "id": "c018",
+        "score": 66
+      },
+      {
+        "id": "c019",
+        "score": 46
+      },
+      {
+        "id": "c020",
+        "score": 55
+      },
+      {
+        "id": "c021",
+        "score": 64
+      },
+      {
+        "id": "c022",
+        "score": 56
+      },
+      {
+        "id": "c023",
+        "score": 48
+      },
+      {
+        "id": "c024",
+        "score": 52
+      },
+      {
+        "id": "c025",
+        "score": 68
+      },
+      {
+        "id": "c026",
+        "score": 58
+      },
+      {
+        "id": "c027",
+        "score": 60
+      },
+      {
+        "id": "c028",
+        "score": 38
+      },
+      {
+        "id": "c029",
+        "score": 40
+      },
+      {
+        "id": "c030",
+        "score": 66
+      },
+      {
+        "id": "c031",
+        "score": 46
+      },
+      {
+        "id": "c032",
+        "score": 55
+      },
+      {
+        "id": "c033",
+        "score": 64
+      },
+      {
+        "id": "c034",
+        "score": 56
+      },
+      {
+        "id": "c035",
+        "score": 48
+      },
+      {
+        "id": "c036",
+        "score": 52
+      },
+      {
+        "id": "c037",
+        "score": 68
+      },
+      {
+        "id": "c038",
+        "score": 58
+      },
+      {
+        "id": "c039",
+        "score": 60
+      },
+      {
+        "id": "c040",
+        "score": 38
+      },
+      {
+        "id": "c041",
+        "score": 40
+      },
+      {
+        "id": "c042",
+        "score": 66
+      },
+      {
+        "id": "c043",
+        "score": 46
+      },
+      {
+        "id": "c044",
+        "score": 55
+      },
+      {
+        "id": "c045",
+        "score": 64
+      },
+      {
+        "id": "c046",
+        "score": 56
+      },
+      {
+        "id": "c047",
+        "score": 48
+      },
+      {
+        "id": "c048",
+        "score": 52
+      },
+      {
+        "id": "c049",
+        "score": 68
+      },
+      {
+        "id": "c050",
+        "score": 58
+      },
+      {
+        "id": "c051",
+        "score": 60
+      },
+      {
+        "id": "c052",
+        "score": 38
+      },
+      {
+        "id": "c053",
+        "score": 40
+      },
+      {
+        "id": "c054",
+        "score": 66
+      },
+      {
+        "id": "c055",
+        "score": 46
+      },
+      {
+        "id": "c056",
+        "score": 55
+      },
+      {
+        "id": "c057",
+        "score": 64
+      },
+      {
+        "id": "c058",
+        "score": 56
+      },
+      {
+        "id": "c059",
+        "score": 48
+      },
+      {
+        "id": "c060",
+        "score": 52
+      },
+      {
+        "id": "c061",
+        "score": 68
+      },
+      {
+        "id": "c062",
+        "score": 58
+      },
+      {
+        "id": "c063",
+        "score": 60
+      },
+      {
+        "id": "c064",
+        "score": 38
+      },
+      {
+        "id": "c065",
+        "score": 40
+      },
+      {
+        "id": "c066",
+        "score": 66
+      },
+      {
+        "id": "c067",
+        "score": 46
+      },
+      {
+        "id": "c068",
+        "score": 55
+      },
+      {
+        "id": "c069",
+        "score": 64
+      },
+      {
+        "id": "c070",
+        "score": 56
+      },
+      {
+        "id": "c071",
+        "score": 48
+      },
+      {
+        "id": "c072",
+        "score": 52
+      },
+      {
+        "id": "c073",
+        "score": 68
+      },
+      {
+        "id": "c074",
+        "score": 58
+      },
+      {
+        "id": "c075",
+        "score": 60
+      },
+      {
+        "id": "c076",
+        "score": 38
+      },
+      {
+        "id": "c077",
+        "score": 40
+      },
+      {
+        "id": "c078",
+        "score": 66
+      },
+      {
+        "id": "c079",
+        "score": 46
+      },
+      {
+        "id": "c080",
+        "score": 55
+      },
+      {
+        "id": "c081",
+        "score": 64
+      },
+      {
+        "id": "c082",
+        "score": 56
+      },
+      {
+        "id": "c083",
+        "score": 48
+      },
+      {
+        "id": "c084",
+        "score": 52
+      },
+      {
+        "id": "c085",
+        "score": 68
+      },
+      {
+        "id": "c086",
+        "score": 58
+      },
+      {
+        "id": "c087",
+        "score": 60
+      },
+      {
+        "id": "c088",
+        "score": 38
+      },
+      {
+        "id": "c089",
+        "score": 40
+      },
+      {
+        "id": "c090",
+        "score": 66
+      },
+      {
+        "id": "c091",
+        "score": 46
+      },
+      {
+        "id": "c092",
+        "score": 55
+      },
+      {
+        "id": "c093",
+        "score": 64
+      },
+      {
+        "id": "c094",
+        "score": 56
+      },
+      {
+        "id": "c095",
+        "score": 48
+      },
+      {
+        "id": "c096",
+        "score": 52
+      },
+      {
+        "id": "c097",
+        "score": 68
+      },
+      {
+        "id": "c098",
+        "score": 58
+      },
+      {
+        "id": "c099",
+        "score": 60
+      },
+      {
+        "id": "c100",
+        "score": 38
+      }
+    ],
+    "picks": [
+      {
+        "id": "c013",
+        "summary_zh": "Neovim 宣布启用旧版配置格式，滚动版用户升级前需查看说明。",
+        "reason_zh": "影响配置迁移，编辑器核心变更"
+      },
+      {
+        "id": "c018",
+        "summary_zh": "Pacman 弃用多光标编辑相关特性，涉及配置与打包脚本调整。",
+        "reason_zh": "Arch 包管理器直接相关"
+      },
+      {
+        "id": "c009",
+        "summary_zh": "AI 编程助手项目重写结构化日志系统，影响配置与打包流程。",
+        "reason_zh": "AI 编程工具用户关注度高"
+      },
+      {
+        "id": "c015",
+        "summary_zh": "终端模拟器新增增量解析支持，涉及配置文件调整。",
+        "reason_zh": "终端体验改进，日常使用相关"
+      },
+      {
+        "id": "c014",
+        "summary_zh": "窗口管理器修复新插件 API 中的一处回归问题。",
+        "reason_zh": "Linux 桌面稳定性修复"
+      },
+      {
+        "id": "c025",
+        "summary_zh": "Neovim 再次重写结构化日志模块，滚动发行版需留意兼容性。",
+        "reason_zh": "编辑器底层变更值得跟进"
+      },
+      {
+        "id": "c030",
+        "summary_zh": "Pacman 修复新插件 API 中的一处回归问题。",
+        "reason_zh": "包管理器可靠性修复"
+      },
+      {
+        "id": "c033",
+        "summary_zh": "AI 编程助手再次重写结构化日志，涉及打包脚本更新。",
+        "reason_zh": "AI 工具链持续迭代"
+      },
+      {
+        "id": "c010",
+        "summary_zh": "语言服务器项目弃用多光标编辑功能，影响配置文件。",
+        "reason_zh": "LSP 变更影响 Neovim 用户"
+      },
+      {
+        "id": "c012",
+        "summary_zh": "Git 项目宣布启动更快的性能，涉及配置与打包调整。",
+        "reason_zh": "开发工具链基础组件更新"
+      },
+      {
+        "id": "c045",
+        "summary_zh": "AI 编程助手宣布启用旧版配置格式，升级前需查看说明。",
+        "reason_zh": "影响 AI 编程配置迁移"
+      },
+      {
+        "id": "c054",
+        "summary_zh": "Pacman 再次修复新插件 API 中的回归问题。",
+        "reason_zh": "包管理稳定性持续改善"
+      },
+      {
+        "id": "c061",
+        "summary_zh": "Neovim 宣布启用旧版配置格式，滚动版用户需关注兼容性。",
+        "reason_zh": "核心编辑器配置变更"
+      },
+      {
+        "id": "c008",
+        "summary_zh": "Wayland 合成器对 GPU 加速渲染进行基准测试。",
+        "reason_zh": "桌面图形性能评测相关"
+      }
+    ],
+    "events": [
+      {
+        "id": "c001",
+        "summary_zh": "Neovim 重写结构化日志系统，改动涉及配置文件与打包脚本，滚动发行版用户升级前应阅读说明。"
+      },
+      {
+        "id": "c002",
+        "summary_zh": "某窗口管理器项目弃用多光标编辑功能，涉及配置文件调整，建议升级前查看变更说明。"
+      },
+      {
+        "id": "c003",
+        "summary_zh": "终端模拟器项目发布沙箱化构建版本，涉及打包脚本变化，滚动版用户需注意。"
+      },
+      {
+        "id": "c004",
+        "summary_zh": "包镜像项目宣称启动速度更快，涉及配置调整，建议关注兼容性。"
+      },
+      {
+        "id": "c005",
+        "summary_zh": "容器运行时项目宣布启用旧版配置格式，影响现有配置文件，升级前需留意。"
+      },
+      {
+        "id": "c006",
+        "summary_zh": "Pacman 修复新插件 API 中的一处回归问题，涉及打包脚本，Arch 用户应关注更新。"
+      }
+    ],
+    "weekly": [
+      {
+        "id": "c087",
+        "summary_zh": "本周终端模拟器新增增量解析支持，持续改进配置兼容性。"
+      },
+      {
+        "id": "c090",
+        "summary_zh": "本周 Pacman 弃用多光标编辑相关特性，Arch 用户需留意打包脚本变化。"
+      },
+      {
+        "id": "c091",
+        "summary_zh": "本周内核调度器项目发布沙箱化构建，涉及配置调整。"
+      },
+      {
+        "id": "c092",
+        "summary_zh": "本周 Wayland 合成器宣称启动速度提升，影响桌面体验配置。"
+      },
+      {
+        "id": "c093",
+        "summary_zh": "本周 AI 编程助手宣布启用旧版配置格式，升级前需查看说明。"
+      },
+      {
+        "id": "c094",
+        "summary_zh": "本周语言服务器修复新插件 API 中的回归问题，影响编辑器集成。"
+      },
+      {
+        "id": "c096",
+        "summary_zh": "本周 Git 项目对 GPU 加速渲染进行基准测试，涉及打包脚本更新。"
+      },
+      {
+        "id": "c097",
+        "summary_zh": "本周 Neovim 再次重写结构化日志系统，滚动版用户需关注兼容性。"
+      },
+      {
+        "id": "c098",
+        "summary_zh": "本周窗口管理器弃用多光标编辑功能，涉及配置文件调整。"
+      },
+      {
+        "id": "c099",
+        "summary_zh": "本周终端模拟器发布沙箱化构建版本，涉及打包脚本变化。"
+      }
+    ]
+  },
+  "ttft_ms": 33217,
+  "type": "result",
+  "duration_ms": 54843,
+  "uuid": "4281d34d-f6e7-432b-b9d7-dacb50e3433f",
+  "ttft_stream_ms": 4298,
+  "time_to_request_ms": 571,
+  "first_content_frame_ms": 4298,
+  "queued_turn_count": 0,
+  "result_index": 0
+}

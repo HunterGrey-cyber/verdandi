@@ -1,0 +1,95 @@
+{
+  "schema": "verdandi.m1-fixtures/v1",
+  "recorded_at": "2026-09-24T01:10:40.622Z",
+  "host": "host-a",
+  "cli_version": "2.1.281",
+  "sdk_version": "0.3.252",
+  "model_requested": "sonnet",
+  "model_resolved": "claude-sonnet-5",
+  "effort_requested": "medium",
+  "carrier_tool": "StructuredOutput",
+  "init_tools": [
+    "StructuredOutput"
+  ],
+  "permission_mode": "bypassPermissions",
+  "usage_shape": "cache_dominant",
+  "account_info_before_first_turn": "ok",
+  "failure_shapes": {
+    "auth": {
+      "observed_as": "result",
+      "subtype": "success",
+      "is_error": true,
+      "terminal_reason": "api_error",
+      "api_error_status": 401,
+      "errors": [],
+      "result_text": "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+      "assistant_error": "authentication_failed",
+      "rejection": null,
+      "rate_limit_status": null
+    },
+    "schema_retry": {
+      "observed_as": "result",
+      "subtype": "success",
+      "is_error": false,
+      "terminal_reason": "completed",
+      "api_error_status": null,
+      "errors": [],
+      "result_text": "I called the StructuredOutput tool with `n = 7` as instructed, but it was rejected by validation: the schema simultaneously requires `n ≤ 5` and `n ≥ 10`, which is mathematically impossible for any integer to satisfy. I cannot force a passing call — no value of `n` can meet both constraints at once.",
+      "assistant_error": null,
+      "rejection": null,
+      "rate_limit_status": "allowed"
+    },
+    "quota": null
+  },
+  "files": {
+    "success_messages": "success.messages.json",
+    "success_init": "success.init.json",
+    "success_result": "success.result.json",
+    "success_account_info": "success.account-info.json",
+    "success_prompt": "success.prompt.json",
+    "success_transcript": "success.transcript.json",
+    "auth-invalid_messages": "auth-invalid.messages.json",
+    "auth-invalid_result": "auth-invalid.result.json",
+    "schema-unsatisfiable_messages": "schema-unsatisfiable.messages.json",
+    "schema-unsatisfiable_result": "schema-unsatisfiable.result.json",
+    "success_web_init": "success-web.init.json",
+    "success_web_result": "success-web.result.json",
+    "success_web_lan_messages": "success-web-lan.messages.json"
+  },
+  "redactions": [
+    "temp path",
+    "account organization",
+    "account email",
+    "home directory"
+  ],
+  "web_init_tools": [
+    "StructuredOutput",
+    "WebFetch",
+    "WebSearch"
+  ],
+  "web_haiku_models": [
+    "claude-haiku-4-5-20251001"
+  ],
+  "web_lan_outcomes": [
+    {
+      "url": "https://git.owner.example/users/sign_in",
+      "blocked_by": "rule"
+    },
+    {
+      "url": "https://127.0.0.1:18190/healthz",
+      "blocked_by": "rule"
+    },
+    {
+      "url": "https://10.0.0.10:18190/healthz",
+      "blocked_by": "rule"
+    },
+    {
+      "url": "https://10.0.0.1/",
+      "blocked_by": "rule"
+    },
+    {
+      "url": "https://10-0-0-10.nip.io:18190/healthz",
+      "blocked_by": "rule"
+    }
+  ]
+}

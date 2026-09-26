@@ -1,0 +1,922 @@
+syntax = "proto3";
+
+package verdandi.claude.runtime.v1;
+
+// ---- Handshake ----
+
+message HandshakeRequest {
+  uint32 client_protocol_major = 1;
+}
+
+message HandshakeResponse {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string sidecar_version = 3;
+  string claude_agent_sdk_version = 4;
+  string sdk_declared_claude_code_version = 5;
+  string actual_claude_code_version = 6;
+  repeated string capabilities = 7;
+  // The PRESET names this sidecar understands for ClaudeHostPolicy.configuration -- NOT the space of
+  // configurations a client can express. Since setting_sources (ClaudeHostPolicy tag 7) exists, the
+  // settings-tier half of each preset can be overridden independently, so a client that reads this
+  // list as "the two available configurations" is reading it wrong. Check `capabilities` for
+  // 'setting_sources' / 'tool_policy' to learn what else is expressible.
+  repeated string configuration_profiles = 8;
+  repeated string permission_modes = 9;
+  uint64 max_message_bytes = 10;
+  string event_buffer_policy = 11;
+
+  // Which local Claude account every session this sidecar process creates authenticates as. The
+  // binding is per PROCESS (VERDANDI_CLAUDE_ACCOUNT, resolved once at startup), never per request, so
+  // a client that needs one particular account picks a sidecar -- and this is how it checks, before
+  // creating any session, that it picked the right one.
+  //
+  // UNSPECIFIED means a sidecar older than these fields: neither "unpinned" nor an all-clear. A
+  // client that requires a pinned account must refuse it.
+  AccountBinding account_binding = 12;
+  // The pinned account's name (VERDANDI_CLAUDE_ACCOUNT, e.g. "work"). Empty unless PINNED.
+  string account_name = 13;
+  // The pinned account's config directory, absolute. Empty unless PINNED. For an account at the CLI's
+  // default location this is $HOME/.claude and no CLAUDE_CONFIG_DIR is set on its sessions (see
+  // ACCOUNT_BINDING_PINNED). This is what the operator configured, not proof of whose login is stored
+  // there; SessionReady.account_identity is that proof.
+  string account_config_dir = 14;
+}
+
+enum AccountBinding {
+  ACCOUNT_BINDING_UNSPECIFIED = 0;
+  // VERDANDI_CLAUDE_ACCOUNT named an account, and every session is bound to it: the four-variable
+  // tuple (CLAUDE_PROFILE, CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR, ANTHROPIC_CONFIG_DIR)
+  // is set to the account's directories -- or, for an account at the CLI's default location
+  // (VERDANDI_CLAUDE_CONFIG_DIR=default), removed, so the CLI reads $HOME/.claude and
+  // $HOME/.claude.json exactly as a plain `claude` does.
+  ACCOUNT_BINDING_PINNED = 1;
+  // Nothing is pinned: sessions inherit this process's own environment, i.e. whichever account the
+  // shell that started the sidecar happened to carry.
+  ACCOUNT_BINDING_UNPINNED = 2;
+}
+
+// ---- Host policy ----
+//
+// Mirrors @verdandi/claude-runtime's ClaudeHostPolicy in MEANING, field for field. Two shapes differ
+// deliberately, and the difference is the point in both cases:
+//   - `setting_sources` is a wrapper message here and a plain optional array in the kernel, because
+//     proto3 gives a bare `repeated` field no presence and this field's whole job is to distinguish
+//     "absent" from "stated, and empty".
+//   - `ToolPolicy.deny` is `repeated` here (never absent on the wire) and optional in the kernel.
+// Field ADDITIONS are caught by apps/claude-sidecar/tests/policyTotality.test.ts; shape divergence
+// is not, so it is named here instead.
+
+// A PRESET over two independent axes, not a single switch:
+//
+//   Axis A -- which filesystem settings tiers load (Options.settingSources).
+//   Axis B -- whether the non-settings ambient channels are closed: MCP discovery
+//             (strictMcpConfig + mcpServers {}) and auto-memory (settings.autoMemoryEnabled false
+//             plus CLAUDE_CODE_DISABLE_AUTO_MEMORY=1).
+//
+// NATIVE = all three tiers, both channels open. ISOLATED = no tiers, both channels closed.
+//
+// ClaudeHostPolicy.setting_sources overrides axis A ONLY. Axis B has no other expression in this
+// protocol and comes from this field alone, which is why adding a source list did not replace this
+// enum: doing so would have deleted the only encoding of axis B.
+enum ConfigurationProfile {
+  CONFIGURATION_PROFILE_UNSPECIFIED = 0;
+  CONFIGURATION_PROFILE_NATIVE = 1;
+  CONFIGURATION_PROFILE_ISOLATED = 2;
+}
+
+enum PermissionMode {
+  PERMISSION_MODE_UNSPECIFIED = 0;
+  PERMISSION_MODE_INTERACTIVE = 1;
+  PERMISSION_MODE_VERDANDI_RULES = 2;
+  PERMISSION_MODE_BYPASS = 3;
+}
+
+enum PersistenceMode {
+  PERSISTENCE_MODE_UNSPECIFIED = 0;
+  PERSISTENCE_MODE_HOST_CLI = 1;
+  PERSISTENCE_MODE_EPHEMERAL = 2;
+  PERSISTENCE_MODE_EXTERNAL_STORE = 3;
+}
+
+enum ExecutableSource {
+  EXECUTABLE_SOURCE_UNSPECIFIED = 0;
+  EXECUTABLE_SOURCE_HOST_CLI = 1;
+  EXECUTABLE_SOURCE_SDK_BUNDLED = 2;
+}
+
+// How much of an assistant reply the host wants to see while it is still being produced.
+//
+// Opt-in rather than always-on, and defaulting to COMPLETE, because PARTIAL changes the event
+// stream materially: one turn goes from a handful of text_delta events to hundreds, which fills the
+// per-session replay ring buffer far faster and makes an EVENT_GAP more reachable for a slow
+// watcher. A consumer that only reads TurnCompleted.result_text (the Go control plane does exactly
+// this) is unaffected either way and should keep the default.
+enum StreamingMode {
+  STREAMING_MODE_UNSPECIFIED = 0;
+  // Assistant text arrives when a message completes. One text_delta per content block.
+  STREAMING_MODE_COMPLETE = 1;
+  // Assistant text arrives as it is produced, as many small text_delta events. Maps to the Claude
+  // Agent SDK's `includePartialMessages`, whose stream events are Anthropic Messages API streaming
+  // events -- presentation deltas, NOT a documented token boundary.
+  STREAMING_MODE_PARTIAL = 2;
+}
+
+// ---- Tool policy (ClaudeHostPolicy tag 6) ----
+
+// The ONLY built-in tools a session may run. A message rather than a bare repeated field on
+// ToolPolicy because `[]` is meaningful and must not collide with silence: the SDK's own
+// `Options.tools` documents "`[]` (empty array) - Disable all built-in tools". Absent => do not
+// touch the base tool set. Present+empty => no built-in tools at all, stated.
+message ToolAllowList {
+  repeated string tools = 1;
+}
+
+// A static, session-lifetime restriction on which tools the provider may run, applied at session
+// construction. NOT a replacement for the per-call PreToolUse gate that `permissions` selects --
+// this is a prefilter that narrows what the gate can ever be asked about.
+//
+// ### `deny` IS A CONFIGURATION BOUNDARY, NOT A CONTAINMENT BOUNDARY
+//
+// Read that sentence again before relying on this message. `deny` shrinks the default attack
+// surface; it does not contain a model that wants out. It is the one lever here the model cannot
+// widen -- the SDK says disallowed tools "will be removed from the model's context and cannot be
+// used, even if they would otherwise be allowed" -- and that is still only a statement about which
+// tool names exist, not about what the session can reach. A denied Bash alongside an allowed Write
+// still reaches the filesystem; a denied Write alongside an allowed Bash reaches it twice over.
+//
+// The actual containment boundary in this system is elsewhere and is untouched by this message: the
+// PreToolUse hook installed under PERMISSION_MODE_INTERACTIVE / PERMISSION_MODE_VERDANDI_RULES,
+// which gates every call on an out-of-process ResolvePermission decision that fails closed. Under
+// PERMISSION_MODE_BYPASS that hook is not installed at all, and no ToolPolicy makes it exist. (A
+// session CREATED gated and later switched to BYPASS by SetPermissionMode keeps its hook, which then
+// abstains; see SetPermissionModeRequest.)
+//
+// Do not read a deny list here as "the session cannot do X". Read it as "the session was not handed
+// X by default."
+message ToolPolicy {
+  // Tools this session must never run. Maps to the Agent SDK's `Options.disallowedTools`: "List of
+  // tool names that are disallowed. These tools will be removed from the model's context and cannot
+  // be used, even if they would otherwise be allowed." That last clause is why `deny` is the only
+  // field here the operator's own settings cannot widen -- see the containment note above for what
+  // that does and does not buy.
+  //
+  // Empty (or the whole ToolPolicy absent) means no denials -- EXCEPT under
+  // PERMISSION_MODE_BYPASS, where a policy that states no restriction at all gets a conservative
+  // default plus a ProviderNotice; see ClaudeHostPolicy.tool_policy.
+  repeated string deny = 1;
+
+  // When present, the base set of built-in tools. Maps to `Options.tools` -- deliberately NOT
+  // `Options.allowedTools`, which the SDK defines as a PRE-APPROVAL list: "List of tool names that
+  // are auto-allowed without prompting for permission. These tools will execute automatically
+  // without asking the user for approval. To restrict which tools are available, use the `tools`
+  // option instead." Mapping `allow` there would WIDEN access -- it would silently disable the
+  // permission prompt for every named tool -- under a field whose name promises the opposite.
+  // Do not "simplify" this to allowedTools.
+  ToolAllowList allow = 2;
+
+  // The caller stating outright that this session carries NO tool restriction at all.
+  //
+  // Only meaningful under PERMISSION_MODE_BYPASS, and it exists because silence could not say it.
+  // A bypass session with an absent-or-empty ToolPolicy is handed the conservative deny list
+  // described on ClaudeHostPolicy.tool_policy, and the ONLY way to decline that floor was to state
+  // some OTHER restriction instead -- including a fake one naming no real tool, which that field's
+  // own comment calls out as a real hole. That made "I want everything, deliberately"
+  // indistinguishable on the wire from "I typo'd a deny entry".
+  //
+  // Setting this makes usesDefaultBypassDeny return false: CONSERVATIVE_BYPASS_DENY is not
+  // injected, and no ProviderNotice{subtype:"bypass_default_deny_applied"} is emitted, because
+  // nothing was applied and saying otherwise would be a lie on the event stream. It widens nothing
+  // by itself -- BYPASS already installs no PreToolUse hook, so this only decides whether four tool
+  // names are removed from the model's context.
+  //
+  // Setting it together with a non-empty `deny` or a present `allow` is self-contradictory, and
+  // validatePolicy refuses it rather than resolving it in either direction: honouring this field
+  // would discard a restriction the caller wrote down, and honouring the restriction would
+  // re-apply a floor the caller explicitly declined.
+  bool unrestricted = 3;
+}
+
+// ---- Setting sources (ClaudeHostPolicy tag 7) ----
+
+// One filesystem settings tier. Mirrors the SDK's own `SettingSource` value for value
+// (`'user' | 'project' | 'local'`), so nothing is re-interpreted on the way to
+// Options.settingSources.
+enum SettingSource {
+  // Never valid inside a `sources` list; rejected with INVALID_CONFIGURATION, never dropped.
+  // Dropping it turns `[UNSPECIFIED]` into `[]` -- "the tiers I named" silently becoming "none" --
+  // and turns `[UNSPECIFIED, PROJECT]` into something narrower than what was written. Same stance
+  // ReplayStart already takes on its own zero value.
+  SETTING_SOURCE_UNSPECIFIED = 0;
+
+  // ~/.claude/settings.json: the OPERATOR'S OWN hooks, plugins and `permissions.allow`. Including
+  // this puts the machine owner's personal configuration inside every spawned session. Excluding it
+  // is what Neovibe's legacy CLI path does on purpose, after a real reproduction confirmed a spawned
+  // session otherwise inherits the calling human's global ~/.claude hooks and plugins.
+  SETTING_SOURCE_USER = 1;
+
+  // .claude/settings.json AND CLAUDE.md -- the SDK's settingSources doc: "Must include 'project' to
+  // load CLAUDE.md files."
+  SETTING_SOURCE_PROJECT = 2;
+
+  // .claude/settings.local.json.
+  SETTING_SOURCE_LOCAL = 3;
+}
+
+// Presence wrapper. A bare `repeated SettingSource setting_sources = 7` on ClaudeHostPolicy would be
+// WRONG, and that is the entire reason this message exists: proto3 gives a repeated field no
+// presence, so an old client that has never heard of the field and a new client deliberately asking
+// for "load nothing" arrive as the same empty list -- flipping every existing caller from
+// user+project+local to full isolation with no way to tell the two apart. A singular message field
+// DOES have presence in proto3 (the same presence CreateSessionRequest.policy already relies on).
+message SettingSourceSelection {
+  // THIS SIDECAR treats order as insignificant and duplicates as harmless: it canonicalises to the
+  // SDK's declared spelling order (user, project, local) and de-duplicates, so there is exactly one
+  // meaning per set rather than several spellings that might drift apart.
+  //
+  // Stated as this sidecar's behaviour rather than as a fact about the SDK on purpose. The SDK
+  // documents only WHICH tiers load, not any precedence between them, so "order is not significant"
+  // is an assumption here, not a quoted guarantee. If the SDK ever gives the array order a meaning,
+  // this canonicalisation silently reinterprets a stated request -- so that is the thing to re-check
+  // before relying on it, and the reason the claim is scoped rather than absolute.
+  repeated SettingSource sources = 1;
+}
+
+message ClaudeHostPolicy {
+  // A PRESET over two independent axes -- see ConfigurationProfile's own comment. `setting_sources`
+  // below overrides axis A only; axis B (MCP discovery, auto-memory) has no other expression and
+  // comes from this field alone.
+  ConfigurationProfile configuration = 1;
+  PermissionMode permissions = 2;
+  PersistenceMode persistence = 3;
+  ExecutableSource executable = 4;
+  StreamingMode streaming = 5;
+
+  // Absent => no tool restriction from the policy, EXCEPT that a BYPASS session stating no
+  // restriction at all (this field absent, or present with an empty `deny` and no `allow`) has the
+  // sidecar's conservative deny list applied and announces it with a
+  // ProviderNotice{kind:"verdandi_policy", subtype:"bypass_default_deny_applied"}. There is
+  // deliberately no encoding of "bypass with zero gates": BYPASS installs no PreToolUse hook at all,
+  // so it is the one combination where silence would mean nothing is watching, and it is therefore
+  // the one silence must not be able to reach. A caller that states ANY restriction takes the
+  // default off -- including a permissive one, and including one that names no real tool at all
+  // (`deny: ["bash"]`, lowercase, is a typo the sidecar cannot distinguish from a statement). Both
+  // are real holes and are meant to be read as ones.
+  //
+  // TWO LIMITS ON THE ANNOUNCEMENT, because a guarantee stated here and untrue in practice is worse
+  // than no guarantee:
+  //   1. The notice is produced at session construction and carries sequence 1, so it is observable
+  //      to a REPLAY_START_AVAILABLE_HISTORY or REPLAY_START_AFTER_SEQUENCE watcher. A
+  //      REPLAY_START_FROM_NOW watcher opened after CreateSession returns WILL NOT SEE IT -- by that
+  //      mode's own definition ("only events produced after this watch is registered"). A client
+  //      that needs to know whether the default fired must not watch FROM_NOW.
+  //   2. ProviderNotice carries kind and subtype only, never a payload (see its own comment), so the
+  //      notice says THAT the conservative default was applied, never WHICH tools it contains. The
+  //      list is @verdandi/claude-runtime's exported CONSERVATIVE_BYPASS_DENY; a client that needs
+  //      the names carries its own copy.
+  //
+  // And a scope limit on the default itself: it names built-in tools. `Options.disallowedTools` is
+  // documented as "List of tool names"; the `mcp__server`-style matcher syntax is documented only on
+  // a sibling API, so this list is NOT demonstrated to constrain MCP tools. `configuration:
+  // ISOLATED` (strictMcpConfig + empty mcpServers) is the lever that closes those.
+  ToolPolicy tool_policy = 6;
+
+  // Absent => fall back entirely to `configuration` (NATIVE: user+project+local; ISOLATED: none).
+  // That is byte-identical to what shipped before this field existed, which is what makes it
+  // additive. Present => this exact set, whatever `configuration` says about axis A. Present with an
+  // empty `sources` => no filesystem settings tiers, stated rather than defaulted.
+  //
+  // Not containment: this governs what is automatically INHERITED, not what is REACHABLE. A session
+  // holding Read or Bash can still read ~/.claude/settings.json whether or not that tier was loaded,
+  // and the SDK notes that even `[]` still reads the managed-settings policy tier from disk.
+  SettingSourceSelection setting_sources = 7;
+
+  // Opt-in: this session may later be switched to PERMISSION_MODE_BYPASS by SetPermissionMode.
+  // Capability 'set_permission_mode'. Meaningful only for a GATED session (INTERACTIVE /
+  // VERDANDI_RULES); a session created under BYPASS is already in bypass and ignores it.
+  //
+  // What it does: the CLI is launched with `--allow-dangerously-skip-permissions` (SDK
+  // Options.allowDangerouslySkipPermissions), without which the CLI refuses a mid-session switch to
+  // bypassPermissions. It changes no mode -- the session still starts in `default` and reports it --
+  // but it does change the CLI's startup, which is why it is not on by default:
+  //
+  //   ROOT CAVEAT. The CLI refuses that flag when running as root (or under sudo) unless the
+  //   environment sets IS_SANDBOX=1: it exits 1 at startup ("--dangerously-skip-permissions cannot
+  //   be used with root/sudo privileges"), so the session dies before its first turn. A client that
+  //   may run as root must not set this field, or must arrange IS_SANDBOX=1 for the sidecar.
+  //
+  // false (the default, and what every client that predates the field sends): no flag, and
+  // SetPermissionMode(BYPASS) on this session is refused with INVALID_CONFIGURATION before the CLI
+  // is asked. Switching between the gated modes, and back out of a bypass this session entered by a
+  // switch, needs no flag and is unaffected. Resume is a parameter of CreateSession, so a resumed
+  // session states this in its own policy like any other.
+  bool permission_mode_switchable = 8;
+}
+
+// ---- CreateSession ----
+
+message CreateSessionRequest {
+  string cwd = 1;
+  ClaudeHostPolicy policy = 2;
+
+  // Resume: continue an existing provider (Claude) session instead of starting a fresh one.
+  //
+  // Modeled as parameters of CreateSession rather than a separate ResumeSession RPC because that is
+  // the kernel's own shape -- @verdandi/claude-runtime's ClaudeSessionConfig carries `resume` and
+  // `fork` as fields of the session config, which map straight onto the Agent SDK's Options.resume
+  // and Options.forkSession. A separate RPC would have to invent a second session lifecycle in the
+  // sidecar for no gain.
+  //
+  // `optional` (not a bare string) on purpose: proto3 field presence is what distinguishes "start
+  // fresh" from "resume a session whose id happens to be empty", and an empty id must be an error
+  // rather than a silent fresh start.
+  optional string resume_provider_session_id = 3;
+
+  // Only meaningful alongside resume_provider_session_id: branch the resumed history into a NEW
+  // provider session instead of continuing the original (SDK Options.forkSession). Ignored when
+  // resuming is not requested. Defined now even though no UI surfaces it, so the protocol does not
+  // foreclose forking later.
+  bool fork = 4;
+
+  // Both fields are `optional` for the reason resume_provider_session_id is: presence is what says
+  // "the caller chose". It also keeps TypeScript clients honest -- ts-proto encodes a plain string
+  // with `!== ""`, so a request built from a partial object literal would send the text "undefined".
+  //
+  // Which model the session runs on (SDK Options.model): an alias such as "sonnet" or "opus", or a
+  // full model id. Empty leaves the CLI's own default in force, which is what every session got
+  // before this field existed -- so an older client that never sets it behaves exactly as before.
+  //
+  // Added so a caller can size the model to the job (verdandi's controlplane picks by how much is
+  // at stake) instead of every session silently running on whatever the account's plan defaults to.
+  optional string model = 5;
+
+  // Reasoning effort (SDK Options.effort): one of "low", "medium", "high", "xhigh", "max". Empty
+  // leaves the CLI default in force. Any other value is refused as INVALID_CONFIGURATION rather
+  // than passed through, because the SDK's reaction to an unknown level is not something a caller
+  // should discover in production.
+  optional string effort = 6;
+
+  // The system prompt, as a FULL REPLACEMENT of Claude Code's own (SDK Options.systemPrompt as a
+  // plain string). There is deliberately no append form: nothing needs one yet, and a oneof can be
+  // introduced later without breaking this field.
+  //
+  // `optional` for presence, like `model`: absent keeps Claude Code's default prompt, which is what
+  // every session got before this field existed. Present but blank (empty or whitespace only) is
+  // refused as INVALID_CONFIGURATION rather than sent -- "replace the prompt with nothing" is not a
+  // request any caller means.
+  //
+  // A sidecar that serves this advertises the capability 'system_prompt'. An older sidecar ignores
+  // the field (proto3 unknown-field rule) and runs Claude Code's default prompt, so a client whose
+  // correctness depends on the replacement must check the capability before relying on it.
+  optional string system_prompt = 7;
+
+  // Schema-validated structured output: SDK Options.outputFormat = {type: 'json_schema', schema}.
+  // Absent means plain text, as before this field existed. Present means the provider validates the
+  // turn's answer against the schema and the sidecar delivers it as
+  // TurnCompleted.structured_output_json. `json_schema_json` must parse as a JSON object; anything
+  // else (including an empty string) is refused as INVALID_CONFIGURATION before a session exists.
+  //
+  // Capability 'output_format'. An older sidecar ignores the field and answers in plain text.
+  OutputFormatSpec output_format = 8;
+}
+
+// A JSON Schema carried as JSON text rather than google.protobuf.Struct -- the same "v1 simplicity"
+// choice ToolCallStarted.input_json makes. The SDK has exactly one output format today
+// (`json_schema`), so there is no type discriminator; one can be added beside this field later.
+message OutputFormatSpec {
+  string json_schema_json = 1;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+}
+
+// ---- SendTurn / InterruptTurn / ResolvePermission / CloseSession ----
+
+message SendTurnRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string text = 3;
+}
+
+message SendTurnResponse {
+  string turn_id = 1;
+}
+
+message InterruptTurnRequest {
+  string session_id = 1;
+  string command_id = 2;
+}
+
+message InterruptTurnResponse {}
+
+message ResolvePermissionRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string permission_id = 3;
+  bool allow = 4;
+  string reason = 5;
+}
+
+message ResolvePermissionResponse {}
+
+message CloseSessionRequest {
+  string session_id = 1;
+  string command_id = 2;
+}
+
+message CloseSessionResponse {}
+
+// ---- SetPermissionMode ----
+//
+// Changes a LIVE session's permission mode, mid-conversation and mid-turn, without a new session or
+// a resume. Maps to the Agent SDK's `Query.setPermissionMode()` (a `set_permission_mode` control
+// request to the running CLI) plus the sidecar's own PreToolUse gate, which follows the new mode.
+//
+// Capability 'set_permission_mode'. An older sidecar does not have this RPC at all (UNIMPLEMENTED).
+//
+// What each target means, and what does NOT change on a switch:
+//
+//   BYPASS (from INTERACTIVE / VERDANDI_RULES): only for a session created with
+//     ClaudeHostPolicy.permission_mode_switchable = true -- read its ROOT CAVEAT; any other gated
+//     session is refused with INVALID_CONFIGURATION without a CLI round trip. Then the CLI is put
+//     in `bypassPermissions` and the gate
+//     stops asking -- it abstains, so the CLI's own bypass decides. The session's ToolPolicy is
+//     static (it was applied at CreateSession) and is NOT re-applied. The one exception is the
+//     conservative bypass floor (ClaudeHostPolicy.tool_policy's comment): a session whose policy
+//     stated no tool restriction at all gets that floor on entering BYPASS exactly as a session
+//     created under BYPASS would -- enforced by the gate denying those tools at call time rather
+//     than by removing them from the model's context (which only CreateSession can do), and
+//     announced by PermissionModeChanged.bypass_default_deny_applied plus the same ProviderNotice
+//     {kind:"verdandi_policy", subtype:"bypass_default_deny_applied"}. State `unrestricted` at
+//     CreateSession to decline it, as for a session created under BYPASS.
+//   INTERACTIVE / VERDANDI_RULES (from BYPASS): the CLI goes back to `default` and the gate asks
+//     again for every call. Only for a session CREATED under INTERACTIVE or VERDANDI_RULES: a
+//     session created under BYPASS has no PreToolUse gate at all (its creation installs none, which
+//     existing callers rely on), there is nothing to switch back on, and the request is refused
+//     with INVALID_CONFIGURATION rather than producing a session that reports `default` while
+//     nothing can ever answer its permission questions. A client that wants a switchable session
+//     creates it gated and switches to BYPASS right after CreateSession.
+//
+// Permission requests already pending when the mode changes are left pending; answer them.
+message SetPermissionModeRequest {
+  string session_id = 1;
+  string command_id = 2;
+  // UNSPECIFIED is refused with INVALID_CONFIGURATION, never defaulted.
+  PermissionMode mode = 3;
+}
+
+message SetPermissionModeResponse {
+  // The provider-level mode the CLI acknowledged, in SessionReady.permission_mode's vocabulary:
+  // `bypassPermissions` for BYPASS, `default` for INTERACTIVE / VERDANDI_RULES. Returned only after
+  // the CLI accepted the change; a CLI refusal fails the RPC and leaves the session's mode as it was.
+  string permission_mode = 1;
+}
+
+// ---- WatchSessionEvents ----
+
+// How much history a watcher wants before it starts receiving live events.
+//
+// Replaces a bare `uint64 after_sequence` in which 0 carried at least four different meanings ("no
+// cursor", "from the beginning", "from now", "whatever you still have"). The consequence was not
+// theoretical: `replayAfter` guarded its gap check on `afterSequence > 0`, so a watch opened at 0
+// against a session that had already evicted events silently skipped the evicted prefix -- while
+// the strictly weaker request (after_sequence = 1) failed loudly. The caller asking for the most
+// data got the least warning.
+enum ReplayStart {
+  // Rejected, never defaulted. The whole point of this enum is that 0 stops meaning anything: a
+  // client that does not set `start` is a client whose intent is unknown, and guessing on its
+  // behalf is what produced the defect above.
+  REPLAY_START_UNSPECIFIED = 0;
+
+  // Only events produced after this watch is registered. No replay. Cannot gap -- nothing
+  // historical was requested. `after_sequence` must be absent.
+  REPLAY_START_FROM_NOW = 1;
+
+  // Every retained event with sequence > after_sequence, then live. The only mode that carries a
+  // cursor, and the only one that can report EVENT_GAP. `after_sequence` is required.
+  REPLAY_START_AFTER_SEQUENCE = 2;
+
+  // Every event still retained, then live. The honest replacement for the old after_sequence = 0:
+  // the caller states that it holds no cursor and accepts that an evicted prefix may be missing.
+  // Cannot gap, because partial history is what was asked for. A caller that needs to know whether
+  // a prefix was evicted reads the first delivered `sequence` -- greater than 1 means events are
+  // missing. Derivable rather than announced, which is acceptable ONLY because the caller opted
+  // into partial history by name. `after_sequence` must be absent.
+  REPLAY_START_AVAILABLE_HISTORY = 3;
+}
+
+message WatchSessionEventsRequest {
+  string session_id = 1;
+
+  // Field 2 was `uint64 after_sequence` with the overloaded meaning described on ReplayStart. Not
+  // reused: a client built against the old meaning that reached a new server would have its cursor
+  // read as a start mode. Reserving the NUMBER (not the name) is deliberate -- the name is the
+  // clearest one for the cursor and is reused below at a new tag, and field names do not travel on
+  // the binary wire.
+  reserved 2;
+
+  ReplayStart start = 3;
+
+  // Required when start == REPLAY_START_AFTER_SEQUENCE, and an error with either other mode.
+  // Supplying a cursor the server would ignore is how a caller comes to believe it asked for
+  // something it did not.
+  //
+  // Validity, given `latest` (highest sequence ever assigned to this session, 0 if none) and
+  // `oldest` (lowest still retained):
+  //
+  //   after_sequence >  latest              -> INVALID_CONFIGURATION (impossible / future cursor)
+  //   after_sequence == latest              -> ok, no replay, straight to live
+  //   oldest - 1 <= after_sequence < latest -> ok, replay (after_sequence, latest], then live
+  //   after_sequence <  oldest - 1          -> EVENT_GAP
+  //
+  // The `oldest - 1` boundary is ok and not a gap: the caller last saw the event immediately before
+  // the oldest retained one, so the replay range is contiguous with what it already holds.
+  //
+  // A future cursor is REFUSED rather than tolerated because it is numerically plausible and
+  // semantically meaningless -- it can only come from another session, another sidecar process, or
+  // a persisted value. Accepted silently it produces one of two invisible failures: the client
+  // waits forever for sequences that will never be assigned, or live events arriving below the
+  // bogus cursor are classified as already-delivered duplicates and dropped without a word.
+  //
+  // PROVENANCE. A sequence cursor is ephemeral stream state scoped to one (session, service
+  // instance). It is not an identity, it is not durable, and it is not comparable across sessions
+  // or across sidecar processes:
+  //
+  //     sequence cursor  !=  provider_session_id  !=  durable resume identity
+  //
+  // A cursor is only ever obtained by having received that event on this stream from this service.
+  // Durable cursors would need an explicit epoch/identity model -- a sequence qualified by
+  // something that changes when the server's numbering restarts. This protocol has no such model,
+  // so it has no durable cursors.
+  optional uint64 after_sequence = 4;
+}
+
+// ---- Typed events: source design doc §9.6's 14, the 11 this round implements (design spec §5.2) ----
+
+message SessionReady {
+  string session_id = 1;
+  string provider_session_id = 2;
+  string model = 3;
+  string cwd = 4;
+
+  // The permission mode the provider is ACTUALLY running under, verbatim from the Agent SDK's
+  // system/init message: `bypassPermissions`, `default`, `acceptEdits`, `plan`, `dontAsk` or
+  // `auto`. Passed through unmapped on purpose -- this field's whole job is to report what
+  // happened rather than what was asked for, and translating it back into a PermissionMode enum
+  // value would fold the two together again.
+  //
+  // A client that requested BYPASS and reads anything else here is running weaker than it believes
+  // and should stop, not continue.
+  //
+  // Measured 2026-09-18 against CLI 2.1.272, because a guard nobody has watched fail is not a
+  // guard: this field does track the effective mode -- forcing `default` made it read "default"
+  // while every bypass session read "bypassPermissions". Two further results from the same
+  // measurement, both load-bearing for how this field should be read:
+  //
+  //   - A BEHAVIOURAL check is not a substitute. With the host's own auto-mode allowlist loaded
+  //     (CONFIGURATION_PROFILE_NATIVE loads the operator's settings), a session downgraded to
+  //     `default` still executed routine Bash and still looked entirely healthy. "The tool call
+  //     worked" says nothing about the mode.
+  //   - The specific downgrade this field was added to catch did not reproduce. Removing the CLI's
+  //     bypass-consent setting (skipDangerousModePermissionPrompt) by every available means --
+  //     false in the project tier, false in the programmatic settings tier, and settingSources []
+  //     so the tier holding it is never loaded at all -- left `bypassPermissions` fully in force.
+  //     The field is kept anyway: it is nearly free, and it is the only honest signal if a future
+  //     CLI starts downgrading instead of refusing.
+  //
+  // Empty on a sidecar older than this field. A client must not read that emptiness as a
+  // downgrade, and must not read it as an all-clear either.
+  string permission_mode = 5;
+
+  // Which account the provider actually authenticated as, from the SDK's Query.accountInfo(). The
+  // kernel asks once per session, at session start. A completion-shaped session (an explicit empty
+  // tool_policy.allow, or CreateSessionRequest.output_format) also holds its first turn's message
+  // until it has the answer (bounded; a timeout sets `error`), so for it this is known before the
+  // provider has seen any input. Every other session never waits: it carries the answer if it was
+  // in by the time system/init arrived, and otherwise `error` says it was not.
+  // HandshakeResponse.account_* say which account the operator PINNED; this says whose login the
+  // CLI actually found there.
+  //
+  // SessionReady itself still arrives with the provider's system/init, i.e. at the start of the
+  // first turn -- see ResumeStatus for why nothing earlier can carry it.
+  //
+  // Capability 'account_identity'. Absent from an older sidecar, which a client that requires an
+  // identity must treat as unproven, never as a pass.
+  AccountIdentity account_identity = 6;
+
+  // What the provider's system/init reported about the session it actually built: its tool list,
+  // MCP servers and API key source, verbatim. Present whenever system/init carried a tools list.
+  //
+  // Load-bearing for an explicit EMPTY allow list (ClaudeHostPolicy.tool_policy.allow present with
+  // no tools): the kernel checks `tools` against the empty set -- plus the structured-output
+  // carrier tool when the session has CreateSessionRequest.output_format -- and on any other tool,
+  // or on a system/init with no tools list at all, closes the session with
+  // SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION immediately after this SessionReady, before anything
+  // else of the turn is processed. Sessions without an empty allow list are never checked.
+  //
+  // Capability 'init_fingerprint', which therefore also promises that close.
+  InitFingerprint init_fingerprint = 7;
+}
+
+message InitFingerprint {
+  repeated string tools = 1;
+  repeated InitMcpServer mcp_servers = 2;
+  // system/init's apiKeySource: 'none' for a claude.ai login, 'ANTHROPIC_API_KEY' when an API key
+  // is in use. It cannot tell two logins apart (AccountIdentity does), but it does expose a leaked
+  // API key. Empty when system/init did not report one.
+  string api_key_source = 3;
+}
+
+message InitMcpServer {
+  string name = 1;
+  string status = 2;
+}
+
+// Exactly what accountInfo() returned, unmapped; a field is absent when it returned nothing for it.
+// `error` is set -- and every other field absent -- when accountInfo() failed or did not answer in
+// time, or (for a session that does not hold its first turn) had not answered yet when system/init
+// arrived. The session runs either way: deciding whether an unproven identity is acceptable is the
+// client's call, not the sidecar's.
+message AccountIdentity {
+  optional string email = 1;
+  optional string organization = 2;
+  optional string subscription_type = 3;
+  optional string token_source = 4;
+  optional string error = 5;
+}
+
+message TurnStarted {
+  string turn_id = 1;
+}
+
+message TextDelta {
+  string turn_id = 1;
+  string text = 2;
+  // The id of the Claude API message this text belongs to (`msg_...`): the `assistant` message's
+  // `message.id` under STREAMING_MODE_COMPLETE, the enclosing `message_start` event's `message.id`
+  // under STREAMING_MODE_PARTIAL. Two consecutive assistant messages with no tool call between them
+  // carry different ids, so a change of id is where one reply ends and the next begins. One API
+  // message can arrive as several content blocks (and, complete mode, several SDK messages): they
+  // share the id.
+  //
+  // Absent when the provider did not report one. Capability 'text_delta_message_id'.
+  optional string message_id = 3;
+}
+
+message ThinkingDelta {
+  string turn_id = 1;
+  string text = 2;
+  // As TextDelta.message_id.
+  optional string message_id = 3;
+}
+
+// input/content carried as a JSON string, not google.protobuf.Struct — v1 simplicity; revisit if a
+// consumer needs structured access rather than parse-on-arrival.
+message ToolCallStarted {
+  string turn_id = 1;
+  string tool_use_id = 2;
+  string name = 3;
+  string input_json = 4;
+}
+
+message ToolCallCompleted {
+  string turn_id = 1;
+  string tool_use_id = 2;
+  string content_json = 3;
+  bool is_error = 4;
+}
+
+message PermissionRequested {
+  string permission_id = 1;
+  string tool_use_id = 2;
+  string tool_name = 3;
+  string input_json = 4;
+}
+
+enum PermissionOutcome {
+  PERMISSION_OUTCOME_UNSPECIFIED = 0;
+  PERMISSION_OUTCOME_ALLOWED = 1;
+  PERMISSION_OUTCOME_DENIED = 2;
+  PERMISSION_OUTCOME_CANCELLED_BY_INTERRUPT = 3;
+  PERMISSION_OUTCOME_CANCELLED_BY_SESSION_CLOSE = 4;
+  PERMISSION_OUTCOME_PROVIDER_FAILED = 5;
+  PERMISSION_OUTCOME_EXPIRED = 6;
+}
+
+message PermissionResolved {
+  string permission_id = 1;
+  PermissionOutcome outcome = 2;
+}
+
+enum TurnOutcome {
+  TURN_OUTCOME_UNSPECIFIED = 0;
+  TURN_OUTCOME_COMPLETED = 1;
+  TURN_OUTCOME_INTERRUPTED = 2;
+  TURN_OUTCOME_FAILED = 3;
+  TURN_OUTCOME_LIMIT_REACHED = 4;
+}
+
+message TurnCompleted {
+  string turn_id = 1;
+  TurnOutcome outcome = 2;
+  string result_text = 3;
+  bool is_error = 4;
+  optional string stop_reason = 5;
+
+  // The SDK result message's `structured_output`, JSON-encoded. Present only on a turn of a session
+  // created with CreateSessionRequest.output_format whose answer the provider delivered; absent on
+  // every other turn, including a structured-output turn that failed (read result_subtype).
+  //
+  // Capability 'structured_output'. The same capability covers the four fields below, which were
+  // wired in the same commit.
+  optional string structured_output_json = 6;
+
+  // The next four are the SDK result message's own words about how the turn ended, passed through
+  // unmapped so a client can classify a failure (quota, auth, schema retries exhausted) itself --
+  // `outcome` above folds every unrecognised terminal reason into FAILED. All four are absent
+  // (`errors` empty) on a TurnCompleted the kernel synthesized because the provider died or the
+  // session closed mid-turn: no result message existed to read them from.
+  //
+  // `subtype`, verbatim: 'success', 'error_during_execution', 'error_max_turns',
+  // 'error_max_budget_usd', 'error_max_structured_output_retries', ... An open set.
+  optional string result_subtype = 7;
+  // `terminal_reason`, verbatim: 'completed', 'api_error', 'blocking_limit',
+  // 'structured_output_retry_exhausted', ... An open set.
+  optional string terminal_reason = 8;
+  // `api_error_status`: the HTTP status of the API call that failed the turn (401, 429, ...), when
+  // the result message reports one.
+  optional int32 api_error_status = 9;
+  // `errors`, bounded: at most 8 entries of at most 2000 characters each; when the provider reported
+  // more, the 8th entry says how many were dropped.
+  repeated string errors = 10;
+
+  // Token and cost accounting, summed over the result message's `modelUsage` -- every model the
+  // query pipeline called (main loop, subagents, compaction), which the SDK names "the correct
+  // field for token/cost accounting". NOT the result's `usage`, which covers the main loop only.
+  //
+  // CUMULATIVE for the session so far, because that is what the SDK reports: in a one-turn session
+  // (the completion lane's shape) it is exactly that turn's spend; in a multi-turn session, subtract
+  // the previous TurnCompleted's numbers to get one turn's. Absent when the result message carried
+  // no usable `modelUsage`, and on a synthesized TurnCompleted. An estimate, not a billing statement.
+  //
+  // Capability 'turn_usage'.
+  TurnUsage usage = 11;
+}
+
+message TurnUsage {
+  // The input side is split three ways because the API bills the three differently and Claude Code
+  // caches aggressively: on a large prompt `input_tokens` is typically single digits and nearly all
+  // of the prompt shows up as cache_creation / cache_read. "Did my prompt arrive" must sum all three.
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  uint64 cache_creation_input_tokens = 3;
+  uint64 cache_read_input_tokens = 4;
+  double total_cost_usd = 5;
+  // The `modelUsage` key that accounted for the most tokens, i.e. the model that did the work. The
+  // counts above are summed over ALL models, not only this one.
+  string model = 6;
+}
+
+enum SessionCloseReason {
+  SESSION_CLOSE_REASON_UNSPECIFIED = 0;
+  SESSION_CLOSE_REASON_CLOSED_BY_HOST = 1;
+  SESSION_CLOSE_REASON_PROVIDER_EXITED = 2;
+  SESSION_CLOSE_REASON_PROVIDER_FAILED = 3;
+  // The kernel closed the session because system/init reported tools beyond what an explicit empty
+  // allow list permits (see SessionReady.init_fingerprint). The turn in flight ends FAILED.
+  SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION = 4;
+}
+
+message SessionClosed {
+  SessionCloseReason reason = 1;
+}
+
+// Whether a session created with `resume_provider_session_id` actually attached to it.
+//
+// Emitted exactly once, and only for a session that asked to resume. Resume remains a parameter of
+// CreateSession -- this introduces no second session lifecycle.
+//
+// Replaces an inference the client could not make safely. CreateSession returns before the provider
+// has attempted to attach, so the client watched for a few seconds and treated silence as success.
+// Measured, that had no margin: a real rejection surfaces at ~1.7-2.3s against a 3.0s window, so a
+// loaded machine turns a genuine rejection into an accepted, empty, dead conversation.
+enum ResumeStatus {
+  RESUME_STATUS_UNSPECIFIED = 0;
+
+  // The provider attached, and `attached_provider_session_id` says to what.
+  //
+  // Necessarily the LATE one. The provider reports its session id in a `system`/`init` message that
+  // arrives at the start of a TURN, not at session construction -- measured: a valid resume with no
+  // turn sent produced zero events over 24 seconds. So "rejected" is promptly knowable and
+  // "attached" is not, and no protocol shape removes that asymmetry without sending a probe turn.
+  RESUME_STATUS_ATTACHED = 1;
+
+  // The provider refused the requested id -- it does not exist. Knowable in ~2s with no turn sent,
+  // because the provider announces this one itself.
+  RESUME_STATUS_REJECTED = 2;
+
+  // The provider died before it could attach, for some reason other than refusing the id. Kept
+  // distinct from REJECTED because they call for different things from a user: one means "that
+  // conversation is gone", the other means "something is wrong with the provider".
+  RESUME_STATUS_INITIALIZATION_FAILED = 3;
+}
+
+message ResumeOutcome {
+  string requested_provider_session_id = 1;
+  ResumeStatus status = 2;
+
+  // Set only when status == ATTACHED. Compare it to the requested id: equal means the requested
+  // session really did continue.
+  string attached_provider_session_id = 3;
+
+  // True when this session was created with `fork = true`, in which case the provider legitimately
+  // returns a DIFFERENT id (measured: requested 3e1a9e6b..., attached 6301556f...) and an equality
+  // check on the ids above is the wrong test. Load-bearing rather than decorative: without it, the
+  // day fork is enabled every successful fork reports as a substituted session.
+  bool forked = 4;
+
+  // Human-readable, for the two failures. Safe to show a user.
+  string detail = 5;
+}
+
+// A SetPermissionMode the CLI accepted. Emitted once per accepted SetPermissionMode, after the CLI
+// acknowledged it, so every watcher -- not only the caller of the RPC -- learns the mode changed.
+// The next turn's SessionReady.permission_mode is the provider's own independent report of the same
+// thing (system/init is re-sent at every turn).
+message PermissionModeChanged {
+  // The mode that was requested and is now in force on the sidecar's gate.
+  PermissionMode mode = 1;
+  // What the CLI acknowledged, as SetPermissionModeResponse.permission_mode.
+  string permission_mode = 2;
+  // True when entering BYPASS applied the conservative bypass floor (see SetPermissionModeRequest).
+  bool bypass_default_deny_applied = 3;
+}
+
+// kind/subtype only, never a raw payload field -- design spec §3.2/§5.2's "never pass raw JSON through".
+message ProviderNotice {
+  string kind = 1;
+  optional string subtype = 2;
+}
+
+message SessionEvent {
+  string session_id = 1;
+  uint64 sequence = 2;
+  int64 occurred_at = 3;
+  optional string turn_id = 4;
+
+  oneof event {
+    SessionReady session_ready = 10;
+    TurnStarted turn_started = 11;
+    TextDelta text_delta = 12;
+    ThinkingDelta thinking_delta = 13;
+    ToolCallStarted tool_call_started = 14;
+    ToolCallCompleted tool_call_completed = 15;
+    PermissionRequested permission_requested = 16;
+    PermissionResolved permission_resolved = 17;
+    TurnCompleted turn_completed = 18;
+    SessionClosed session_closed = 19;
+    ProviderNotice provider_notice = 20;
+    ResumeOutcome resume_outcome = 21;
+    // Capability 'set_permission_mode'.
+    PermissionModeChanged permission_mode_changed = 22;
+  }
+}
+
+// ---- Error model: source design doc §9.7's subset this round actually triggers (design spec §5.3) ----
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INCOMPATIBLE_PROTOCOL = 1;
+  ERROR_CODE_UNSUPPORTED_CLI_VERSION = 2;
+  ERROR_CODE_SESSION_NOT_FOUND = 3;
+  ERROR_CODE_TURN_ALREADY_ACTIVE = 4;
+  ERROR_CODE_NO_ACTIVE_TURN = 5;
+  ERROR_CODE_PERMISSION_NOT_FOUND = 6;
+  ERROR_CODE_PERMISSION_ALREADY_RESOLVED = 7;
+  ERROR_CODE_IDEMPOTENCY_CONFLICT = 8;
+  ERROR_CODE_EVENT_GAP = 9;
+  ERROR_CODE_INVALID_CONFIGURATION = 10;
+  ERROR_CODE_PROVIDER_UNAVAILABLE = 11;
+  ERROR_CODE_PROVIDER_PROTOCOL_ERROR = 12;
+  ERROR_CODE_DEADLINE_EXCEEDED = 13;
+}
+
+message ErrorDetail {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+// ---- Service: the 7 in-scope RPCs (plan's Global Constraints; design spec §1), plus
+// SetPermissionMode (2026-09-26, capability 'set_permission_mode') ----
+
+service RuntimeService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc SendTurn(SendTurnRequest) returns (SendTurnResponse);
+  rpc WatchSessionEvents(WatchSessionEventsRequest) returns (stream SessionEvent);
+  rpc InterruptTurn(InterruptTurnRequest) returns (InterruptTurnResponse);
+  rpc ResolvePermission(ResolvePermissionRequest) returns (ResolvePermissionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc SetPermissionMode(SetPermissionModeRequest) returns (SetPermissionModeResponse);
+}
