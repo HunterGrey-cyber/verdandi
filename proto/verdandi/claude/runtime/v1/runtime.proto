@@ -311,6 +311,53 @@ message ClaudeHostPolicy {
   // switch, needs no flag and is unaffected. Resume is a parameter of CreateSession, so a resumed
   // session states this in its own policy like any other.
   bool permission_mode_switchable = 8;
+
+  // Opt-in: route the CLI's OWN permission prompts to this host as PermissionRequested events.
+  // Capability 'provider_permission_prompts'. Decided from the mode the session is CREATED in:
+  // meaningful only for PERMISSION_MODE_INTERACTIVE (and UNSPECIFIED / unrecognized values, which
+  // are read as INTERACTIVE); a session created under VERDANDI_RULES or BYPASS ignores it, and so
+  // does a sidecar without the capability (proto3 unknown field) -- both of which leave exactly the
+  // behaviour below under "false". A session created INTERACTIVE with it keeps it across
+  // SetPermissionMode (see the end of this comment).
+  //
+  // Why it exists: the PreToolUse gate asks the host about every call, but the CLI can still ask on
+  // its own AFTER the gate allowed a call. Its sensitive-file safety check (a Write to .git/probe,
+  // .claude/settings.json, ...) is the measured case, and neither a hook allow nor a session allow
+  // rule silences it. With no one to ask, a headless CLI refuses that call, and the host never learns
+  // there was a question.
+  //
+  // true: the session is given an Agent SDK `canUseTool` callback. Each such ask becomes a
+  // PermissionRequested with origin PERMISSION_ORIGIN_PROVIDER_PROMPT and the CLI's own words in
+  // provider_reason, answered with ResolvePermission like any other request. It is IN ADDITION to the
+  // gate, never instead of it: the gate still asks about every call first, and on CLI 2.1.283 a call
+  // the gate allowed raised no provider prompt unless the CLI's own check wanted one (so ordinary
+  // calls are not asked twice). A provider prompt normally carries the same tool_use_id as the
+  // gate's request for that call, which came first and was already resolved -- measured, not
+  // guaranteed: after SetPermissionMode(BYPASS) the gate abstains and asks nothing first, and an
+  // EMPTY tool_use_id (the CLI gave none) correlates with nothing and must never be matched against
+  // another request's empty id. A host that auto-approves a provider prompt on the strength of an
+  // earlier answer must match a non-empty id, and must not auto-approve one carrying
+  // provider_matched_ask_rule (see PermissionRequested). Answers:
+  //   - allow: the call runs with its input unchanged. The sidecar never applies the CLI's own
+  //     suggestions (one of them switches the CLI session to acceptEdits) or any permission update;
+  //     each such ask is asked again next time.
+  //   - deny: the call fails with `reason` as its message (or "denied by the host" when blank); the
+  //     turn continues.
+  //   - interrupt, close, the CLI cancelling the prompt, or provider death: denied, with exactly one
+  //     PermissionResolved -- CANCELLED_BY_* / EXPIRED / PROVIDER_FAILED, as for the gate's own.
+  //     Measured on CLI 2.1.283: InterruptTurn with a provider prompt pending returned in ms, the CLI
+  //     cancelled the prompt itself (so its outcome is EXPIRED, not CANCELLED_BY_INTERRUPT), and the
+  //     turn ended INTERRUPTED. There is no timeout otherwise: an unanswered provider prompt waits.
+  // The callback makes the SDK launch the CLI with `--permission-prompt-tool stdio`, which adds three
+  // tools to the model's context (AskUserQuestion, EnterPlanMode, ExitPlanMode); the sidecar
+  // disallows those three on such a session, so its model sees the same tools as without the flag.
+  // A tool_policy.allow naming one of them contradicts that and is refused as
+  // INVALID_CONFIGURATION. The callback is installed once, at CreateSession: SetPermissionMode
+  // neither adds nor removes it.
+  //
+  // false (the default, and what every client that predates the field sends): no callback, no tool
+  // change -- the CLI's own asks are refused as they always were.
+  bool provider_permission_prompts = 9;
 }
 
 // ---- CreateSession ----
@@ -687,11 +734,54 @@ message ToolCallCompleted {
   bool is_error = 4;
 }
 
+// What raised a PermissionRequested. Capability 'provider_permission_prompts'.
+enum PermissionOrigin {
+  // A sidecar older than this field. Read it as PERMISSION_ORIGIN_HOOK: the gate was the only origin
+  // there was.
+  PERMISSION_ORIGIN_UNSPECIFIED = 0;
+  // The sidecar's PreToolUse gate, which asks about every call of a gated session.
+  PERMISSION_ORIGIN_HOOK = 1;
+  // The CLI's own permission prompt (Agent SDK canUseTool), raised after the gate had answered --
+  // only on a session created with ClaudeHostPolicy.provider_permission_prompts. The CLI keeps these
+  // for checks of its own, the sensitive-file safety check being the measured one; provider_reason
+  // says which.
+  PERMISSION_ORIGIN_PROVIDER_PROMPT = 2;
+}
+
 message PermissionRequested {
   string permission_id = 1;
   string tool_use_id = 2;
   string tool_name = 3;
   string input_json = 4;
+  // Stated on every request by a sidecar with the capability.
+  PermissionOrigin origin = 5;
+  // PROVIDER_PROMPT only: the CLI's own reason for asking (SDK `decisionReason`), verbatim -- e.g.
+  // "Claude requested permissions to edit <path> which is a sensitive file." Absent when the CLI gave
+  // none, and always absent for HOOK. English prose from the CLI, not a stable code: show it, do not
+  // parse it.
+  optional string provider_reason = 6;
+  // PROVIDER_PROMPT only: the CLI's short subject for the prompt (SDK `description`), verbatim --
+  // e.g. ".git/probe". Absent when the CLI gave none, and always absent for HOOK.
+  optional string provider_description = 7;
+  // PROVIDER_PROMPT only: the path that triggered the prompt (SDK `blockedPath`), e.g. a path outside
+  // the allowed directories. Absent when the CLI gave none, and always absent for HOOK.
+  optional string provider_blocked_path = 8;
+  // PROVIDER_PROMPT only: present when a user-configured `permissions.ask` rule forced this prompt
+  // (SDK `matchedAskRule`) -- from a settings tier the session loaded, which for a NATIVE or
+  // project/local session includes files in the repository being worked on. The SDK's own guidance:
+  // a host making policy on the reason, or running host-side auto-approval, should treat an ask
+  // carrying this as rule-forced -- the user's stated intent is a human prompt. Absent otherwise, and
+  // always absent for HOOK.
+  MatchedAskRule provider_matched_ask_rule = 9;
+}
+
+// The `permissions.ask` rule behind a provider prompt, verbatim from the SDK's `matchedAskRule`.
+message MatchedAskRule {
+  // Which settings tier the rule came from, e.g. "projectSettings", "localSettings".
+  string source = 1;
+  string tool_name = 2;
+  // The rule's content, e.g. "cat:*" for `Bash(cat:*)`; absent for a bare tool-name rule.
+  optional string rule_content = 3;
 }
 
 enum PermissionOutcome {

@@ -5,6 +5,8 @@ export type {
   TurnOutcome,
   SessionCloseReason,
   PermissionOutcome,
+  PermissionOrigin,
+  ProviderMatchedAskRule,
   TurnResultDetail,
   TurnUsage,
   AccountIdentity,
@@ -27,6 +29,9 @@ export {
   // actually got.
   CONSERVATIVE_BYPASS_DENY,
   usesDefaultBypassDeny,
+  // Same reason as CONSERVATIVE_BYPASS_DENY: one list of the tools a provider-prompt session loses.
+  PROVIDER_PROMPT_TOOL_DENY,
+  usesProviderPermissionPrompts,
   holdsFirstTurnForAccount,
   gateDecision,
   providerPermissionMode,
@@ -35,6 +40,6 @@ export {
 export type { QueryFn, SessionGuards, PermissionGateState } from './session.js';
 export type { GateDecision } from './permissionBroker.js';
 export type { AccountProbe } from './accountIdentity.js';
-export { PermissionBroker } from './permissionBroker.js';
+export { PermissionBroker, DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE } from './permissionBroker.js';
 export { resolveAccount, resolveAccountSpec, assertAccountUsable, accountEnv, applyAccountEnv, accountGlobalConfigPath, ACCOUNT_ENV_VARS, IDENTITY_SEED_ENV_VARS, DEFAULT_ACCOUNT_NAME } from './account.js';
 export type { ClaudeAccount } from './account.js';

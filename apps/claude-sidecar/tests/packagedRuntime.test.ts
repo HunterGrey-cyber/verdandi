@@ -45,6 +45,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     toolPolicy: undefined,
     settingSources: undefined,
     permissionModeSwitchable: false,
+    providerPermissionPrompts: false,
     ...extra,
   };
 }

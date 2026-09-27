@@ -64,6 +64,16 @@ export type ClaudeHostPolicy = {
    * CLI refuses to start with as root/sudo unless IS_SANDBOX=1 -- the reason it is not on by
    * default. Ignored for a session created under `bypass`. See the proto field of the same name. */
   permissionModeSwitchable?: boolean;
+  /** Opt-in, and only for an `interactive` session: route the CLI's OWN permission prompts to the
+   * host. Such a session gets an SDK `canUseTool` callback, so an ask the CLI raises after the
+   * PreToolUse gate already allowed the call -- its sensitive-file safety check on `.git/`,
+   * `.claude/` and the like, which no hook allow and no session rule silences -- becomes a
+   * `permission_requested` with `origin: 'provider_prompt'` and the CLI's own reason, instead of a
+   * refusal nobody was asked about. It also disallows `PROVIDER_PROMPT_TOOL_DENY`, the three tools
+   * the CLI adds once the SDK passes it `--permission-prompt-tool stdio`, so the model's tool set is
+   * the one it had without the flag. Tested for `true`, like `permissionModeSwitchable`; ignored under
+   * `verdandi_rules` and `bypass`. See `usesProviderPermissionPrompts` and the proto field. */
+  providerPermissionPrompts?: boolean;
 };
 
 export type ClaudeSessionConfig = {
@@ -144,6 +154,22 @@ export type ClaudeSessionConfig = {
 export type AccountIdentity =
   | { status: 'answered'; email: string | null; organization: string | null; subscriptionType: string | null; tokenSource: string | null }
   | { status: 'unavailable'; error: string };
+
+/**
+ * Which mechanism raised a `permission_requested`.
+ *
+ * - `hook`: the session's PreToolUse gate, which asks about every call of a gated session. The only
+ *   origin there was before `providerPermissionPrompts`.
+ * - `provider_prompt`: the CLI itself, through the SDK's `canUseTool`, after the gate had already
+ *   answered. Only a session with `providerPermissionPrompts` raises these, and on the measured CLI
+ *   (2.1.283) only for asks the CLI keeps for itself, such as its sensitive-file safety check: a call
+ *   the hook allowed raised none (spike variant a). Carries the same `toolUseId` as the hook request
+ *   that came first.
+ */
+export type PermissionOrigin = 'hook' | 'provider_prompt';
+
+/** The user-configured `permissions.ask` rule that forced a provider prompt (SDK `matchedAskRule`). */
+export type ProviderMatchedAskRule = { source: string; toolName: string; ruleContent?: string };
 
 export type PermissionOutcome =
   | 'allowed'
@@ -247,7 +273,30 @@ export type ClaudeRuntimeEvent =
   | { type: 'tool_call_started'; turnId: string; toolUseId: string; name: string; input: unknown }
   | { type: 'tool_call_completed'; turnId: string; toolUseId: string; content: unknown; isError: boolean }
   | { type: 'usage_updated'; totalCostUsd: number; numTurns: number }
-  | { type: 'permission_requested'; permissionId: string; toolUseId: string; toolName: string; input: unknown }
+  /** `origin` says what asked (see PermissionOrigin). The `provider*` fields are the CLI's own words
+   * for a `provider_prompt`, verbatim, each absent when the CLI gave none; a `hook` request never
+   * carries them. `providerMatchedAskRule` present means a user's `permissions.ask` rule forced this
+   * prompt: the SDK's own guidance is that a host doing host-side auto-approval treats such an ask as
+   * meant for a human.
+   *
+   * `toolUseId` is `''` when the CLI gave none: uncorrelatable, never to be matched against another
+   * request's empty id. */
+  | {
+      type: 'permission_requested';
+      permissionId: string;
+      toolUseId: string;
+      toolName: string;
+      input: unknown;
+      origin: PermissionOrigin;
+      /** SDK `decisionReason`. */
+      providerReason?: string;
+      /** SDK `description`. */
+      providerDescription?: string;
+      /** SDK `blockedPath`. */
+      providerBlockedPath?: string;
+      /** SDK `matchedAskRule`. */
+      providerMatchedAskRule?: ProviderMatchedAskRule;
+    }
   | { type: 'permission_resolved'; permissionId: string; outcome: PermissionOutcome }
   | ({ type: 'turn_completed'; turnId: string; outcome: TurnOutcome; resultText: string; isError: boolean; stopReason: string | null } & TurnResultDetail)
   | { type: 'session_closed'; reason: SessionCloseReason }

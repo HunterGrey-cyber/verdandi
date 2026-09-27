@@ -1,6 +1,12 @@
-import type { AccountIdentity as KernelAccountIdentity, ClaudeRuntimeEvent, TurnUsage as KernelTurnUsage } from '@verdandi/claude-runtime';
+import type {
+  AccountIdentity as KernelAccountIdentity,
+  ClaudeRuntimeEvent,
+  PermissionOrigin as KernelPermissionOrigin,
+  TurnUsage as KernelTurnUsage,
+} from '@verdandi/claude-runtime';
 import {
   PermissionMode,
+  PermissionOrigin,
   PermissionOutcome,
   TurnOutcome,
   SessionCloseReason,
@@ -56,6 +62,14 @@ const PERMISSION_OUTCOME_MAP: Record<string, PermissionOutcome> = {
   cancelled_by_session_close: PermissionOutcome.PERMISSION_OUTCOME_CANCELLED_BY_SESSION_CLOSE,
   provider_failed: PermissionOutcome.PERMISSION_OUTCOME_PROVIDER_FAILED,
   expired: PermissionOutcome.PERMISSION_OUTCOME_EXPIRED,
+};
+
+// Keyed by the kernel's own union, so a new kernel origin fails to compile here instead of falling
+// back to UNSPECIFIED -- which a client reads as HOOK, the origin a host's ordinary policy may answer
+// by itself.
+const PERMISSION_ORIGIN_MAP: Record<KernelPermissionOrigin, PermissionOrigin> = {
+  hook: PermissionOrigin.PERMISSION_ORIGIN_HOOK,
+  provider_prompt: PermissionOrigin.PERMISSION_ORIGIN_PROVIDER_PROMPT,
 };
 
 const RESUME_STATUS_MAP: Record<string, ResumeStatus> = {
@@ -159,6 +173,24 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           toolUseId: event.toolUseId,
           toolName: event.toolName,
           inputJson: JSON.stringify(event.input ?? null),
+          // Always stated. UNSPECIFIED is what a sidecar older than the field sends, so it is never
+          // chosen here for a known origin.
+          origin: PERMISSION_ORIGIN_MAP[event.origin] ?? PermissionOrigin.PERMISSION_ORIGIN_UNSPECIFIED,
+          // proto3 `optional`: absent stays absent, never an empty string a client would show as
+          // "the CLI gave an empty reason". `typeof`, not `!== undefined`: a non-string here would
+          // throw inside the encoder at broadcast time (the kernel already filters; this is the
+          // boundary that must not trust it).
+          ...(typeof event.providerReason === 'string' ? { providerReason: event.providerReason } : {}),
+          ...(typeof event.providerDescription === 'string' ? { providerDescription: event.providerDescription } : {}),
+          ...(typeof event.providerBlockedPath === 'string' ? { providerBlockedPath: event.providerBlockedPath } : {}),
+          providerMatchedAskRule:
+            event.providerMatchedAskRule === undefined
+              ? undefined
+              : {
+                  source: event.providerMatchedAskRule.source,
+                  toolName: event.providerMatchedAskRule.toolName,
+                  ...(typeof event.providerMatchedAskRule.ruleContent === 'string' ? { ruleContent: event.providerMatchedAskRule.ruleContent } : {}),
+                },
         },
       };
     case 'permission_resolved':

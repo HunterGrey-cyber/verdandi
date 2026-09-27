@@ -667,6 +667,9 @@ test('the advertised capability list is exactly this, in this order', async () =
     // ahead of the executable pair so that pair stays last.
     'set_permission_mode',
     'text_delta_message_id',
+    // Added 2026-09-27 for neovibe (the CLI's own permission prompts routed to the host): 24 -> 25
+    // entries in a checkout, 23 -> 24 packaged; ahead of the executable pair, which stays last.
+    'provider_permission_prompts',
     'executable_host_cli',
     'executable_sdk_bundled',
   ]);
@@ -833,6 +836,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     toolPolicy: undefined,
     settingSources: undefined,
     permissionModeSwitchable: false,
+    providerPermissionPrompts: false,
     ...extra,
   };
 }

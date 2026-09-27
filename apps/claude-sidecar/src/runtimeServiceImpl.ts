@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { isSea } from 'node:sea';
 import * as grpc from '@grpc/grpc-js';
-import { PermissionModeError, type ClaudeHostPolicy, type ClaudeAccount, type ClaudeSessionConfig } from '@verdandi/claude-runtime';
+import { PermissionModeError, PROVIDER_PROMPT_TOOL_DENY, usesProviderPermissionPrompts, type ClaudeHostPolicy, type ClaudeAccount, type ClaudeSessionConfig } from '@verdandi/claude-runtime';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import type { MinimalKernelSession } from './sessionRegistry.js';
 import { SessionRegistry, type SessionEntry } from './sessionRegistry.js';
@@ -429,6 +429,8 @@ export function mapClaudeHostPolicy(policy: ClaudeHostPolicyProto | undefined): 
     // Only `true` is forwarded: proto3 `false` is also what every sender that predates the field
     // sends, and the kernel tests for `true`.
     ...(policy.permissionModeSwitchable ? { permissionModeSwitchable: true } : {}),
+    // The same rule, for the same reason. The kernel decides where it applies (interactive only).
+    ...(policy.providerPermissionPrompts ? { providerPermissionPrompts: true } : {}),
   };
 }
 
@@ -450,6 +452,10 @@ export function mapClaudeHostPolicy(policy: ClaudeHostPolicyProto | undefined): 
  *      `unrestricted` discards a restriction the caller wrote down, and honouring the restriction
  *      re-applies a floor the caller explicitly declined -- and neither would leave anything on the
  *      wire to say which one happened. Refused, not resolved.
+ *   6. `provider_permission_prompts` in force together with an `allow.tools` naming one of the three
+ *      tools that flag disallows (PROVIDER_PROMPT_TOOL_DENY). Rule 4 again, with the flag as the
+ *      deny: the disallow wins, so the allow entry can only mislead, and the kernel's allow-list
+ *      invariant would then close the session over the missing tool at its first turn.
  */
 export type PolicyValidationOptions = {
   /** Whether this build can serve `executable: 'sdk_bundled'`. Defaults to the real runtime answer;
@@ -509,6 +515,18 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
         ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
         `tool_policy names ${name} in both deny and allow -- deny wins, so the allow entry can only mislead a reader`,
       );
+    }
+  }
+  // Rule 6, by the kernel's own predicate on the mapped policy, so "where the flag is in force" has one
+  // definition (UNSPECIFIED and UNRECOGNIZED map to interactive and count).
+  if (usesProviderPermissionPrompts(mapClaudeHostPolicy(policy))) {
+    for (const name of allow) {
+      if (PROVIDER_PROMPT_TOOL_DENY.includes(name)) {
+        throw new SidecarError(
+          ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+          `tool_policy.allow names ${name}, which provider_permission_prompts removes from the session (the CLI only offers it because of the prompt channel that flag opens) -- drop it from allow, or do not set the flag`,
+        );
+      }
     }
   }
 }
@@ -889,6 +907,10 @@ export function createRuntimeServiceImpl(
             'set_permission_mode',
             // TextDelta.message_id / ThinkingDelta.message_id, wired in the same commit.
             'text_delta_message_id',
+            // ClaudeHostPolicy.provider_permission_prompts (the kernel's canUseTool beside the gate,
+            // and the three prompt tools removed) and PermissionRequested.origin / provider_reason /
+            // provider_description, wired in the same commit.
+            'provider_permission_prompts',
             'executable_host_cli',
             ...(canRunSdkBundled ? ['executable_sdk_bundled'] : []),
           ],

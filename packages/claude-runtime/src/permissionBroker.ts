@@ -1,6 +1,50 @@
 import { randomUUID } from 'node:crypto';
-import type { HookCallback, HookCallbackMatcher, PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import type { ClaudeRuntimeEvent, PermissionOutcome } from './types.js';
+import type { CanUseTool, HookCallback, HookCallbackMatcher, PermissionResult, PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import type { ClaudeRuntimeEvent, PermissionOrigin, PermissionOutcome, ProviderMatchedAskRule } from './types.js';
+
+/** What a provider prompt the host denied without a (non-blank) reason tells the CLI -- and through
+ * the tool result, the model. The SDK's deny `message` is required, and an empty one would leave the
+ * model with a failed call and no words about why. */
+export const DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE = 'denied by the host';
+
+/** One request as the broker announces it. The provider fields are spread in only when present, so a
+ * hook request's event has no such keys at all. */
+type PermissionAsk = {
+  toolUseId: string;
+  toolName: string;
+  input: unknown;
+  origin: PermissionOrigin;
+  providerReason?: string;
+  providerDescription?: string;
+  providerBlockedPath?: string;
+  providerMatchedAskRule?: ProviderMatchedAskRule;
+};
+
+/** A provider field is forwarded only when it is really a string. The SDK passes the CLI's control
+ * request through unvalidated, and a `null` here would not throw until the proto encoder met it --
+ * while serializing the event for a watcher, after the prompt was already pending, so the prompt
+ * would never reach the host and the CLI would wait on it until an interrupt. */
+function providerString<K extends string>(key: K, value: unknown): { [P in K]?: string } {
+  return (typeof value === 'string' ? { [key]: value } : {}) as { [P in K]?: string };
+}
+
+/** `matchedAskRule`, forwarded only in the SDK's documented shape (strings; `ruleContent` optional). */
+function providerMatchedAskRule(value: unknown): { providerMatchedAskRule?: ProviderMatchedAskRule } {
+  if (typeof value !== 'object' || value === null) {
+    return {};
+  }
+  const rule = value as { source?: unknown; toolName?: unknown; ruleContent?: unknown };
+  if (typeof rule.source !== 'string' || typeof rule.toolName !== 'string') {
+    return {};
+  }
+  return {
+    providerMatchedAskRule: {
+      source: rule.source,
+      toolName: rule.toolName,
+      ...(typeof rule.ruleContent === 'string' ? { ruleContent: rule.ruleContent } : {}),
+    },
+  };
+}
 
 type PendingPermission = {
   toolUseId: string;
@@ -187,45 +231,19 @@ export class PermissionBroker {
         };
         return denied;
       }
-      const permissionId = randomUUID();
-      const decision = await new Promise<{ allow: boolean; reason?: string }>((resolve) => {
-        if (signal.aborted) {
-          // Already aborted before this callback even got to register a pending entry -- there
-          // is nothing in `pending` to remove (it was never added), so resolve this specific
-          // promise directly instead of going through the pending-map/emit machinery below.
-          resolve({ allow: false, reason: 'permission request expired (hook call already aborted)' });
-          return;
-        }
-        const onAbort = (): void => {
-          // The CLI's own hook timeout (spec §7.2's ~600s figure) or any other abort of this
-          // specific call gave up waiting on a decision. Global Constraint: fail closed -- and
-          // specifically, remove the entry so a LATER, stale `resolvePermission()`/`resolve()`
-          // call on this id can't write a false `permission_resolved: allowed/denied` for a
-          // request the CLI already gave up on (this package's whole purpose is that audit
-          // trail). Resolve this callback's own promise to deny too, so its returned
-          // `SyncHookJSONOutput` settles instead of hanging forever alongside the CLI's own
-          // already-abandoned wait.
-          if (this.pending.delete(permissionId)) {
-            this.emit({ type: 'permission_resolved', permissionId, outcome: 'expired' });
-          }
-          resolve({ allow: false, reason: 'permission request expired (hook call aborted)' });
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-        this.pending.set(permissionId, {
+      const decision = await this.ask(
+        {
           toolUseId: toolUseId ?? preToolUse.tool_use_id,
           toolName: preToolUse.tool_name,
           input: preToolUse.tool_input,
-          resolve,
-          cleanupAbortListener: () => signal.removeEventListener('abort', onAbort),
-        });
-        this.emit({
-          type: 'permission_requested',
-          permissionId,
-          toolUseId: toolUseId ?? preToolUse.tool_use_id,
-          toolName: preToolUse.tool_name,
-          input: preToolUse.tool_input,
-        });
-      });
+          origin: 'hook',
+        },
+        signal,
+        {
+          alreadyAborted: 'permission request expired (hook call already aborted)',
+          aborted: 'permission request expired (hook call aborted)',
+        },
+      );
       const output: SyncHookJSONOutput = {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -240,6 +258,123 @@ export class PermissionBroker {
     return timeoutSeconds === undefined
       ? { matcher: '*', hooks: [callback] }
       : { matcher: '*', hooks: [callback], timeout: timeoutSeconds };
+  }
+
+  /**
+   * Builds the SDK `canUseTool` callback a session with `providerPermissionPrompts` installs beside
+   * the PreToolUse hook. It answers the CLI's OWN permission prompts -- asks the CLI raises after the
+   * hook already allowed a call, of which the measured one is its sensitive-file safety check
+   * (`.git/`, `.claude/`, ...) -- by asking the host, through the same pending map, abort handling
+   * and `failAllPending` as a hook request. Without it such an ask has nowhere to go headlessly and
+   * the call is refused with nobody asked.
+   *
+   * Evidence, neovibe's O3 spike (2026-09-27, CLI 2.1.283, SDK 0.3.252): with the hook allowing
+   * every call, this callback fired for exactly the four sensitive writes and not for the ordinary
+   * one, carrying the hook request's own `toolUseID` and a `decisionReason` such as "Claude requested
+   * permissions to edit <path> which is a sensitive file."
+   *
+   * ### The answer, and what it must never carry
+   *
+   * - Host allow -> exactly `{ behavior: 'allow', updatedInput: input }`. NEVER `updatedPermissions`,
+   *   and never the CLI's `suggestions` in any form: in the spike, echoing the suggestion back
+   *   (`setMode acceptEdits`, destination session) silently switched the CLI session to
+   *   `acceptEdits` behind this host's gate state, and a session allow rule did not stop the next
+   *   safety-check ask anyway. `updatedInput` is the CLI's own input, unchanged: the host approved
+   *   what it was shown.
+   * - Host deny -> `{ behavior: 'deny', message }`, the host's reason or
+   *   DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE. No `interrupt`: the call fails, the turn goes on (spike
+   *   variant d: the model moved on, no retry, no stall).
+   * - Aborted by the SDK (the CLI cancelled the prompt, or the query ended), or failed closed by
+   *   `failAllPending` (interrupt, close, provider death) -> deny, with the same `expired` /
+   *   `cancelled_*` / `provider_failed` event a hook request gets. On CLI 2.1.283 an interrupt with a
+   *   prompt pending takes the first path: the CLI cancels the prompt (`expired`) before
+   *   `interrupt()` reaches `failAllPending` (tests/realSdk.providerPrompt.integration.test.ts).
+   *
+   * Beyond the reason and description, `blockedPath` and `matchedAskRule` are forwarded too: the SDK
+   * says a host running host-side auto-approval should treat an ask carrying `matchedAskRule` as
+   * rule-forced, so a host must be able to see it. Every provider field is forwarded only when it is
+   * really a string (see `providerString`).
+   *
+   * ### It never consults the gate
+   *
+   * The CLI calls this only when its own check wants an answer, so there is nothing to abstain to:
+   * abstaining would mean the refusal this callback exists to replace. Under `bypass` (reached by a
+   * switch) the SDK documents that the CLI does not call it; if a CLI ever does, the host is asked
+   * rather than the call being allowed on its behalf.
+   */
+  buildCanUseTool(): CanUseTool {
+    return async (toolName, input, options): Promise<PermissionResult> => {
+      const decision = await this.ask(
+        {
+          // Typed required by the SDK, but it is whatever the CLI's control request carried; an
+          // empty string rather than `undefined`/`null` keeps the event encodable on any wire. An empty
+          // id correlates with nothing (see the event type).
+          toolUseId: typeof options.toolUseID === 'string' ? options.toolUseID : '',
+          toolName,
+          input,
+          origin: 'provider_prompt',
+          ...providerString('providerReason', options.decisionReason),
+          ...providerString('providerDescription', options.description),
+          ...providerString('providerBlockedPath', options.blockedPath),
+          ...providerMatchedAskRule(options.matchedAskRule),
+        },
+        options.signal,
+        {
+          alreadyAborted: 'permission request expired (provider prompt already aborted)',
+          aborted: 'permission request expired (provider prompt aborted)',
+        },
+      );
+      if (decision.allow) {
+        return { behavior: 'allow', updatedInput: input };
+      }
+      const reason = decision.reason?.trim() ? decision.reason : DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE;
+      return { behavior: 'deny', message: reason };
+    };
+  }
+
+  /**
+   * Registers one request, announces it, and resolves with the host's decision -- or with a deny when
+   * `signal` aborts first, or already has. Shared by the hook and `canUseTool` so the two cannot
+   * differ in how a request is kept, expired or failed closed.
+   */
+  private ask(
+    request: PermissionAsk,
+    signal: AbortSignal,
+    expiredReason: { alreadyAborted: string; aborted: string },
+  ): Promise<{ allow: boolean; reason?: string }> {
+    const permissionId = randomUUID();
+    return new Promise<{ allow: boolean; reason?: string }>((resolve) => {
+      if (signal.aborted) {
+        // Already aborted before this callback even got to register a pending entry -- there
+        // is nothing in `pending` to remove (it was never added), so resolve this specific
+        // promise directly instead of going through the pending-map/emit machinery below.
+        resolve({ allow: false, reason: expiredReason.alreadyAborted });
+        return;
+      }
+      const onAbort = (): void => {
+        // The CLI's own hook timeout (spec §7.2's ~600s figure), the CLI cancelling a prompt, or
+        // any other abort of this specific call gave up waiting on a decision. Global Constraint:
+        // fail closed -- and specifically, remove the entry so a LATER, stale
+        // `resolvePermission()`/`resolve()` call on this id can't write a false
+        // `permission_resolved: allowed/denied` for a request the CLI already gave up on (this
+        // package's whole purpose is that audit trail). Resolve this call's own promise to deny
+        // too, so what it returns to the SDK settles instead of hanging forever alongside the
+        // CLI's own already-abandoned wait.
+        if (this.pending.delete(permissionId)) {
+          this.emit({ type: 'permission_resolved', permissionId, outcome: 'expired' });
+        }
+        resolve({ allow: false, reason: expiredReason.aborted });
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.pending.set(permissionId, {
+        toolUseId: request.toolUseId,
+        toolName: request.toolName,
+        input: request.input,
+        resolve,
+        cleanupAbortListener: () => signal.removeEventListener('abort', onAbort),
+      });
+      this.emit({ type: 'permission_requested', permissionId, ...request });
+    });
   }
 
   /** Called by the session actor's own public `resolvePermission` method. Returns `false` (no

@@ -80,10 +80,50 @@ export function usesDefaultBypassDeny(policy: ClaudeHostPolicy): boolean {
 }
 
 /**
+ * The tools the CLI adds to the model's context once the SDK passes it `--permission-prompt-tool
+ * stdio`, which the SDK does whenever `canUseTool` is set. Measured in neovibe's O3 spike (CLI
+ * 2.1.283, SDK 0.3.252): the same gated session reported 24 tools at system/init without the
+ * callback (t1) and 27 with it (t2), the extra three being exactly these.
+ *
+ * Disallowed on every session that gets the callback, so opting into provider prompts changes who
+ * answers the CLI's own asks and nothing about what the model can call. None of the three belongs in
+ * a host-gated session anyway: plan mode is a CLI-side permission posture of its own, and
+ * AskUserQuestion is an interactive dialog this protocol has no event for.
+ *
+ * Frozen for the reason CONSERVATIVE_BYPASS_DENY is: exported, so an unfrozen one is shared mutable
+ * state that decides what a session's model can see.
+ */
+export const PROVIDER_PROMPT_TOOL_DENY: readonly string[] = Object.freeze([
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+]);
+
+/**
+ * The one rule for whether a session routes the CLI's own permission prompts to the host: an
+ * `interactive` session whose policy states `providerPermissionPrompts: true`. Two call sites,
+ * `policyToBaseOptions` (the three tools above) and `createSession` (`canUseTool`), so the tools can
+ * never be removed from a session that does not get the callback, or the callback installed on one
+ * whose model can still reach them.
+ *
+ * `interactive` only: `bypass` installs no gate and its CLI does not ask, and `verdandi_rules` is left
+ * exactly as it was (a ruling of the change that added this; the kernel otherwise treats the two gated
+ * modes alike). Decided from the policy the session is CREATED with -- options reach the CLI once --
+ * so a later `setPermissionMode` neither installs nor removes the callback.
+ *
+ * Tested for `true`, never for presence: it arrives from a proto3 scalar.
+ */
+export function usesProviderPermissionPrompts(policy: ClaudeHostPolicy): boolean {
+  return policy.permissions === 'interactive' && policy.providerPermissionPrompts === true;
+}
+
+/**
  * Maps `ClaudeHostPolicy` (design doc §5.3) to the real SDK's `Options` fields this task's scope
  * covers. `permissions`/hook installation is Task 4's job -- this function must NOT set
  * `options.hooks` or `options.canUseTool`, so a caller who bypasses Task 4's `createSessionWithHook`
- * (Task 4 wraps this) never accidentally gets an unprotected session that looks configured.
+ * (Task 4 wraps this) never accidentally gets an unprotected session that looks configured. (It does
+ * remove `PROVIDER_PROMPT_TOOL_DENY` for a policy with `providerPermissionPrompts`; `createSession`
+ * installs the matching `canUseTool`.)
  *
  * ### What `configuration: 'isolated'` has to set, and why `settingSources` alone was not it
  *
@@ -195,6 +235,16 @@ export function policyToBaseOptions(
   // refused. Applied here for the same reason as the floor above -- a kernel consumer that does not
   // go through the sidecar (the M1 probe) must get exactly what a production session gets.
   deny.push(...webFetchDenyFor(policy));
+  // Here rather than beside `canUseTool` in `createSession`, for the reason above: a kernel consumer
+  // that builds its own Options from this function gets the same tool set a production session does.
+  // Appended after everything the caller stated, and only names not already there.
+  if (usesProviderPermissionPrompts(policy)) {
+    for (const tool of PROVIDER_PROMPT_TOOL_DENY) {
+      if (!deny.includes(tool)) {
+        deny.push(tool);
+      }
+    }
+  }
   if (deny.length > 0) {
     options.disallowedTools = deny;
   }
@@ -1064,8 +1114,8 @@ function classifyResumeFailure(err: unknown): 'rejected' | 'initialization_faile
 }
 
 /**
- * Every SDK `Options` field a session gets from its config, except `hooks` (which need the
- * session's own PermissionBroker and are installed by `createSession`).
+ * Every SDK `Options` field a session gets from its config, except `hooks` and `canUseTool` (which
+ * need the session's own PermissionBroker and are installed by `createSession`).
  *
  * A separate, pure function so the sidecar's CreateSessionRequest totality test can run a request
  * through the production mapping (`buildKernelSessionConfig`) AND this one and observe what the SDK
@@ -1143,6 +1193,13 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
   }
   if (config.policy.permissions !== 'bypass') {
     options.hooks = { PreToolUse: [broker.buildHookMatcher(config.permissionHookTimeoutSeconds)] };
+  }
+  // Beside the hook, never instead of it: the hook still asks about every call, and this answers only
+  // what the CLI asks on its own afterwards (see buildCanUseTool). Setting it makes the SDK pass
+  // `--permission-prompt-tool stdio`; `policyToBaseOptions` has already disallowed the three tools
+  // that adds, by the same predicate. Everyone else gets no `canUseTool`, exactly as before.
+  if (usesProviderPermissionPrompts(config.policy)) {
+    options.canUseTool = broker.buildCanUseTool();
   }
   const rawQuery = queryFn({ prompt: inputQueue.iterable, options });
   // Asked now, before this function returns and so before any sendTurn can exist, for every

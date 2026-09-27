@@ -104,6 +104,14 @@ const TABLE: Record<string, Row> = {
     b: { permissionModeSwitchable: true },
     observe: (o) => o.allowDangerouslySkipPermissions,
   },
+  // Its other half, `canUseTool`, is installed by createSession beside the hook and is not part of
+  // the Options policyToBaseOptions builds; the kernel's providerPermissionPrompts.test.ts pins it.
+  // The tool removal is here, decided by the same predicate.
+  providerPermissionPrompts: {
+    a: { providerPermissionPrompts: false },
+    b: { providerPermissionPrompts: true },
+    observe: (o) => o.disallowedTools,
+  },
 };
 
 /** A policy with every field at a stated, non-default value, so a row's `a`/`b` overlay changes one
@@ -119,6 +127,7 @@ const BASE: ClaudeHostPolicyProto = {
   toolPolicy: undefined,
   settingSources: undefined,
   permissionModeSwitchable: false,
+  providerPermissionPrompts: false,
 };
 
 function optionsFor(overlay: Partial<ClaudeHostPolicyProto>): Options {

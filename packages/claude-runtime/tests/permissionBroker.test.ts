@@ -195,3 +195,22 @@ test('an abort after failAllPending is also inert -- no double-resolve, no extra
   assert.equal(resolvedEvents.length, 1);
   assert.equal((resolvedEvents[0] as { outcome: string }).outcome, 'cancelled_by_interrupt');
 });
+
+// The two expiry reasons reach the CLI as permissionDecisionReason. Pinned since they became
+// arguments of the shared ask() (provider prompts pass their own pair), where a swap would be silent.
+test('the hook states which expiry happened: aborted while pending vs already aborted', async () => {
+  const input = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, tool_use_id: 'a', session_id: 's', transcript_path: '', cwd: '' } as never;
+  const reasonOf = (output: unknown): string | undefined =>
+    (output as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason;
+
+  const pending = makeBroker();
+  const controller = new AbortController();
+  const outputPromise = pending.broker.buildHookMatcher().hooks[0](input, 'a', { signal: controller.signal });
+  controller.abort();
+  assert.equal(reasonOf(await outputPromise), 'permission request expired (hook call aborted)');
+
+  const already = makeBroker();
+  const aborted = new AbortController();
+  aborted.abort();
+  assert.equal(reasonOf(await already.broker.buildHookMatcher().hooks[0](input, 'a', { signal: aborted.signal })), 'permission request expired (hook call already aborted)');
+});
