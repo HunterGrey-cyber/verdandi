@@ -331,7 +331,7 @@ export async function runCase(def: CaseDef, ctx: RunContext): Promise<CaseRecord
       const violations = checkChildOptions(kernelOptions, {
         account,
         cliPath: ctx.cliPath,
-        permissionMode: def.policy.permissions === 'bypass' ? 'bypassPermissions' : undefined,
+        permissionMode: def.policy.permissions === 'bypass' ? 'bypassPermissions' : 'default',
         settingSources: def.policy.settingSources ?? [],
         tools: def.policy.toolPolicy?.allow ?? [],
         disallowedTools: webFetchDenyFor(def.policy).length > 0 ? webFetchDenyFor(def.policy) : undefined,

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { policyToBaseOptions } from '@verdandi/claude-runtime';
+import { buildSessionOptions, policyToBaseOptions } from '@verdandi/claude-runtime';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { buildKernelSessionConfig } from '../src/runtimeServiceImpl.js';
 import {
@@ -153,5 +153,37 @@ test('every field on the wire ClaudeHostPolicy has an observable effect on the S
         + `both policies produced ${JSON.stringify(seenA)}. The field is being accepted on the wire `
         + `and then dropped -- the ClaudeHostPolicy.executable bug, again.`,
     );
+  }
+});
+
+/**
+ * Every wire PermissionMode -- UNSPECIFIED and ts-proto's UNRECOGNIZED included, since a client can
+ * send either -- reaches the SDK as an EXPLICIT `permissionMode`, fresh or resumed, switchable or
+ * not. The row above only proves `permissions` moves the field; this proves no value leaves it
+ * unset. Unset is not neutral: the CLI then takes its starting mode from `permissions.defaultMode`
+ * in the project/local settings tiers, which are files in the repository under work, so a gated
+ * session could start in `acceptEdits` (measured in the kernel's realSdk.defaultMode test).
+ * The field list comes from the generated enum, so a new mode fails here until it is mapped.
+ */
+test('every wire PermissionMode reaches the SDK as an explicit permissionMode, fresh or resumed', () => {
+  const modes = Object.values(PermissionMode).filter((v): v is PermissionMode => typeof v === 'number');
+  assert.equal(modes.length, 5, 'PermissionMode gained a member: decide what it maps to, then update this count');
+  for (const permissions of modes) {
+    for (const permissionModeSwitchable of [false, true]) {
+      for (const resumeProviderSessionId of [undefined, 'sess-resume']) {
+        const config = buildKernelSessionConfig(
+          { cwd: '/tmp/project', policy: { ...BASE, permissions, permissionModeSwitchable }, resumeProviderSessionId },
+          { hostCliPath: '/usr/local/bin/claude' },
+        );
+        const options = buildSessionOptions(config);
+        const label = `${PermissionMode[permissions]} switchable=${permissionModeSwitchable} resume=${String(resumeProviderSessionId)}`;
+        assert.equal(
+          options.permissionMode,
+          permissions === PermissionMode.PERMISSION_MODE_BYPASS ? 'bypassPermissions' : 'default',
+          label,
+        );
+        assert.equal(options.resume, resumeProviderSessionId, label);
+      }
+    }
   }
 });

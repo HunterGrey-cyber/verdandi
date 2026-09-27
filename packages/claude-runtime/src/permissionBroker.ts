@@ -60,10 +60,11 @@ type PendingPermission = {
  *
  * - `--permission-mode auto`: `Bash`, `Read` and `Write` all ran, no prompt, the file was really
  *   created. No hook means **no gate**, and the session looks entirely healthy.
- * - **No `--permission-mode` flag at all** -- which is what this package does for `interactive` and
- *   `verdandi_rules` -- reports `permissionMode: 'default'` at init, and the gate keeps CLASSIFYING
- *   rather than shutting. The decisive measurement is an A/B inside one session, same tool, only the
- *   path differing:
+ * - **No `--permission-mode` flag at all**, and no settings tier naming a mode, which the CLI
+ *   resolves to `default` -- the mode this package passes explicitly for `interactive` and
+ *   `verdandi_rules` (see `policyToBaseOptions` for why it must be explicit) -- reports
+ *   `permissionMode: 'default'` at init, and the gate keeps CLASSIFYING rather than shutting. The
+ *   decisive measurement is an A/B inside one session, same tool, only the path differing:
  *
  *   ```
  *   Read  <workdir>/inside.txt      -> succeeded

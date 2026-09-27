@@ -147,9 +147,27 @@ export function policyToBaseOptions(
     // until a whole assistant message lands -- measured at ~12s of silence for a 1500-word reply.
     includePartialMessages: policy.streaming === 'partial',
   };
-  if (policy.permissions === 'bypass') {
-    options.permissionMode = 'bypassPermissions';
-  } else if (policy.permissionModeSwitchable === true) {
+  // ALWAYS stated, gated modes included -- never left for something else to fill in. The CLI picks
+  // its starting mode from an ordered candidate list, first entry wins: `--permission-mode`, then
+  // `permissions.defaultMode` from the loaded settings tiers, project and local among them (CLI
+  // 2.1.283, the resolver that also prints "only policy/user/flag settings may grant bypass mode").
+  // Both of those tiers are files in the repository being worked on, and neovibe loads both. With
+  // no flag, a cloned repo's `.claude/settings.json` DOES start a gated session in `acceptEdits`
+  // (measured, tests/realSdk.defaultMode.integration.test.ts; 2.1.283 ignores `bypassPermissions`
+  // and `auto` from those tiers, a property of that build and not of anything here). Whatever the
+  // PreToolUse hook leaves undecided is then the repo's call, not the host's. The same test found
+  // the worst case feared for this -- a hook timeout falling through to `acceptEdits` -- does NOT
+  // happen on 2.1.283 (a timed-out hook's call is refused in any mode), so this is defence in depth
+  // against the next CLI or SDK, not a live hole on that pair.
+  //
+  // Leaving it unset was only safe by accident: SDK 0.3.252 substitutes `'default'` itself for an
+  // unset `permissionMode` (claude-agent-sdk/sdk.mjs:162, `permissionMode ??
+  // (resolvePermissionModeInCli ? undefined : 'default')`), behind an undocumented option that turns
+  // the substitution off. That is the SDK's default, not this package's decision, so it is made here.
+  // Resume goes through this function too. Same mapping `setPermissionMode` uses, so creation and
+  // switching cannot name different modes.
+  options.permissionMode = providerPermissionMode(policy.permissions);
+  if (policy.permissions !== 'bypass' && policy.permissionModeSwitchable === true) {
     // What makes a GATED session switchable to bypass later (`setPermissionMode`), and only when the
     // caller opted in: as root/sudo without IS_SANDBOX=1 the CLI exits 1 at startup with this flag
     // ("--dangerously-skip-permissions cannot be used with root/sudo privileges"). The CLI refuses
@@ -296,8 +314,9 @@ export function gateDecision(state: PermissionGateState, toolName: string): Gate
   return { kind: 'abstain' };
 }
 
-/** The provider-level mode each host-level mode runs as -- the same mapping `policyToBaseOptions`
- * applies at creation (bypass sets `bypassPermissions`; the gated modes set nothing, i.e. `default`). */
+/** The provider-level mode each host-level mode runs as. `policyToBaseOptions` sets exactly this at
+ * creation (bypass -> `bypassPermissions`; the gated modes -> `default`, stated explicitly so no
+ * settings tier's `permissions.defaultMode` can choose it), and `setPermissionMode` switches to it. */
 export function providerPermissionMode(permissions: ClaudeHostPolicy['permissions']): SdkPermissionMode {
   return permissions === 'bypass' ? 'bypassPermissions' : 'default';
 }

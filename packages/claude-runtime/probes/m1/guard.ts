@@ -51,7 +51,7 @@ export type ChildExpectation = {
   account: ClaudeAccount;
   cliPath: string;
   /** What the KERNEL must have set -- before the probe applies any override of its own. */
-  permissionMode: 'bypassPermissions' | undefined;
+  permissionMode: 'bypassPermissions' | 'default';
   settingSources: string[];
   /** `Options.tools` the kernel must have set; absent means `[]` (the zero-tool completion). */
   tools?: readonly string[];

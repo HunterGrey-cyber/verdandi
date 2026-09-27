@@ -48,7 +48,7 @@ test('policyToBaseOptions: native+host_cli maps to settingSources user/project/l
   const options = policyToBaseOptions(NATIVE_INTERACTIVE_POLICY, '/tmp/project');
   assert.deepEqual(options.settingSources, ['user', 'project', 'local']);
   assert.equal(options.persistSession, true);
-  assert.equal(options.permissionMode, undefined);
+  assert.equal(options.permissionMode, 'default');
 });
 
 /**
@@ -166,6 +166,51 @@ test('createSession threads the account through to the options the SDK actually 
 test('policyToBaseOptions: bypass permissions sets permissionMode bypassPermissions', () => {
   const options = policyToBaseOptions({ ...NATIVE_INTERACTIVE_POLICY, permissions: 'bypass' }, '/tmp/project');
   assert.equal(options.permissionMode, 'bypassPermissions');
+});
+
+/**
+ * A gated session STATES `default`; it never leaves the starting mode to be filled in. Unset, the CLI
+ * takes the first mode it finds, and after `--permission-mode` the next place it looks is
+ * `permissions.defaultMode` in the project and local settings tiers -- files in the repository being
+ * worked on, which a native session and neovibe (`[project, local]`) both load. So a cloned repo
+ * could start a gated session in `acceptEdits` (measured: realSdk.defaultMode.integration.test.ts),
+ * and whatever the hook leaves undecided would be that mode's call. (The pinned SDK happens to fill
+ * in `default` itself today; see policyToBaseOptions.)
+ *
+ * Every combination that could plausibly route around the assignment is walked, through the Options
+ * `createSession` actually hands the SDK -- not `policyToBaseOptions` alone -- because resume, fork,
+ * the switchable flag and the settings tiers are all layered on in different places.
+ */
+test('createSession: every gated session states permissionMode default, fresh or resumed; bypass states bypassPermissions', () => {
+  const gated: ClaudeHostPolicy['permissions'][] = ['interactive', 'verdandi_rules'];
+  const resumes: Array<Partial<Pick<ClaudeSessionConfig, 'resume' | 'fork'>>> = [
+    {},
+    { resume: { providerSessionId: 'sess-resume' } },
+    { resume: { providerSessionId: 'sess-resume' }, fork: true },
+  ];
+  let checked = 0;
+  for (const permissions of [...gated, 'bypass' as const]) {
+    for (const permissionModeSwitchable of [undefined, false, true]) {
+      for (const configuration of ['native', 'isolated'] as const) {
+        for (const settingSources of [undefined, [], ['project', 'local']] as ClaudeHostPolicy['settingSources'][]) {
+          for (const extra of resumes) {
+            const policy: ClaudeHostPolicy = { ...NATIVE_INTERACTIVE_POLICY, permissions, permissionModeSwitchable, configuration, settingSources };
+            const { session, options } = createSessionCapturingOptions(makeFakeQuery().query, policy, extra);
+            session.close();
+            const label = JSON.stringify({ policy, extra });
+            assert.equal(options.permissionMode, permissions === 'bypass' ? 'bypassPermissions' : 'default', label);
+            // The switchable flag still rides alongside `default`: it makes bypass AVAILABLE, never in force.
+            assert.equal(options.allowDangerouslySkipPermissions, permissions !== 'bypass' && permissionModeSwitchable === true ? true : undefined, label);
+            if (extra.resume !== undefined) {
+              assert.equal(options.resume, 'sess-resume', label);
+            }
+            checked += 1;
+          }
+        }
+      }
+    }
+  }
+  assert.equal(checked, 3 * 3 * 2 * 3 * 3);
 });
 
 test('createSession + pump: a system init message becomes session_ready', async () => {

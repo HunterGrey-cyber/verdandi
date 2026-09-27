@@ -70,12 +70,12 @@ test('only an opted-in gated session is launched with bypass AVAILABLE (never in
   for (const policy of [INTERACTIVE_FIXED, { ...INTERACTIVE, permissionModeSwitchable: undefined }, { ...INTERACTIVE, permissions: 'verdandi_rules' as const, permissionModeSwitchable: false }]) {
     const options = policyToBaseOptions(policy, '/tmp/project');
     assert.equal(options.allowDangerouslySkipPermissions, undefined, JSON.stringify(policy));
-    assert.equal(options.permissionMode, undefined);
+    assert.equal(options.permissionMode, 'default');
   }
   const gated = policyToBaseOptions(INTERACTIVE, '/tmp/project');
   // Without this the CLI refuses set_permission_mode bypassPermissions (`bypass_not_launched`).
   assert.equal(gated.allowDangerouslySkipPermissions, true);
-  assert.equal(gated.permissionMode, undefined, 'it must still START in default');
+  assert.equal(gated.permissionMode, 'default', 'it must still START in default -- stated, so no settings tier can choose it');
 
   const bypass = policyToBaseOptions({ ...BYPASS, permissionModeSwitchable: true }, '/tmp/project');
   assert.equal(bypass.permissionMode, 'bypassPermissions');
