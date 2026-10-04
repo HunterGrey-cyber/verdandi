@@ -233,6 +233,8 @@ test('createSession + pump: a system init message becomes session_ready', async 
       cwd: '/tmp/project',
       permissionMode: 'default',
       accountIdentity: accountIdentityFromInfo(FAKE_ACCOUNT_INFO),
+      // An interactive session with no tool policy hands the SDK no disallowedTools and no tools.
+      effectiveToolOptions: { disallowedTools: [] },
     },
   ]);
 });
@@ -277,6 +279,8 @@ test('pump: a message that arrives while a prior pump() call left its rawQuery.n
       cwd: '/tmp/project',
       permissionMode: 'default',
       accountIdentity: accountIdentityFromInfo(FAKE_ACCOUNT_INFO),
+      // An interactive session with no tool policy hands the SDK no disallowedTools and no tools.
+      effectiveToolOptions: { disallowedTools: [] },
     },
   ]);
 });

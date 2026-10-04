@@ -73,7 +73,33 @@ export type TranslationContext = {
    * function stays a pure function of one message. `undefined` leaves `messageId` off the deltas.
    */
   streamMessageId?: string;
+  /**
+   * Translate `system/permission_denied` into a `permission_denied` event. Absent or false: it stays
+   * the `provider_notice` it always was. Set by the session from its policy (see session.ts's
+   * `permissionDeniedEventsFor`), never by the message: whether a caller can take the event is a
+   * property of the caller.
+   */
+  permissionDeniedEvents?: boolean;
 };
+
+/** A string the SDK message really carried, or nothing: a drifted CLI that sends a non-string yields
+ * an absent field, never one the wire encoder would throw on. */
+function optionalString<K extends string>(key: K, value: unknown): { [P in K]?: string } {
+  return (typeof value === 'string' ? { [key]: value } : {}) as { [P in K]?: string };
+}
+
+/** SDK `system/permission_denied`, verbatim. `tool_use_id`/`tool_name` are required in the SDK's type
+ * but come from the CLI unvalidated, so a missing one becomes `''` rather than `undefined`. */
+function permissionDeniedOf(message: SDKMessage): ClaudeRuntimeEvent {
+  const raw = message as unknown as Record<string, unknown>;
+  return {
+    type: 'permission_denied',
+    toolUseId: typeof raw.tool_use_id === 'string' ? raw.tool_use_id : '',
+    toolName: typeof raw.tool_name === 'string' ? raw.tool_name : '',
+    ...optionalString('reasonType', raw.decision_reason_type),
+    ...optionalString('reason', raw.decision_reason),
+  };
+}
 
 /** A string id, or nothing: a drifted SDK that stops sending one yields no `messageId`, never a
  * made-up or non-string one. */
@@ -113,6 +139,9 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
             ...initFingerprintOf(message),
           },
         ];
+      }
+      if (message.subtype === 'permission_denied' && ctx.permissionDeniedEvents === true) {
+        return [permissionDeniedOf(message)];
       }
       return [{ type: 'provider_notice', kind: 'system', subtype: message.subtype, raw: message }];
     }

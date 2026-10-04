@@ -14,6 +14,8 @@ import {
   ExecutableSource,
   StreamingMode,
   SettingSource,
+  InitCheck,
+  CliPermissionMode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 import { buildKernelSessionConfig, type ClaudeSessionConfigLike } from '../src/runtimeServiceImpl.js';
 import { CONSERVATIVE_BYPASS_DENY, policyToBaseOptions } from '@verdandi/claude-runtime';
@@ -565,10 +567,11 @@ test('a CreateSession carrying setting_sources and tool_policy reaches the kerne
         persistence: PersistenceMode.PERSISTENCE_MODE_EPHEMERAL,
         executable: ExecutableSource.EXECUTABLE_SOURCE_HOST_CLI,
         streaming: StreamingMode.STREAMING_MODE_COMPLETE,
-        toolPolicy: { deny: [...CONSERVATIVE_BYPASS_DENY], allow: { tools: ['Read'] } },
+        toolPolicy: { deny: [...CONSERVATIVE_BYPASS_DENY], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } },
         settingSources: {
           sources: [SettingSource.SETTING_SOURCE_PROJECT, SettingSource.SETTING_SOURCE_LOCAL],
         },
+        cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
       },
     });
 

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import type { M1FixtureManifest } from '../probes/m1/report.js';
+import type { M1FixtureManifest } from './m1FixtureManifest.js';
 
 /**
- * Pins the M1 fixtures that P2 (kernel/sidecar), P3 (controlplane error mapping) and P6 (muninn
+ * Pins the M1 fixtures that P2 (kernel/sidecar), P3 (controlplane error mapping) and P6 (consumer
  * usage checks) build their tests on. These files are REAL recordings from the work account;
  * this suite checks they still say what the manifest claims, so a hand edit that turns them into
  * something no CLI ever produced fails here rather than in a later plan's green test.
@@ -32,7 +32,7 @@ test('m1 fixtures: v1 manifest, and every file it names exists', () => {
   }
 });
 
-test('m1 fixtures: the success result is a zero-tool structured result with the four muninn arrays', () => {
+test('m1 fixtures: the success result is a zero-tool structured result with the four consumer arrays', () => {
   const result = read(manifest.files.success_result as string) as Obj;
   assert.equal(result.type, 'result');
   assert.equal(result.subtype, 'success');

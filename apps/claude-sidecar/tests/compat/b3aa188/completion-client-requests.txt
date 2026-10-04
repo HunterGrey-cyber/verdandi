@@ -1,0 +1,46 @@
+# What the completion client and the pipeline client sent at Verdandi b3aa188, as protobuf bytes (hex),
+# one request per line: name<TAB>hex.
+#
+# Source of truth for "what those two clients send". One test reads it:
+#   completionClient.conformance.test.ts   decodes each line with the frozen TypeScript client, checks that it
+#                                          re-encodes to the same bytes and that tests/compat/completionClient.ts
+#                                          builds the same bytes, and replays the requests against the real sidecar.
+#
+# The bytes are NOT hand-built. A private test in the clients' own repository (skipped unless
+# VERDANDI_PRINT_GOLDEN=1, not part of this tree) ran the clients' real request construction -- the completion
+# client's session policy and CreateSessionRequest, the pipeline client's session start under bypass, its
+# follow-up turn and the close every run ends with -- against a recording server, and printed what arrived.
+# Every session id, path, prompt, schema and permission id is a placeholder (S, /work/run-1, SYSTEM, INPUT, p1).
+#
+# DO NOT REGENERATE THIS FILE FROM A LATER TREE. The point of it is that an old client keeps working against a
+# newer sidecar, and a later change to what the client sends (it will change on purpose) would silently move
+# the bytes and turn the guarantee into a description of the newer client. Edit it only to add a request an
+# old client was always able to send, from the b3aa188 tree.
+#
+#   handshake                                  HandshakeRequest{client_protocol_major: 3}
+#   completion_create_zero_tool                ISOLATED, BYPASS, HOST_CLI persistence and executable, an explicit
+#                                              EMPTY tool allow list, an explicit EMPTY setting-source list,
+#                                              system_prompt, output_format, model and effort chosen
+#   completion_create_zero_tool_default_model  the same with neither model nor effort (an absent field, not "")
+#   completion_create_web_tools                the same with tool_policy.allow = [WebFetch, WebSearch]
+#   pipeline_create_bypass                     NATIVE, BYPASS, HOST_CLI/HOST_CLI, tool_policy.unrestricted, no
+#                                              setting sources, no model, no effort
+#   pipeline_create_bypass_profile             the same with model and effort chosen
+#   watch_available_history                    WatchSessionEvents{start: AVAILABLE_HISTORY} (both clients)
+#   completion_send_turn, pipeline_send_turn   SendTurn with command_id "turn-S" (both clients)
+#   pipeline_send_turn_followup                the pipeline's second turn on the same session, "turn-2-S"
+#   resolve_permission_deny                    ResolvePermission{allow: false, reason} the completion client sends
+#                                              for every PermissionRequested (a bypass session never emits one)
+#   close_session                              CloseSession with command_id "close-S" (both clients, every exit path)
+handshake	0803
+completion_create_zero_tool	0a0b2f776f726b2f72756e2d31120e0802100318012001320212003a002a06736f6e6e657432066d656469756d3a0653595354454d424c0a4a7b2274797065223a226f626a656374222c2270726f70657274696573223a7b226f6b223a7b2274797065223a22626f6f6c65616e227d7d2c227265717569726564223a5b226f6b225d7d
+completion_create_zero_tool_default_model	0a0b2f776f726b2f72756e2d31120e0802100318012001320212003a003a0653595354454d424c0a4a7b2274797065223a226f626a656374222c2270726f70657274696573223a7b226f6b223a7b2274797065223a22626f6f6c65616e227d7d2c227265717569726564223a5b226f6b225d7d
+completion_create_web_tools	0a0b2f776f726b2f72756e2d3112230802100318012001321712150a0857656246657463680a095765625365617263683a002a06736f6e6e657432066d656469756d3a0653595354454d424c0a4a7b2274797065223a226f626a656374222c2270726f70657274696573223a7b226f6b223a7b2274797065223a22626f6f6c65616e227d7d2c227265717569726564223a5b226f6b225d7d
+pipeline_create_bypass	0a0b2f776f726b2f72756e2d31120c080110031801200132021801
+pipeline_create_bypass_profile	0a0b2f776f726b2f72756e2d31120c0801100318012001320218012a06736f6e6e657432066d656469756d
+watch_available_history	0a01531803
+completion_send_turn	0a015312067475726e2d531a05494e505554
+pipeline_send_turn	0a015312067475726e2d531a05494e505554
+pipeline_send_turn_followup	0a015312087475726e2d322d531a06494e50555432
+resolve_permission_deny	0a0153120a7265736f6c76652d70311a0270312a2c636f6d706c6574696f6e2073657373696f6e73206e657665722061736b20666f72207065726d697373696f6e
+close_session	0a01531207636c6f73652d53

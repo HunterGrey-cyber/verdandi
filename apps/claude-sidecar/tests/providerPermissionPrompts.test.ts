@@ -17,6 +17,8 @@ import {
   SessionEvent,
   StreamingMode,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
+  InitCheck,
+  CliPermissionMode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 /**
@@ -37,6 +39,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     settingSources: undefined,
     permissionModeSwitchable: false,
     providerPermissionPrompts: false,
+    cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
     ...extra,
   };
 }
@@ -80,7 +83,7 @@ test('validatePolicy: an allow list naming a prompt tool the flag removes is inv
   for (const tool of PROVIDER_PROMPT_TOOL_DENY) {
     for (const permissions of [PermissionMode.PERMISSION_MODE_INTERACTIVE, PermissionMode.PERMISSION_MODE_UNSPECIFIED]) {
       assert.throws(
-        () => validatePolicy(protoPolicy({ permissions, providerPermissionPrompts: true, toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read', tool] } } })),
+        () => validatePolicy(protoPolicy({ permissions, providerPermissionPrompts: true, toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read', tool], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } })),
         (err: unknown) => (err as { code: number }).code === ErrorCode.ERROR_CODE_INVALID_CONFIGURATION && (err as Error).message.includes(tool),
         `${tool} under ${PermissionMode[permissions]}`,
       );
@@ -89,11 +92,11 @@ test('validatePolicy: an allow list naming a prompt tool the flag removes is inv
 });
 
 test('validatePolicy: the same allow list is accepted where the flag does not apply, and an allow list without them is accepted with it', () => {
-  const allow = { unrestricted: false, deny: [], allow: { tools: ['Read', 'AskUserQuestion'] } };
+  const allow = { unrestricted: false, deny: [], allow: { tools: ['Read', 'AskUserQuestion'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } };
   assert.doesNotThrow(() => validatePolicy(protoPolicy({ toolPolicy: allow })));
   assert.doesNotThrow(() => validatePolicy(protoPolicy({ permissions: PermissionMode.PERMISSION_MODE_VERDANDI_RULES, providerPermissionPrompts: true, toolPolicy: allow })));
   assert.doesNotThrow(() => validatePolicy(protoPolicy({ permissions: PermissionMode.PERMISSION_MODE_BYPASS, providerPermissionPrompts: true, toolPolicy: allow })));
-  assert.doesNotThrow(() => validatePolicy(protoPolicy({ providerPermissionPrompts: true, toolPolicy: { unrestricted: false, deny: ['AskUserQuestion'], allow: { tools: ['Read'] } } })));
+  assert.doesNotThrow(() => validatePolicy(protoPolicy({ providerPermissionPrompts: true, toolPolicy: { unrestricted: false, deny: ['AskUserQuestion'], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } })));
   assert.doesNotThrow(() => validatePolicy(protoPolicy({ providerPermissionPrompts: true })));
 });
 

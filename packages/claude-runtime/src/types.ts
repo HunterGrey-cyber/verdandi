@@ -57,8 +57,12 @@ export type ClaudeHostPolicy = {
    * wanted every tool had to claim it wanted something narrower -- see `usesDefaultBypassDeny`.
    * `false` and absent mean the same thing (it arrives from a proto3 scalar, which is `false`
    * whenever the sender never heard of the field), so the predicate tests for `true`, never for
-   * presence. */
-  toolPolicy?: { deny?: string[]; allow?: string[]; unrestricted?: boolean };
+   * presence.
+   *
+   * `initCheck` says what happens when system/init's tool list does not match `allow` (see
+   * `InitCheckMode`). It belongs to the allow list and means nothing without one, so `createSession`
+   * refuses it when `allow` is absent. */
+  toolPolicy?: { deny?: string[]; allow?: string[]; unrestricted?: boolean; initCheck?: InitCheckMode };
   /** Opt-in: a GATED session may later be switched to `bypass` by `setPermissionMode`. Launches the
    * CLI with `allowDangerouslySkipPermissions` (`--allow-dangerously-skip-permissions`), which the
    * CLI refuses to start with as root/sudo unless IS_SANDBOX=1 -- the reason it is not on by
@@ -74,6 +78,43 @@ export type ClaudeHostPolicy = {
    * the one it had without the flag. Tested for `true`, like `permissionModeSwitchable`; ignored under
    * `verdandi_rules` and `bypass`. See `usesProviderPermissionPrompts` and the proto field. */
   providerPermissionPrompts?: boolean;
+  /** The CLI's own permission mode under the PreToolUse gate. `undefined` -- what every caller that
+   * predates the field passes -- is exactly the behaviour before it existed: the CLI runs `default`
+   * (or `bypassPermissions` under `bypass`) and no `permission_denied` event is ever produced.
+   *
+   * - `'default'`: the CLI mode is the same as `undefined`; stating it opts the session into
+   *   `permission_denied` events (see `permissionDeniedEventsFor`).
+   * - `'auto'`: the CLI runs its own `auto` mode, so a call the host DEFERS (`resolvePermission`
+   *   with `defer`) is decided by the CLI's auto-mode classifier. The gate is still installed and
+   *   still asks the host about every call first. Only valid with `permissions: 'interactive'` and
+   *   without `permissionModeSwitchable` -- see `cliPermissionModeProblem`. */
+  cliPermissionMode?: CliPermissionMode;
+};
+
+/** See `ClaudeHostPolicy.cliPermissionMode`. */
+export type CliPermissionMode = 'default' | 'auto';
+
+/**
+ * What a session does with an explicit allow list once system/init reports the tools the CLI built.
+ *
+ * - `verify` (and an absent `initCheck`, which means the same): any tool beyond the list (plus the
+ *   structured-output carrier), any named tool missing, or no tools list at all closes the session
+ *   with `tool_policy_violation` right after the session_ready that showed it.
+ * - `report_only`: the session_ready still carries `initFingerprint`, and nothing is closed; the
+ *   caller compares it with what it asked for. `allow` still becomes `Options.tools` exactly as under
+ *   `verify`.
+ *
+ * Either way the check can only detect and terminate. system/init is sent once the first turn's
+ * message has reached the CLI, so the model is already running, and under `bypass` (no PreToolUse
+ * gate) a tool call that starts before the close runs. Preventing a call needs a gate.
+ */
+export type InitCheckMode = 'verify' | 'report_only';
+
+/** `Options.disallowedTools` and `Options.tools` exactly as a session handed them to the SDK, recorded
+ * when the session was created. `tools` is absent when the session left the base tool set alone. */
+export type EffectiveToolOptions = {
+  disallowedTools: string[];
+  tools?: string[];
 };
 
 export type ClaudeSessionConfig = {
@@ -180,7 +221,11 @@ export type PermissionOutcome =
   /** Spec §7.2: the CLI's own hook timeout (or any other abort of that specific hook call) gave
    * up waiting on a decision before one was made. Distinct from `denied` so an audit trail never
    * conflates "a human/policy said no" with "nobody ever answered in time." */
-  | 'expired';
+  | 'expired'
+  /** The host answered with `defer`: no decision, so the CLI's own permission mode decided the call.
+   * Only ever produced by an explicit host answer, never by a timeout, abort or failure -- those
+   * all deny. */
+  | 'deferred';
 
 /**
  * Design doc §9.6 lists `limit_reached` as a fourth TurnOutcome. This package maps it from the
@@ -229,8 +274,8 @@ export type TurnResultDetail = {
   usage?: TurnUsage;
 };
 
-/** `tool_policy_violation`: the session closed itself because system/init reported tools beyond
- * what an explicit empty allow list permits -- see `initToolViolation`. */
+/** `tool_policy_violation`: the session closed itself because system/init's tools did not match a
+ * verified explicit allow list -- see `initToolViolation` and `InitCheckMode`. */
 export type SessionCloseReason = 'closed_by_host' | 'provider_exited' | 'provider_failed' | 'tool_policy_violation';
 
 /**
@@ -263,6 +308,9 @@ export type ClaudeRuntimeEvent =
       accountIdentity?: AccountIdentity;
       /** From system/init by `translateMessage`; see InitFingerprint for when it is absent. */
       initFingerprint?: InitFingerprint;
+      /** Set by the session (not by `translateMessage`) on every session_ready of a session that
+       * recorded the options it was created with -- every session `createSession` builds. */
+      effectiveToolOptions?: EffectiveToolOptions;
     }
   | { type: 'turn_started'; turnId: string }
   /** `messageId` is the Claude API message id the text belongs to (see TextDelta.message_id in the
@@ -326,6 +374,13 @@ export type ClaudeRuntimeEvent =
       forked: boolean;
       detail?: string;
     }
+  /** The CLI refused a tool call on its own, before asking anyone (SDK `system/permission_denied`):
+   * its auto-mode classifier, a settings deny rule, or its mode. Strings verbatim from the SDK
+   * message; `reasonType`/`reason` are absent when it gave none, and `toolUseId`/`toolName` are `''`.
+   * Only a session whose policy states `cliPermissionMode` produces it (`permissionDeniedEventsFor`);
+   * any other session gets the `provider_notice` it always got for this message. Informational: the
+   * CLI has already refused the call, and the model already has the refusal as the tool result. */
+  | { type: 'permission_denied'; toolUseId: string; toolName: string; reasonType?: string; reason?: string }
   /** Design doc §9.3/§10.2: any real SDK message this package does not specifically translate
    * lands here -- diagnostic only, never thrown, never silently dropped. `kind`/`subtype` mirror
    * the raw message's own `type`/`subtype` fields (when present) so a human can correlate this

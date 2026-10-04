@@ -5,7 +5,8 @@ import { makeFakeQuery } from './fakeQuery.js';
 import { m1Manifest, readM1Fixture } from './m1FixtureFiles.js';
 import { translateMessage } from '../src/eventTranslation.js';
 import { createSession, type ClaudeRuntimeSession } from '../src/session.js';
-import { STRUCTURED_OUTPUT_CARRIER_TOOLS, initToolViolation, permittedInitTools } from '../src/toolInvariant.js';
+import { STRUCTURED_OUTPUT_CARRIER_TOOLS, initCheckProblem, initToolViolation, permittedInitTools, verifiesInitTools } from '../src/toolInvariant.js';
+import { buildSessionOptions } from '../src/session.js';
 import type { ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig } from '../src/types.js';
 
 const COMPLETION: ClaudeHostPolicy = {
@@ -148,7 +149,7 @@ test('sessions without an empty allow list are never checked (the investigator s
   session.close();
 });
 
-// Muninn client spec §9.1 「录带工具时的初始化指纹」: the web-tools recording (promote-web) pins what
+// Consumer client spec §9.1 「录带工具时的初始化指纹」: the web-tools recording (promote-web) pins what
 // a tool-bearing completion's system/init reports -- exactly the carrier plus the two web tools --
 // and that WebFetch's own Haiku call was billed inside the proven session.
 test('the web-tools recording: init reports exactly the carrier plus WebFetch and WebSearch', () => {
@@ -171,4 +172,98 @@ test('M1 web replay: the recorded web init passes the web allow list and fails t
   passing.session.close();
   const zero = await replay({ policy: COMPLETION, outputFormat: SCHEMA }, [init, result]);
   assert.deepEqual(zero.events.at(-1), { type: 'session_closed', reason: 'tool_policy_violation' });
+});
+
+// ---- initCheck: absent and 'verify' behave as before the field existed; 'report_only' never closes ----
+
+/** The recording with one tool the allow list does not name, as a CLI that ignored the list would send it. */
+function recordingWithExtraTool(): unknown[] {
+  return (readM1Fixture('success_messages') as Array<Record<string, unknown>>).map((m) =>
+    m.type === 'system' && m.subtype === 'init' ? { ...m, tools: [...(m.tools as string[]), 'Bash'] } : m,
+  );
+}
+
+/** Events with the per-turn random id taken out, so two runs of one scenario compare equal. */
+function shapeOf(events: ClaudeRuntimeEvent[], turnId: string): unknown[] {
+  return events.map((e) => ('turnId' in e && e.turnId === turnId ? { ...e, turnId: '<turn>' } : e));
+}
+
+test('verifiesInitTools: no allow list is not checked; an allow list is verified unless it says report_only', () => {
+  assert.equal(verifiesInitTools({ policy: { ...COMPLETION, toolPolicy: undefined } }), undefined);
+  assert.equal(verifiesInitTools({ policy: { ...COMPLETION, toolPolicy: { unrestricted: true } } }), undefined);
+  assert.equal(verifiesInitTools({ policy: COMPLETION }), true, 'absent initCheck verifies');
+  assert.equal(verifiesInitTools({ policy: { ...COMPLETION, toolPolicy: { allow: [], initCheck: 'verify' } } }), true);
+  assert.equal(verifiesInitTools({ policy: { ...COMPLETION, toolPolicy: { allow: [], initCheck: 'report_only' } } }), false);
+});
+
+test('initCheck changes nothing the SDK is told: Options are identical for absent, verify and report_only', () => {
+  for (const allow of [[], ['WebFetch', 'WebSearch']]) {
+    const absent = buildSessionOptions({ cwd: '/tmp/project', policy: { ...COMPLETION, toolPolicy: { allow } }, outputFormat: SCHEMA });
+    for (const initCheck of ['verify', 'report_only'] as const) {
+      const stated = buildSessionOptions({ cwd: '/tmp/project', policy: { ...COMPLETION, toolPolicy: { allow, initCheck } }, outputFormat: SCHEMA });
+      assert.deepEqual(stated, absent, `${initCheck} with allow ${JSON.stringify(allow)}`);
+    }
+    assert.deepEqual(absent.tools, allow, 'Options.tools is the allow list as it is');
+  }
+});
+
+test('an extra init tool: absent initCheck and verify close the session the same way; report_only does not close', async () => {
+  const runs = new Map<string, { events: ClaudeRuntimeEvent[]; turnId: string; closed: boolean }>();
+  for (const initCheck of [undefined, 'verify', 'report_only'] as const) {
+    const policy: ClaudeHostPolicy = { ...COMPLETION, toolPolicy: initCheck === undefined ? { allow: [] } : { allow: [], initCheck } };
+    const { session, fake, turnId, events } = await replay({ policy, outputFormat: SCHEMA }, recordingWithExtraTool());
+    runs.set(String(initCheck), { events, turnId, closed: fake.controller.closed });
+    session.close();
+  }
+  const absent = runs.get('undefined')!;
+  const verify = runs.get('verify')!;
+  const reportOnly = runs.get('report_only')!;
+
+  assert.deepEqual(absent.events.at(-1), { type: 'session_closed', reason: 'tool_policy_violation' }, 'absent still verifies');
+  assert.equal(absent.closed, true);
+  assert.deepEqual(shapeOf(verify.events, verify.turnId), shapeOf(absent.events, absent.turnId), 'verify is absent, said explicitly');
+
+  assert.equal(reportOnly.events.some((e) => e.type === 'session_closed'), false, 'report_only never closes over the mismatch');
+  assert.equal(reportOnly.closed, false);
+  const ready = reportOnly.events.find((e) => e.type === 'session_ready');
+  assert.ok(ready?.type === 'session_ready');
+  assert.ok(ready.initFingerprint?.tools.includes('Bash'), 'the fingerprint still reports what the CLI built, extra tool included');
+  const completed = reportOnly.events.find((e) => e.type === 'turn_completed');
+  assert.ok(completed?.type === 'turn_completed');
+  assert.equal(completed.outcome, 'completed', 'the turn runs on');
+});
+
+test('report_only also tolerates a missing requested tool and a system/init with no tools list', async () => {
+  const init = readM1Fixture('success_web_init') as Record<string, unknown>;
+  const withoutWebSearch = { ...init, tools: (init.tools as string[]).filter((t) => t !== 'WebSearch') };
+  const result = { type: 'result', subtype: 'success', is_error: false, result: '', stop_reason: 'end_turn', structured_output: {} };
+  const web = (initCheck?: 'verify' | 'report_only'): ClaudeHostPolicy => ({
+    ...COMPLETION,
+    toolPolicy: initCheck === undefined ? { allow: ['WebFetch', 'WebSearch'] } : { allow: ['WebFetch', 'WebSearch'], initCheck },
+  });
+  const bare = { type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/tmp/project', permissionMode: 'bypassPermissions' };
+  for (const [name, messages] of [['missing WebSearch', [withoutWebSearch, result]], ['no tools list', [bare, result]]] as const) {
+    const verified = await replay({ policy: web(), outputFormat: SCHEMA }, [...messages]);
+    assert.deepEqual(verified.events.at(-1), { type: 'session_closed', reason: 'tool_policy_violation' }, `${name}: absent verifies`);
+    const reported = await replay({ policy: web('report_only'), outputFormat: SCHEMA }, [...messages]);
+    assert.equal(reported.events.some((e) => e.type === 'session_closed'), false, `${name}: report_only does not close`);
+    reported.session.close();
+  }
+});
+
+test('initCheck without an allow list is refused before any provider is started', () => {
+  assert.equal(initCheckProblem({ policy: COMPLETION }), null);
+  assert.equal(initCheckProblem({ policy: { ...COMPLETION, toolPolicy: { allow: [], initCheck: 'report_only' } } }), null);
+  for (const toolPolicy of [{ initCheck: 'verify' as const }, { deny: ['Bash'], initCheck: 'report_only' as const }, { unrestricted: true, initCheck: 'report_only' as const }]) {
+    let started = 0;
+    assert.throws(
+      () => createSession({ cwd: '/tmp/project', policy: { ...COMPLETION, toolPolicy } }, () => {
+        started += 1;
+        return makeFakeQuery().query;
+      }),
+      /initCheck is "(verify|report_only)" but there is no toolPolicy.allow/,
+      JSON.stringify(toolPolicy),
+    );
+    assert.equal(started, 0, 'no provider process for a policy that cannot be honoured');
+  }
 });

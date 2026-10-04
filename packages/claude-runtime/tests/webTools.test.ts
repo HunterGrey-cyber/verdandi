@@ -7,7 +7,7 @@ import { STRUCTURED_OUTPUT_CARRIER_TOOLS, initToolViolation, permittedInitTools,
 import { WEBFETCH_PRIVATE_DENY, webFetchDenyFor } from '../src/webFetchDeny.js';
 import type { ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig } from '../src/types.js';
 
-/** The tool-bearing completion (muninn client spec §9.1): the zero-tool policy plus two web tools. */
+/** The tool-bearing completion (consumer client spec §9.1): the zero-tool policy plus two web tools. */
 const WEB: ClaudeHostPolicy = {
   configuration: 'isolated',
   permissions: 'bypass',

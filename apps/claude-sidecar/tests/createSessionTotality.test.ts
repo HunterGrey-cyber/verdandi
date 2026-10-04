@@ -9,7 +9,7 @@ import { ClaudeHostPolicy, CreateSessionRequest, PermissionMode } from '../src/g
  * Every field on the wire `CreateSessionRequest` has an observable effect on the SDK `Options`.
  *
  * policyTotality.test.ts does this for ClaudeHostPolicy's fields; this file does it one level up,
- * for the request's own fields (muninn spec §6.3 P2). The failure it exists to catch is the one
+ * for the request's own fields (consumer spec §6.3 P2). The failure it exists to catch is the one
  * this repository has already shipped at this exact layer: `resume` was accepted on the wire and
  * dropped in the request -> kernel-config mapping, so a client asking to resume silently got a
  * fresh session. Two assertions, same shape as policyTotality's:
@@ -62,6 +62,17 @@ const TABLE: Record<string, Row> = {
   },
 };
 
+/**
+ * Request fields that are deliberately NOT session options: they change what the RPC itself does, so
+ * there is no `Options` difference to observe. Each one names the test that pins its effect instead;
+ * a field may only be listed here with such a test, never to make the first check pass.
+ */
+const NOT_AN_SDK_OPTION: Record<string, string> = {
+  awaitAccountIdentity:
+    'changes when CreateSession answers and what its response carries, not the session: explicitFields.test.ts '
+    + '("await_account_identity ...") pins both the set and the absent case',
+};
+
 const BASE: ClaudeSessionConfigLike = { cwd: '/tmp/project', policy: undefined };
 
 function optionsFor(overlay: Partial<ClaudeSessionConfigLike>): Options {
@@ -71,11 +82,19 @@ function optionsFor(overlay: Partial<ClaudeSessionConfigLike>): Options {
 test('every field on the wire CreateSessionRequest is represented in this table', () => {
   assert.deepEqual(
     Object.keys(CreateSessionRequest.create({})).sort(),
-    Object.keys(TABLE).sort(),
+    [...Object.keys(TABLE), ...Object.keys(NOT_AN_SDK_OPTION)].sort(),
     'A field was added to CreateSessionRequest in the .proto without a row here. Add the row (and the '
       + 'wiring it asserts) rather than deleting this check -- a request field accepted on the wire and '
       + 'dropped on the floor is exactly the failure this file exists to catch.',
   );
+});
+
+test('a request field that is not a session option leaves the SDK Options untouched', () => {
+  // The other half of listing it in NOT_AN_SDK_OPTION: if one of these ever started moving Options, it
+  // would belong in TABLE with a row of its own.
+  const base = optionsFor({});
+  assert.deepEqual(optionsFor({ awaitAccountIdentity: true }), base);
+  assert.deepEqual(optionsFor({ awaitAccountIdentity: false }), base);
 });
 
 test('every field on the wire CreateSessionRequest has an observable effect on the SDK Options', () => {

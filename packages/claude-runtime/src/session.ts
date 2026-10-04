@@ -2,14 +2,14 @@ import { query as realQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallbackMatcher, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { translateMessage, type TranslationContext } from './eventTranslation.js';
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, PermissionOutcome, SessionCloseReason, TurnOutcome } from './types.js';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, EffectiveToolOptions, PermissionOutcome, SessionCloseReason, TurnOutcome } from './types.js';
 import type { PermissionMode as SdkPermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { applyAccountEnv, type ClaudeAccount } from './account.js';
 import type { MinimalQuery } from './queryTypes.js';
-import { PermissionBroker, type GateDecision } from './permissionBroker.js';
+import { PermissionBroker, type GateDecision, type PermissionAnswer } from './permissionBroker.js';
 import { resultDetail } from './resultDetail.js';
 import { DEFAULT_ACCOUNT_INFO_TIMEOUT_MS, probeAccountIdentity, type AccountProbe } from './accountIdentity.js';
-import { initToolViolation, permittedInitTools, requiredInitTools } from './toolInvariant.js';
+import { initCheckProblem, initToolViolation, permittedInitTools, requiredInitTools, verifiesInitTools } from './toolInvariant.js';
 import { webFetchDenyFor } from './webFetchDeny.js';
 
 /**
@@ -118,6 +118,40 @@ export function usesProviderPermissionPrompts(policy: ClaudeHostPolicy): boolean
 }
 
 /**
+ * Why a policy's `cliPermissionMode` cannot be honoured as written, or `null` when it can. One rule for
+ * two callers: the sidecar refuses such a request as a client error before any session exists, and
+ * `createSession` refuses it for every other kernel caller.
+ *
+ * `'auto'` needs `interactive`. Under `bypass` there is no gate and the CLI runs `bypassPermissions`, so
+ * an auto classifier would decide nothing; under `verdandi_rules` the gate's answers come from rules
+ * rather than a host that could defer. And it cannot be `permissionModeSwitchable`: a session created
+ * in `auto` refuses every `setPermissionMode` (see there), so the flag would only launch the CLI with
+ * `--allow-dangerously-skip-permissions` for a switch that can never happen.
+ */
+export function cliPermissionModeProblem(policy: ClaudeHostPolicy): string | null {
+  if (policy.cliPermissionMode !== 'auto') {
+    return null;
+  }
+  if (policy.permissions !== 'interactive') {
+    return `cli_permission_mode auto needs permissions interactive, not ${policy.permissions}: the CLI's auto classifier only decides calls the host's gate leaves to it, which only an interactive session's host can do`;
+  }
+  if (policy.permissionModeSwitchable === true) {
+    return 'cli_permission_mode auto cannot be combined with permission_mode_switchable: a session created in auto refuses every permission-mode switch';
+  }
+  return null;
+}
+
+/**
+ * Whether a session turns the SDK's `system/permission_denied` into a `permission_denied` event: only
+ * when its policy STATES `cliPermissionMode`. Every other session gets the `provider_notice` it always
+ * got for that message -- the CLI emits it in `default` mode too (a settings tier's deny rule, for
+ * one), so gating it on `auto` alone would not keep it from a caller that never asked for it.
+ */
+export function permissionDeniedEventsFor(policy: ClaudeHostPolicy): boolean {
+  return policy.cliPermissionMode !== undefined;
+}
+
+/**
  * Maps `ClaudeHostPolicy` (design doc §5.3) to the real SDK's `Options` fields this task's scope
  * covers. `permissions`/hook installation is Task 4's job -- this function must NOT set
  * `options.hooks` or `options.canUseTool`, so a caller who bypasses Task 4's `createSessionWithHook`
@@ -206,7 +240,7 @@ export function policyToBaseOptions(
   // the substitution off. That is the SDK's default, not this package's decision, so it is made here.
   // Resume goes through this function too. Same mapping `setPermissionMode` uses, so creation and
   // switching cannot name different modes.
-  options.permissionMode = providerPermissionMode(policy.permissions);
+  options.permissionMode = providerPermissionMode(policy.permissions, policy.cliPermissionMode);
   if (policy.permissions !== 'bypass' && policy.permissionModeSwitchable === true) {
     // What makes a GATED session switchable to bypass later (`setPermissionMode`), and only when the
     // caller opted in: as root/sudo without IS_SANDBOX=1 the CLI exits 1 at startup with this flag
@@ -366,9 +400,15 @@ export function gateDecision(state: PermissionGateState, toolName: string): Gate
 
 /** The provider-level mode each host-level mode runs as. `policyToBaseOptions` sets exactly this at
  * creation (bypass -> `bypassPermissions`; the gated modes -> `default`, stated explicitly so no
- * settings tier's `permissions.defaultMode` can choose it), and `setPermissionMode` switches to it. */
-export function providerPermissionMode(permissions: ClaudeHostPolicy['permissions']): SdkPermissionMode {
-  return permissions === 'bypass' ? 'bypassPermissions' : 'default';
+ * settings tier's `permissions.defaultMode` can choose it; `interactive` with `cliPermissionMode`
+ * `'auto'` -> `auto`), and `setPermissionMode` switches to it -- never with `'auto'`, since a session
+ * created in auto refuses every switch. `cliPermissionMode` changes nothing for any other combination:
+ * `cliPermissionModeProblem` refuses `'auto'` outside `interactive` before a session exists. */
+export function providerPermissionMode(permissions: ClaudeHostPolicy['permissions'], cliPermissionMode?: ClaudeHostPolicy['cliPermissionMode']): SdkPermissionMode {
+  if (permissions === 'bypass') {
+    return 'bypassPermissions';
+  }
+  return permissions === 'interactive' && cliPermissionMode === 'auto' ? 'auto' : 'default';
 }
 
 /** Why `setPermissionMode` refused, for a host that maps failures to its own error codes. */
@@ -405,13 +445,20 @@ export type SessionGuards = {
   requiredInitTools?: readonly string[];
   /** Enables `setPermissionMode`: the gate's shared state and the policy the session was created
    * with. Absent (a session built directly in a test), `setPermissionMode` refuses. */
-  permissionSwitch?: { state: PermissionGateState; policy: ClaudeHostPolicy };
+  permissionSwitch?: { state: PermissionGateState; policy: Readonly<ClaudeHostPolicy> };
+  /** The tool options the session handed the SDK. When present, every session_ready reports them as
+   * `effectiveToolOptions`, so a host reads what was applied instead of re-deriving it from its
+   * request. */
+  effectiveToolOptions?: EffectiveToolOptions;
+  /** Translate `system/permission_denied` into `permission_denied` events (see
+   * `permissionDeniedEventsFor`). Absent or false: the `provider_notice` it always was. */
+  permissionDeniedEvents?: boolean;
 };
 
 /**
  * Whether a session holds its first turn until the account probe answers: only a completion-shaped
  * one -- an explicit EMPTY allow list, or an output format. Those are the sessions that must not
- * spend before the account is known (muninn spec §6.3 P2), and a bounded wait on a slow CLI is
+ * spend before the account is known (consumer spec §6.3 P2), and a bounded wait on a slow CLI is
  * theirs to pay. Every other session -- the investigator chain's `unrestricted`, Neovibe's
  * interactive ones -- asks alongside its first turn and never waits, so a CLI whose accountInfo()
  * is slow or hangs cannot delay them (spec §6.3: that chain's behaviour stays unchanged).
@@ -520,7 +567,13 @@ export class ClaudeRuntimeSession {
     });
     this.holdFirstTurnForAccount = guards.holdFirstTurnForAccount === true;
     this.permissionSwitch = guards.permissionSwitch;
+    this.effectiveToolOptions = guards.effectiveToolOptions;
+    this.permissionDeniedEvents = guards.permissionDeniedEvents === true;
   }
+
+  private readonly permissionDeniedEvents: boolean;
+
+  private readonly effectiveToolOptions: EffectiveToolOptions | undefined;
 
   private readonly permissionSwitch: SessionGuards['permissionSwitch'];
   /** Serialises `setPermissionMode` calls, so two overlapping switches apply in call order and the
@@ -549,6 +602,15 @@ export class ClaudeRuntimeSession {
   accountIdentity(): Promise<AccountIdentity | undefined> {
     return this.accountProbe?.identity ?? Promise.resolve(undefined);
   }
+
+  /** Why this session ended, or `undefined` while it is alive. Set synchronously by the same step
+   * that ends the session (and that settles the account probe), so code resuming after that probe
+   * settled already sees it -- unlike anything a host removes in a later callback. */
+  closeReason(): SessionCloseReason | undefined {
+    return this.terminalReason;
+  }
+
+  private terminalReason: SessionCloseReason | undefined;
 
   private readonly resumeIntent: ResumeIntent | undefined;
   /** At most one `resume_outcome` per session. A rejection is followed by a provider failure, and
@@ -734,6 +796,7 @@ export class ClaudeRuntimeSession {
       return;
     }
     this.terminal = true;
+    this.terminalReason = reason;
     this.pendingNext = undefined;
     this.permissionBroker.failAllPending(permissionOutcome);
     this.drainPendingPermissionEvents(sink);
@@ -797,6 +860,8 @@ export class ClaudeRuntimeSession {
       partialStreaming: this.partialStreaming,
       streamedSinceLastAssistant: this.streamedSinceLastAssistant,
       streamMessageId: streamKey === undefined ? undefined : this.streamMessageIds.get(streamKey),
+      // Only when true, so a session that did not opt in builds exactly the context it always did.
+      ...(this.permissionDeniedEvents ? { permissionDeniedEvents: true } : {}),
     };
     const events = translateMessage(message, ctx);
     // Maintained here rather than inside translateMessage, which stays a pure function of one
@@ -823,6 +888,12 @@ export class ClaudeRuntimeSession {
         // answer if it is in (later turns' inits will carry it if not); the fallback covers an
         // init that arrives without one, and says so rather than leaving the field out.
         ready.accountIdentity = this.settledAccountIdentity ?? { status: 'unavailable', error: 'accountInfo() had not answered when system/init arrived' };
+      }
+      if (this.effectiveToolOptions !== undefined) {
+        // A fresh copy per event: each one goes to its own consumers, none of which may change what
+        // the next one reports.
+        const { disallowedTools, tools } = this.effectiveToolOptions;
+        ready.effectiveToolOptions = { disallowedTools: [...disallowedTools], ...(tools === undefined ? {} : { tools: [...tools] }) };
       }
       if (this.permittedInitTools !== undefined) {
         // Every session_ready, not only the first: the CLI re-sends system/init at each turn.
@@ -861,7 +932,7 @@ export class ClaudeRuntimeSession {
     };
     if (this.holdFirstTurnForAccount && this.accountProbe !== undefined && this.settledAccountIdentity === undefined) {
       // Held, not sent: the provider sees no input -- and so spends nothing -- until the session
-      // knows which account it is running as (muninn spec §6.3 P2). Only a completion-shaped
+      // knows which account it is running as (consumer spec §6.3 P2). Only a completion-shaped
       // session gets here (see holdsFirstTurnForAccount), and only ever for its first turn: once
       // the probe has settled, this branch is never taken again. sendTurn itself stays synchronous.
       this.heldFirstTurn = { turnId };
@@ -884,7 +955,9 @@ export class ClaudeRuntimeSession {
     return { turnId };
   }
 
-  resolvePermission(permissionId: string, decision: { allow: boolean; reason?: string }): boolean {
+  /** Answers one pending request; see `PermissionBroker.resolve`, including what `defer` does and
+   * when it throws `PermissionAnswerError`. */
+  resolvePermission(permissionId: string, decision: PermissionAnswer): boolean {
     return this.permissionBroker.resolve(permissionId, decision);
   }
 
@@ -909,6 +982,11 @@ export class ClaudeRuntimeSession {
    *   BEFORE the CLI is told; entering it, the gate stops asking only AFTER the CLI acknowledged. A
    *   CLI refusal restores the gate as it was.
    * - Pending permission requests are left pending.
+   * - A session created with `cliPermissionMode: 'auto'` refuses every switch (kind `refused`), before
+   *   the CLI is asked. Its CLI runs `auto`, and no target maps back to it: switching to a gated mode
+   *   would put the CLI in `default` and silently drop the mode the host created the session in, and
+   *   the CLI's own `auto` -> `bypassPermissions` transition is unmeasured. A host that wants another
+   *   mode creates another session.
    */
   setPermissionMode(mode: ClaudeHostPolicy['permissions']): Promise<{ permissionMode: string; bypassDefaultDenyApplied: boolean }> {
     const run = () => this.applyPermissionMode(mode);
@@ -924,6 +1002,12 @@ export class ClaudeRuntimeSession {
     const sw = this.permissionSwitch;
     if (sw === undefined) {
       throw new PermissionModeError('refused', 'this session was built without a switchable permission gate');
+    }
+    if (sw.policy.cliPermissionMode === 'auto') {
+      throw new PermissionModeError(
+        'refused',
+        `this session was created with cli_permission_mode auto, so its CLI runs in auto and no permission-mode switch maps back to it: switching to ${mode} would silently drop auto. Create a new session for a different mode.`,
+      );
     }
     const createdUnderBypass = sw.policy.permissions === 'bypass';
     if (!createdUnderBypass && mode === 'bypass' && sw.policy.permissionModeSwitchable !== true) {
@@ -1152,6 +1236,16 @@ export function buildSessionOptions(config: ClaudeSessionConfig): Options {
 }
 
 export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = realQuery as unknown as QueryFn): ClaudeRuntimeSession {
+  // Before anything is built or spawned: a check the caller believes is configured but that has no
+  // allow list to run against would be silently skipped.
+  const initCheck = initCheckProblem(config);
+  if (initCheck !== null) {
+    throw new Error(initCheck);
+  }
+  const cliMode = cliPermissionModeProblem(config.policy);
+  if (cliMode !== null) {
+    throw new Error(cliMode);
+  }
   const options = buildSessionOptions(config);
   const inputQueue = makeInputQueue();
   // A placeholder session instance whose only job is to hold the PermissionBroker that
@@ -1166,9 +1260,18 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
   const events: ClaudeRuntimeEvent[] = [];
   const pendingPermissionEvents: ClaudeRuntimeEvent[] = [];
   const gateState: PermissionGateState = { permissions: config.policy.permissions, bypassFloor: false };
+  // The facts that decide who may switch to bypass and who may defer, read once: the caller keeps its
+  // own policy object, and a later edit to it must not let one session both defer and switch.
+  const creationPolicy: Readonly<ClaudeHostPolicy> = Object.freeze({ ...config.policy });
   const broker = new PermissionBroker(
     (event) => pendingPermissionEvents.push(event),
     (toolName) => gateDecision(gateState, toolName),
+    // A session that can be switched to bypass refuses every deferral: see PermissionBroker.resolve.
+    // Decided from the policy it was created with, which is also what decides whether it can switch.
+    () =>
+      creationPolicy.permissionModeSwitchable === true
+        ? 'this session was created with permission_mode_switchable, and a host that can switch a session to bypass cannot also leave decisions to the CLI\'s mode (a switch can reach the CLI before it acts on the deferral)'
+        : null,
   );
   // Announced, never silent. `policyToBaseOptions` above has just narrowed this session's tools in a
   // way the caller did not ask for, and under `bypass` there is no PreToolUse hook to surface it
@@ -1219,9 +1322,19 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
     {
       accountProbe,
       holdFirstTurnForAccount: holdsFirstTurnForAccount(config),
-      permittedInitTools: permittedInitTools(config),
-      requiredInitTools: requiredInitTools(config),
-      permissionSwitch: { state: gateState, policy: config.policy },
+      // Only a verified allow list closes the session; `report_only` leaves both lists unset, so the
+      // fingerprint is reported and nothing is compared.
+      ...(verifiesInitTools(config) === true ? { permittedInitTools: permittedInitTools(config), requiredInitTools: requiredInitTools(config) } : {}),
+      permissionSwitch: { state: gateState, policy: creationPolicy },
+      permissionDeniedEvents: permissionDeniedEventsFor(config.policy),
+      // Copied from the options object `queryFn` was just handed, after every addition to it, so what
+      // session_ready reports is what the SDK was told.
+      effectiveToolOptions: {
+        disallowedTools: [...(options.disallowedTools ?? [])],
+        // Only ever a list here (`policyToBaseOptions`); the SDK's other form, the `claude_code` preset,
+        // means the default tool set, which is what an absent `tools` reports.
+        ...(Array.isArray(options.tools) ? { tools: [...options.tools] } : {}),
+      },
     },
   );
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { M1FixtureManifest } from '../probes/m1/report.js';
+import type { M1FixtureManifest } from './m1FixtureManifest.js';
 
 /**
  * Read access to the M1 recordings P1 committed (`tests/fixtures/m1/`, schema

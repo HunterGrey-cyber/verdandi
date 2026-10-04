@@ -1,10 +1,10 @@
 # verdandi
 
 A Claude Code runtime and a gRPC sidecar that exposes it. This is the agent backend
-[neovibe](https://github.com/HunterGrey-cyber/neovibe) uses: neovibe starts the sidecar as a child
+[Eitri](https://github.com/HunterGrey-cyber/eitri) uses: Eitri starts the sidecar as a child
 process and talks to it over a Unix domain socket.
 
-It is a subset of a larger private repository, published as-is. Expect it to move with neovibe's
+It is a subset of a larger private repository, published as-is. Expect it to move with Eitri's
 needs rather than to offer a stable general-purpose API.
 
 ## What is here

@@ -1,7 +1,7 @@
 import { connect, createServer, type AddressInfo } from 'node:net';
 
 /**
- * Whether this sidecar claims to run with restricted network egress (muninn client spec §9.1: a
+ * Whether this sidecar claims to run with restricted network egress (consumer client spec §9.1: a
  * tool-bearing completion's sidecar cannot reach RFC1918, loopback or link-local addresses).
  *
  * The restriction itself is not this process's to impose: it is the cgroup's, a system-level

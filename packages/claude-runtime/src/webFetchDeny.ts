@@ -1,7 +1,7 @@
 import type { ClaudeHostPolicy } from './types.js';
 
 /**
- * WebFetch deny rules every session gets whose explicit allow list names WebFetch (muninn client
+ * WebFetch deny rules every session gets whose explicit allow list names WebFetch (consumer client
  * spec §9.1: 「WebFetch 的域名拒绝规则作纵深防御」). They are the SECOND line: the first is the
  * network itself -- a tool-bearing completion runs in a sidecar whose cgroup cannot reach RFC1918,
  * loopback, link-local or a proxy's own TUN gateway (a systemd slice with `IPAddressDeny=`,

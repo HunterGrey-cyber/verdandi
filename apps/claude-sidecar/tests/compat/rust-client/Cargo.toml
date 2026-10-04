@@ -1,0 +1,15 @@
+[package]
+name = "verdandi-old-client-b3aa188"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Test-only: the Rust types Eitri 0.2.0 was built against (Verdandi b3aa188's runtime.proto), compiled from the frozen copy in ../b3aa188/."
+
+# Same tonic/prost line as crates/claude-runtime-protocol, which is what Eitri 0.2.0 depends on.
+[dependencies]
+tonic = "0.14"
+prost = "0.14"
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"

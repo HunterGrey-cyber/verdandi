@@ -41,6 +41,35 @@ message HandshakeResponse {
   // ACCOUNT_BINDING_PINNED). This is what the operator configured, not proof of whose login is stored
   // there; SessionReady.account_identity is that proof.
   string account_config_dir = 14;
+
+  // Whether this process ran the startup egress probe, and what it found. Reported, never configured
+  // by the client: the operator asks for the probe (VERDANDI_CLAUDE_SIDECAR_EGRESS=restricted) and the
+  // sidecar reports the result. The probe connects to a listener this process opens on 127.0.0.1; it
+  // tests loopback only, not private address ranges in general. A sidecar whose probe reached loopback
+  // refuses to start, so a running sidecar never reports LOOPBACK_REACHABLE today.
+  //
+  // UNSPECIFIED means a sidecar older than this field. Capability 'egress_probe'.
+  EgressProbe egress_probe = 15;
+
+  // The tool names the CLI adds by itself to a session that has CreateSessionRequest.output_format: it
+  // delivers structured output through a synthetic tool call, so such a session's
+  // SessionReady.init_fingerprint.tools lists these beside the allow list even though nobody asked for
+  // them. A client that compares the fingerprint with what it requested reads the names from here
+  // rather than writing them into its own code. Measured, not assumed: a CLI release that renames the
+  // carrier changes this list together with a new recording. Capability 'structured_output_tools'.
+  repeated string structured_output_tools = 16;
+}
+
+enum EgressProbe {
+  EGRESS_PROBE_UNSPECIFIED = 0;
+  // The operator did not ask for the probe; nothing is claimed about this process's egress.
+  EGRESS_PROBE_NOT_RUN = 1;
+  // The probe completed a connection to loopback. Reserved for completeness: such a sidecar refuses to
+  // start instead of answering a handshake.
+  EGRESS_PROBE_LOOPBACK_REACHABLE = 2;
+  // The probe could not reach loopback within its deadline. Also advertised as the capability
+  // 'egress_restricted'.
+  EGRESS_PROBE_LOOPBACK_BLOCKED = 3;
 }
 
 enum AccountBinding {
@@ -92,6 +121,26 @@ enum PermissionMode {
   PERMISSION_MODE_BYPASS = 3;
 }
 
+// Which permission mode the CLI itself runs in under a gated session (ClaudeHostPolicy
+// .cli_permission_mode). Capability 'cli_auto_mode'. The sidecar's PreToolUse gate is installed either
+// way and still asks the host about every call; this only decides what the CLI does with a call the
+// host leaves to it (ResolvePermissionRequest.defer).
+enum CliPermissionMode {
+  // What every client that predates the field sends. Means DEFAULT, and nothing else changes: the
+  // session behaves exactly as it did before the field existed, PermissionDenied events included
+  // (it gets none; see that message).
+  CLI_PERMISSION_MODE_UNSPECIFIED = 0;
+  // The CLI runs in `default`, as an UNSPECIFIED session does. Stating it opts the session into
+  // PermissionDenied events.
+  CLI_PERMISSION_MODE_DEFAULT = 1;
+  // The CLI runs in `auto`: a call the host defers is decided by the CLI's own auto-mode classifier
+  // instead of being asked about. Only with PERMISSION_MODE_INTERACTIVE (or UNSPECIFIED, read as
+  // INTERACTIVE); combined with VERDANDI_RULES or BYPASS, or with permission_mode_switchable, it is
+  // refused with INVALID_CONFIGURATION. SessionReady.permission_mode then reports `auto`, the CLI's
+  // own word for it. Opts the session into PermissionDenied events too.
+  CLI_PERMISSION_MODE_AUTO = 2;
+}
+
 enum PersistenceMode {
   PERSISTENCE_MODE_UNSPECIFIED = 0;
   PERSISTENCE_MODE_HOST_CLI = 1;
@@ -130,6 +179,33 @@ enum StreamingMode {
 // touch the base tool set. Present+empty => no built-in tools at all, stated.
 message ToolAllowList {
   repeated string tools = 1;
+
+  // What the sidecar does with the session's tool list as the CLI reports it in system/init. It lives
+  // here, on the allow list, because there is only something to check when the caller stated one.
+  // Capability 'init_check'; an older sidecar ignores the field and verifies, which is what
+  // UNSPECIFIED means. A value this sidecar does not know is refused as INVALID_CONFIGURATION.
+  InitCheck init_check = 2;
+}
+
+// The tool-set check on an explicit allow list. The sidecar compares system/init's tool list with the
+// allow list (plus HandshakeResponse.structured_output_tools when the session has an output format):
+// every tool reported must be permitted, and every tool the list names must be reported.
+//
+// The check DETECTS and TERMINATES; it does not prevent. system/init only exists once the first
+// turn's message has reached the CLI, so the first model call has already started when it runs. A
+// mismatch closes the session with SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION right after the
+// offending SessionReady, before anything else of the turn is read, but under PERMISSION_MODE_BYPASS
+// (no PreToolUse gate) a tool call the model starts before the close lands runs ungated. A client that
+// needs "no tool executes unless allowed" gates the session (PERMISSION_MODE_INTERACTIVE) and answers
+// each PermissionRequested itself.
+enum InitCheck {
+  // Verify, exactly as a sidecar older than this field does.
+  INIT_CHECK_UNSPECIFIED = 0;
+  // Verify, said explicitly.
+  INIT_CHECK_VERIFY = 1;
+  // Report SessionReady.init_fingerprint and never close the session over a mismatch: the client owns
+  // the check. The allow list itself is applied exactly as under VERIFY.
+  INIT_CHECK_REPORT_ONLY = 2;
 }
 
 // A static, session-lifetime restriction on which tools the provider may run, applied at session
@@ -305,6 +381,8 @@ message ClaudeHostPolicy {
   //   be used with root/sudo privileges"), so the session dies before its first turn. A client that
   //   may run as root must not set this field, or must arrange IS_SANDBOX=1 for the sidecar.
   //
+  // true also means ResolvePermissionRequest.defer is refused on this session (see there).
+  //
   // false (the default, and what every client that predates the field sends): no flag, and
   // SetPermissionMode(BYPASS) on this session is refused with INVALID_CONFIGURATION before the CLI
   // is asked. Switching between the gated modes, and back out of a bypass this session entered by a
@@ -358,6 +436,13 @@ message ClaudeHostPolicy {
   // false (the default, and what every client that predates the field sends): no callback, no tool
   // change -- the CLI's own asks are refused as they always were.
   bool provider_permission_prompts = 9;
+
+  // The CLI's own permission mode under the gate; see CliPermissionMode. Capability 'cli_auto_mode'.
+  // UNSPECIFIED (every client that predates the field) is byte-identical to what came before it.
+  // Decided at CreateSession: a session created with AUTO refuses SetPermissionMode, because the
+  // CLI's auto mode has no counterpart among the gated modes a switch could map it to, and
+  // switching it to `default` would quietly drop what the host asked for.
+  CliPermissionMode cli_permission_mode = 11;
 }
 
 // ---- CreateSession ----
@@ -425,6 +510,29 @@ message CreateSessionRequest {
   //
   // Capability 'output_format'. An older sidecar ignores the field and answers in plain text.
   OutputFormatSpec output_format = 8;
+
+  // Ask CreateSession to return only once the session's account probe has settled, and to carry the
+  // result in CreateSessionResponse.account_identity. The probe is the same one behind
+  // SessionReady.account_identity, bounded by the same deadline (20 s). No turn exists yet when the
+  // response is sent, so a client that checks the login email here and closes the session on a
+  // mismatch has spent nothing.
+  //
+  // An OK answer always names a live session the client can use. If the probe failed or missed its
+  // deadline while the session is alive, the answer is OK with account_identity.error set. If the
+  // session ended while the call waited (its provider exited or failed, or it was closed), there is
+  // no session to hand out: CreateSession fails with ERROR_CODE_PROVIDER_UNAVAILABLE and the close
+  // reason in the message, whatever the probe said.
+  //
+  // What it does not prove: which credential carries the billing. The CLI reports the login's email
+  // even while an API key is in use, and the key source is only reported in system/init
+  // (SessionReady.init_fingerprint.api_key_source), after the first turn has started.
+  //
+  // false (the default, and what every client older than this field sends) changes nothing:
+  // CreateSession returns as soon as the session exists. Waiting holds only this call; other
+  // sessions, other calls and the handshake are served meanwhile. A client that cancels the call
+  // while it waits never learns the session id, so the sidecar closes that session.
+  // Capability 'await_account_identity'.
+  bool await_account_identity = 9;
 }
 
 // A JSON Schema carried as JSON text rather than google.protobuf.Struct -- the same "v1 simplicity"
@@ -436,6 +544,10 @@ message OutputFormatSpec {
 
 message CreateSessionResponse {
   string session_id = 1;
+
+  // Set only when the request asked for CreateSessionRequest.await_account_identity: the settled
+  // account probe, in SessionReady.account_identity's shape. Absent otherwise.
+  AccountIdentity account_identity = 2;
 }
 
 // ---- SendTurn / InterruptTurn / ResolvePermission / CloseSession ----
@@ -463,6 +575,32 @@ message ResolvePermissionRequest {
   string permission_id = 3;
   bool allow = 4;
   string reason = 5;
+  // Capability 'permission_defer'. true: the host makes no decision and leaves the call to the CLI's
+  // own permission handling -- the auto-mode classifier under CLI_PERMISSION_MODE_AUTO, the CLI's
+  // normal ask under `default` (which reaches this host as a PROVIDER_PROMPT request on a session with
+  // provider_permission_prompts, and is refused otherwise). That handling includes everything the
+  // session's loaded settings tiers say: their `permissions` allow and deny rules and any hooks of
+  // their own. A user-tier `allow: ["Bash"]`, for one, lets a deferred Bash run without the classifier
+  // ever seeing it. `reason` is ignored, and the request resolves with PERMISSION_OUTCOME_DEFERRED.
+  //
+  // Refused with INVALID_CONFIGURATION, the request staying pending for a real answer and nothing
+  // recorded under the command_id:
+  //   - together with allow = true (a deferral cannot also allow);
+  //   - for a request with origin PROVIDER_PROMPT (that is the CLI's own question already);
+  //   - on any session created with ClaudeHostPolicy.permission_mode_switchable = true, whatever its
+  //     current mode. A host that can switch a session to BYPASS cannot also leave decisions to the
+  //     CLI's mode: a deferral is decided in whatever mode the CLI is in when it acts on it, and a
+  //     SetPermissionMode(BYPASS) sent before or after the deferral can reach the CLI first, so the
+  //     call would run under bypassPermissions, past the conservative bypass floor that a fresh call
+  //     of the same tool meets. No check at answer time can close that race, so the rule is
+  //     structural. A session with cli_permission_mode AUTO is never switchable;
+  //   - when the session's gate would not ASK about this call now (defence in depth).
+  // An unknown or already-resolved permission_id is PERMISSION_NOT_FOUND, as for any answer.
+  //
+  // Only an explicit defer produces "no decision". Everything else that ends a request -- its hook
+  // call timing out or being aborted, InterruptTurn, CloseSession, the provider dying -- still DENIES,
+  // exactly as before this field existed. false (the default) is byte-identical to before.
+  bool defer = 6;
 }
 
 message ResolvePermissionResponse {}
@@ -504,6 +642,10 @@ message CloseSessionResponse {}
 //     with INVALID_CONFIGURATION rather than producing a session that reports `default` while
 //     nothing can ever answer its permission questions. A client that wants a switchable session
 //     creates it gated and switches to BYPASS right after CreateSession.
+//
+// A session created with ClaudeHostPolicy.cli_permission_mode AUTO refuses every switch with
+// INVALID_CONFIGURATION before the CLI is asked: its CLI mode is `auto`, which none of these targets
+// maps to. Create a new session for a different mode.
 //
 // Permission requests already pending when the mode changes are left pending; answer them.
 message SetPermissionModeRequest {
@@ -614,7 +756,8 @@ message SessionReady {
   // value would fold the two together again.
   //
   // A client that requested BYPASS and reads anything else here is running weaker than it believes
-  // and should stop, not continue.
+  // and should stop, not continue. A gated session reads `default`, or `auto` when it was created
+  // with ClaudeHostPolicy.cli_permission_mode AUTO.
   //
   // Measured 2026-09-18 against CLI 2.1.272, because a guard nobody has watched fail is not a
   // guard: this field does track the effective mode -- forcing `default` made it read "default"
@@ -646,7 +789,8 @@ message SessionReady {
   // CLI actually found there.
   //
   // SessionReady itself still arrives with the provider's system/init, i.e. at the start of the
-  // first turn -- see ResumeStatus for why nothing earlier can carry it.
+  // first turn -- see ResumeStatus for why nothing earlier can carry it. A client that needs the
+  // identity before the first turn asks for CreateSessionRequest.await_account_identity.
   //
   // Capability 'account_identity'. Absent from an older sidecar, which a client that requires an
   // identity must treat as unproven, never as a pass.
@@ -655,15 +799,43 @@ message SessionReady {
   // What the provider's system/init reported about the session it actually built: its tool list,
   // MCP servers and API key source, verbatim. Present whenever system/init carried a tools list.
   //
-  // Load-bearing for an explicit EMPTY allow list (ClaudeHostPolicy.tool_policy.allow present with
-  // no tools): the kernel checks `tools` against the empty set -- plus the structured-output
-  // carrier tool when the session has CreateSessionRequest.output_format -- and on any other tool,
-  // or on a system/init with no tools list at all, closes the session with
-  // SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION immediately after this SessionReady, before anything
-  // else of the turn is processed. Sessions without an empty allow list are never checked.
+  // Load-bearing for an explicit allow list (ClaudeHostPolicy.tool_policy.allow present, empty or
+  // not): unless the list says INIT_CHECK_REPORT_ONLY, the kernel checks `tools` against it -- plus
+  // HandshakeResponse.structured_output_tools when the session has CreateSessionRequest.output_format
+  // -- and on any other tool, on a named tool that is missing, or on a system/init with no tools list
+  // at all, closes the session with SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION immediately after
+  // this SessionReady, before anything else of the turn is processed. Sessions without an allow list
+  // are never checked.
+  //
+  // That close detects and terminates; it does not prevent. This SessionReady exists only once the
+  // turn has started, so the first model call is already under way, and under
+  // PERMISSION_MODE_BYPASS a tool call that starts before the close lands runs ungated. See
+  // InitCheck.
   //
   // Capability 'init_fingerprint', which therefore also promises that close.
   InitFingerprint init_fingerprint = 7;
+
+  // Options.disallowedTools exactly as this session handed it to the Agent SDK: the caller's
+  // tool_policy.deny followed by every entry the sidecar adds itself (the bypass floor, the WebFetch
+  // private-address rules when the allow list names WebFetch, the three prompt-routing tools under
+  // provider_permission_prompts), in that order. Empty when nothing was disallowed. Recorded once,
+  // when the session was created, so every SessionReady of the session carries the same list. A
+  // bypass floor that a later SetPermissionMode brings into force is enforced by the PreToolUse gate,
+  // not by Options, and does not appear here.
+  // Capability 'effective_tool_report'.
+  repeated string effective_disallowed_tools = 8;
+
+  // Options.tools exactly as this session handed it to the Agent SDK: present exactly when the
+  // request had tool_policy.allow, and then equal to its tools. It does not list
+  // HandshakeResponse.structured_output_tools: the CLI adds those itself when an output format is
+  // set. Absent when the session left the base tool set alone. Capability 'effective_tool_report'.
+  EffectiveToolsOption effective_tools = 9;
+}
+
+// A message rather than a bare repeated field so that "no tool list was passed" (absent) and "an
+// empty tool list was passed" (present, no tools) stay apart, as they do on ToolAllowList.
+message EffectiveToolsOption {
+  repeated string tools = 1;
 }
 
 message InitFingerprint {
@@ -792,6 +964,11 @@ enum PermissionOutcome {
   PERMISSION_OUTCOME_CANCELLED_BY_SESSION_CLOSE = 4;
   PERMISSION_OUTCOME_PROVIDER_FAILED = 5;
   PERMISSION_OUTCOME_EXPIRED = 6;
+  // The host answered with ResolvePermissionRequest.defer: it made no decision, and the CLI's own
+  // permission mode decided the call. Capability 'permission_defer'; only a host that sends defer
+  // ever sees it. Whether the CLI then refused the call is a PermissionDenied (when the session
+  // receives those) or the tool call's own result, never this outcome.
+  PERMISSION_OUTCOME_DEFERRED = 7;
 }
 
 message PermissionResolved {
@@ -873,8 +1050,9 @@ enum SessionCloseReason {
   SESSION_CLOSE_REASON_CLOSED_BY_HOST = 1;
   SESSION_CLOSE_REASON_PROVIDER_EXITED = 2;
   SESSION_CLOSE_REASON_PROVIDER_FAILED = 3;
-  // The kernel closed the session because system/init reported tools beyond what an explicit empty
-  // allow list permits (see SessionReady.init_fingerprint). The turn in flight ends FAILED.
+  // The kernel closed the session because system/init's tool list did not match an explicit allow
+  // list being verified (see SessionReady.init_fingerprint and InitCheck). Never produced for a list
+  // marked INIT_CHECK_REPORT_ONLY. The turn in flight ends FAILED.
   SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION = 4;
 }
 
@@ -943,6 +1121,30 @@ message PermissionModeChanged {
   bool bypass_default_deny_applied = 3;
 }
 
+// The CLI refused a tool call on its own, before asking anyone: its auto-mode classifier, a deny
+// rule from a loaded settings tier, or its mode (SDK `system/permission_denied`). Capability
+// 'permission_denied_events'. The strings are the CLI's, verbatim.
+//
+// Only a session created with ClaudeHostPolicy.cli_permission_mode stated (DEFAULT or AUTO) receives
+// this event. Any other session receives what it always did for the same message, a ProviderNotice
+// {kind:"system", subtype:"permission_denied"}: the CLI emits these in `default` mode too (a settings
+// tier's deny rule), and a client that predates this message could not decode it.
+//
+// Informational. The CLI has already refused the call and the model already has the refusal as the
+// tool call's error result (ToolCallCompleted.is_error); nothing that keeps a session safe depends on
+// a host receiving this.
+message PermissionDenied {
+  // The call it refused; correlates with ToolCallStarted.tool_use_id. Empty when the CLI gave none.
+  string tool_use_id = 1;
+  string tool_name = 2;
+  // What decided (SDK `decision_reason_type`), e.g. "classifier", "rule", "mode". Absent when the
+  // CLI gave none.
+  optional string reason_type = 3;
+  // The deciding component's own words (SDK `decision_reason`), e.g. "[Git Destructive]". English
+  // from the CLI, not a stable code: show it, do not parse it. Absent when the CLI gave none.
+  optional string reason = 4;
+}
+
 // kind/subtype only, never a raw payload field -- design spec §3.2/§5.2's "never pass raw JSON through".
 message ProviderNotice {
   string kind = 1;
@@ -970,6 +1172,8 @@ message SessionEvent {
     ResumeOutcome resume_outcome = 21;
     // Capability 'set_permission_mode'.
     PermissionModeChanged permission_mode_changed = 22;
+    // Capability 'permission_denied_events'; only on a session that stated cli_permission_mode.
+    PermissionDenied permission_denied = 23;
   }
 }
 

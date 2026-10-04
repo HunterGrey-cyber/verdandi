@@ -14,6 +14,7 @@ import {
   ExecutableSource,
   StreamingMode,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
+  CliPermissionMode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 import { makeFakeSession } from './fakeSession.js';
 
@@ -46,6 +47,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     settingSources: undefined,
     permissionModeSwitchable: false,
     providerPermissionPrompts: false,
+    cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
     ...extra,
   };
 }

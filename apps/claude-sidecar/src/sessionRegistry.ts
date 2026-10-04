@@ -1,4 +1,4 @@
-import type { ClaudeHostPolicy, ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, PermissionAnswer, SessionCloseReason } from '@verdandi/claude-runtime';
 import { RingBuffer } from './ringBuffer.js';
 import { IdempotencyCache } from './idempotency.js';
 
@@ -13,10 +13,19 @@ export interface MinimalKernelSession {
   sendTurn(text: string): { turnId: string };
   interrupt(): Promise<void>;
   close(): void;
-  resolvePermission(permissionId: string, decision: { allow: boolean; reason?: string }): boolean;
+  /** Throws the kernel's `PermissionAnswerError` for an answer it refuses without resolving (a
+   * `defer` for a provider prompt). */
+  resolvePermission(permissionId: string, decision: PermissionAnswer): boolean;
   /** SetPermissionMode. Resolves with the provider-level mode the CLI acknowledged; rejects with the
    * kernel's `PermissionModeError` when the switch is refused. */
   setPermissionMode(mode: ClaudeHostPolicy['permissions']): Promise<{ permissionMode: string; bypassDefaultDenyApplied: boolean }>;
+  /** The account probe's answer, for a CreateSession that asked to await it. The kernel's settles no
+   * later than the probe's own deadline, or at once when the session ends; `undefined` means the
+   * session has no probe. */
+  accountIdentity(): Promise<AccountIdentity | undefined>;
+  /** Why the session ended, or `undefined` while it is alive. Read on the session itself because the
+   * registry entry is removed only on a later PumpDriver callback. */
+  closeReason(): SessionCloseReason | undefined;
 }
 
 export type SessionEntry = {

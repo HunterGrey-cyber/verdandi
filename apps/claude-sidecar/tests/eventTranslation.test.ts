@@ -7,7 +7,7 @@ import { PermissionOutcome, TurnOutcome, SessionCloseReason } from '../src/gener
 test('translateEvent: session_ready maps to a sessionReady oneof member', () => {
   const event: ClaudeRuntimeEvent = { type: 'session_ready', sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions' };
   assert.deepEqual(translateEvent(event), {
-    sessionReady: { sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined },
+    sessionReady: { sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined, effectiveDisallowedTools: [], effectiveTools: undefined },
   });
 });
 

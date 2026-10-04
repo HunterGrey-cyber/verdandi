@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AccountBinding,
+  EgressProbe,
   HandshakeResponse,
   SessionEvent,
   ErrorCode,
@@ -24,6 +25,8 @@ test('generated types: HandshakeResponse can be constructed and encoded/decoded 
     accountBinding: AccountBinding.ACCOUNT_BINDING_PINNED,
     accountName: 'work',
     accountConfigDir: '/home/probe/.claude-work',
+    egressProbe: EgressProbe.EGRESS_PROBE_LOOPBACK_BLOCKED,
+    structuredOutputTools: ['StructuredOutput'],
   };
 
   const bytes = HandshakeResponse.encode(original).finish();
@@ -34,6 +37,8 @@ test('generated types: HandshakeResponse can be constructed and encoded/decoded 
   assert.equal(decoded.accountBinding, AccountBinding.ACCOUNT_BINDING_PINNED);
   assert.equal(decoded.accountName, 'work');
   assert.equal(decoded.accountConfigDir, '/home/probe/.claude-work');
+  assert.equal(decoded.egressProbe, EgressProbe.EGRESS_PROBE_LOOPBACK_BLOCKED);
+  assert.deepEqual(decoded.structuredOutputTools, ['StructuredOutput']);
 });
 
 test('generated types: ErrorCode and PermissionOutcome enums have UNSPECIFIED as their zero value', () => {

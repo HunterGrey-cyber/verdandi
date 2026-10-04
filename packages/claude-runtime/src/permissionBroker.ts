@@ -46,11 +46,49 @@ function providerMatchedAskRule(value: unknown): { providerMatchedAskRule?: Prov
   };
 }
 
+/**
+ * A host's answer to one request, as `resolve()` takes it. `defer: true` means "no decision": `allow`
+ * and `reason` are ignored and the CLI's own permission mode decides the call (see `resolve`).
+ */
+export type PermissionAnswer = { allow: boolean; reason?: string; defer?: boolean };
+
+/**
+ * What a pending request's promise settles with. `deferred` is set by exactly one path, a host's
+ * explicit `defer` through `resolve()`, and it always travels with `allow: false`: any reader that
+ * does not look for it -- every abort, failure and provider-prompt path -- reads a denial.
+ */
+type Settlement = { allow: boolean; reason?: string; deferred?: true };
+
+/** `resolve()` refused an answer for a request that exists, without resolving it. */
+export class PermissionAnswerError extends Error {
+  constructor(
+    /** `defer_not_allowed`: `defer` was given for a request the CLI itself raised (origin
+     * `provider_prompt`), whose deferral would hand the CLI's own question back to it; or on a session
+     * that refuses every deferral (one that can be switched to bypass); or while the session's gate
+     * would not ask about that call -- a deferral then lands in a CLI mode, and past a gate rule, the
+     * host never agreed to. `contradictory_answer`: `defer` together with `allow: true`; no reading of
+     * that can honour both. */
+    readonly kind: 'defer_not_allowed' | 'contradictory_answer',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PermissionAnswerError';
+  }
+}
+
+/** The hook output that makes no decision: the CLI's own permission mode decides, as if no hook were
+ * installed. Shared by the bypass abstention and a host's `defer`, so the two cannot drift apart. */
+function noDecision(): SyncHookJSONOutput {
+  return {};
+}
+
 type PendingPermission = {
   toolUseId: string;
   toolName: string;
   input: unknown;
-  resolve: (decision: { allow: boolean; reason?: string }) => void;
+  /** Which mechanism raised it; `resolve()` accepts `defer` only for `hook`. */
+  origin: PermissionOrigin;
+  resolve: (decision: Settlement) => void;
   /** Removes this request's `AbortSignal` 'abort' listener. Called whenever this entry is
    * resolved through any path OTHER than that same signal aborting (`resolve()`,
    * `failAllPending()`) -- without this, a listener left attached after its promise has already
@@ -189,6 +227,9 @@ export class PermissionBroker {
   constructor(
     private readonly emit: (event: ClaudeRuntimeEvent) => void,
     private readonly gate?: (toolName: string) => GateDecision,
+    /** Why this session refuses every `defer`, whatever the call, or `null` when it accepts them.
+     * Absent means it accepts them. See `resolve`. */
+    private readonly deferRefusal?: () => string | null,
   ) {}
 
   /**
@@ -223,7 +264,7 @@ export class PermissionBroker {
       const gated = this.gate?.(preToolUse.tool_name) ?? { kind: 'ask' };
       if (gated.kind === 'abstain') {
         // No decision at all: the CLI's own permission mode decides, as if no hook were installed.
-        return {};
+        return noDecision();
       }
       if (gated.kind === 'deny') {
         const denied: SyncHookJSONOutput = {
@@ -244,6 +285,12 @@ export class PermissionBroker {
           aborted: 'permission request expired (hook call aborted)',
         },
       );
+      if (decision.deferred === true) {
+        // The host explicitly left this call to the CLI's own mode (the auto-mode classifier under
+        // `auto`, the CLI's normal ask under `default`). Only `resolve()` with `defer` gets here: a
+        // timeout, abort, interrupt, close or provider death settles with a plain denial instead.
+        return noDecision();
+      }
       const output: SyncHookJSONOutput = {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -324,7 +371,9 @@ export class PermissionBroker {
           aborted: 'permission request expired (provider prompt aborted)',
         },
       );
-      if (decision.allow) {
+      // `deferred` cannot reach here (`resolve()` refuses `defer` for a provider prompt); were it to,
+      // it carries `allow: false` and is read as the denial it is written as.
+      if (decision.allow && decision.deferred !== true) {
         return { behavior: 'allow', updatedInput: input };
       }
       const reason = decision.reason?.trim() ? decision.reason : DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE;
@@ -341,9 +390,9 @@ export class PermissionBroker {
     request: PermissionAsk,
     signal: AbortSignal,
     expiredReason: { alreadyAborted: string; aborted: string },
-  ): Promise<{ allow: boolean; reason?: string }> {
+  ): Promise<Settlement> {
     const permissionId = randomUUID();
-    return new Promise<{ allow: boolean; reason?: string }>((resolve) => {
+    return new Promise<Settlement>((resolve) => {
       if (signal.aborted) {
         // Already aborted before this callback even got to register a pending entry -- there
         // is nothing in `pending` to remove (it was never added), so resolve this specific
@@ -370,6 +419,7 @@ export class PermissionBroker {
         toolUseId: request.toolUseId,
         toolName: request.toolName,
         input: request.input,
+        origin: request.origin,
         resolve,
         cleanupAbortListener: () => signal.removeEventListener('abort', onAbort),
       });
@@ -380,11 +430,42 @@ export class PermissionBroker {
   /** Called by the session actor's own public `resolvePermission` method. Returns `false` (no
    * state changed) if the id is unknown or already resolved -- callers must treat that as a
    * benign no-op, matching the neovibe Rust sibling's own identical
-   * already-resolved-is-a-no-op precedent. */
-  resolve(permissionId: string, decision: { allow: boolean; reason?: string }): boolean {
+   * already-resolved-is-a-no-op precedent.
+   *
+   * `defer: true` answers a `hook` request with NO decision (`allow`/`reason` ignored): the hook
+   * returns an empty output and the CLI's own permission mode decides, exactly as the bypass
+   * abstention does; the request resolves `deferred`. It throws `PermissionAnswerError` and leaves the
+   * request pending when the deferral could land somewhere the host did not agree to:
+   *
+   * - a `provider_prompt` request (the CLI's own question cannot go back to the CLI);
+   * - a session that refuses every deferral (`deferRefusal`): `createSession` gives that rule to a
+   *   session created with `permissionModeSwitchable`. A deferral hands the call to whatever mode the
+   *   CLI is in when it acts on `{}`, and a switch to `bypass` -- queued before the answer, or sent
+   *   after it -- can reach the CLI first, so the call would run under `bypassPermissions` past the
+   *   conservative floor, which for a session created gated only the gate enforces. No check at
+   *   answer time can close that race; a host that can switch a session to bypass therefore cannot
+   *   also leave decisions to the CLI's mode;
+   * - the gate would not ASK about this call now (defence in depth for a broker whose gate can change;
+   *   unreachable through `createSession`, whose sessions that accept deferrals never leave a gated
+   *   mode).
+   *
+   * `defer` with `allow: true` throws `contradictory_answer` before anything is looked up. Otherwise
+   * the unknown-id check comes first, so an unknown or already-resolved id is still `false` whatever
+   * the answer says. None of this touches the answers that existed before `defer`. */
+  resolve(permissionId: string, decision: PermissionAnswer): boolean {
+    const defer = decision.defer === true;
+    if (defer && decision.allow) {
+      throw new PermissionAnswerError(
+        'contradictory_answer',
+        `permission ${permissionId}: defer and allow were both given -- a deferral makes no decision, so it cannot also allow. Send defer with allow false, or allow without defer`,
+      );
+    }
     const entry = this.pending.get(permissionId);
     if (!entry) {
       return false;
+    }
+    if (defer) {
+      this.refuseDeferIfUnsafe(permissionId, entry);
     }
     this.pending.delete(permissionId);
     // Removes the abort listener BEFORE resolving -- this request is being resolved through a
@@ -392,9 +473,35 @@ export class PermissionBroker {
     // ever fire spuriously afterward and try to double-resolve/emit a stray `expired` event for
     // a request that's already settled).
     entry.cleanupAbortListener();
-    entry.resolve(decision);
+    if (defer) {
+      entry.resolve({ allow: false, deferred: true });
+      this.emit({ type: 'permission_resolved', permissionId, outcome: 'deferred' });
+      return true;
+    }
+    entry.resolve({ allow: decision.allow, reason: decision.reason });
     this.emit({ type: 'permission_resolved', permissionId, outcome: decision.allow ? 'allowed' : 'denied' });
     return true;
+  }
+
+  /** Throws when a `defer` of this pending request cannot be honoured now; see `resolve`. */
+  private refuseDeferIfUnsafe(permissionId: string, entry: PendingPermission): void {
+    if (entry.origin !== 'hook') {
+      throw new PermissionAnswerError(
+        'defer_not_allowed',
+        `permission ${permissionId} was raised by the CLI itself (origin ${entry.origin}), so it cannot be deferred to the CLI: answer it with allow or deny`,
+      );
+    }
+    const refusal = this.deferRefusal?.() ?? null;
+    if (refusal !== null) {
+      throw new PermissionAnswerError('defer_not_allowed', `permission ${permissionId} cannot be deferred: ${refusal}. Answer it with allow or deny`);
+    }
+    const gated = this.gate?.(entry.toolName) ?? { kind: 'ask' };
+    if (gated.kind !== 'ask') {
+      throw new PermissionAnswerError(
+        'defer_not_allowed',
+        `permission ${permissionId} cannot be deferred: the session's gate would ${gated.kind === 'deny' ? 'deny' : 'not ask about'} ${entry.toolName} now, so leaving the call to the CLI would bypass it. Answer it with allow or deny`,
+      );
+    }
   }
 
   /** Global Constraint: fail closed. Denies and clears every currently-pending request, emitting

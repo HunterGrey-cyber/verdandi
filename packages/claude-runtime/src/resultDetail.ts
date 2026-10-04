@@ -8,7 +8,7 @@ export const MAX_RESULT_ERROR_CHARS = 2000;
 
 /**
  * Reads the parts of an SDK result message that `outcome`/`resultText` do not carry: its own
- * subtype, terminal reason, API error status, error list and structured output (muninn spec §6.3
+ * subtype, terminal reason, API error status, error list and structured output (consumer spec §6.3
  * P2). A pure function of one message.
  *
  * Read through a plain record rather than the SDK's union types on purpose. `api_error_status`
@@ -48,7 +48,7 @@ export function resultDetail(message: Extract<SDKMessage, { type: 'result' }>): 
 /**
  * Sums the SDK's per-model `modelUsage` into one `TurnUsage`. `modelUsage`, not the result's
  * `usage`: the SDK documents `usage` as "MAIN AGENT LOOP ONLY" and `modelUsage` as the field for
- * token/cost accounting (muninn spec review: an input check built on `usage.input_tokens` fails on
+ * token/cost accounting (consumer spec review: an input check built on `usage.input_tokens` fails on
  * every real run, because the cached part of the prompt is not in it).
  *
  * Returns `undefined` -- never a zero-filled object -- when there is no object with at least one

@@ -25,6 +25,8 @@ import {
   StreamingMode,
   SettingSource as SettingSourceProto,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
+  InitCheck,
+  CliPermissionMode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 // Every impl.createSession() call anywhere in this file starts a real PumpDriver 20ms-interval. As of
@@ -649,14 +651,14 @@ test('the advertised capability list is exactly this, in this order', async () =
     // Added 2026-09-23: CreateSession.model / .effort, wired through to the kernel in that commit.
     'session_model',
     'session_effort',
-    // Added by the muninn completion contract (spec §6.3 P2), each in the commit that wired it.
+    // Added by the consumer completion contract (spec §6.3 P2), each in the commit that wired it.
     'system_prompt',
     'output_format',
     'structured_output',
     'turn_usage',
     'account_identity',
     'init_fingerprint',
-    // Added by the muninn client spec §9.1 (web-tool completions), in the commit that wired it.
+    // Added by the consumer client spec §9.1 (web-tool completions), in the commit that wired it.
     'tool_allow_list',
     // Added 2026-09-18 with the packaging work: which of ClaudeHostPolicy.executable's values this
     // BUILD can spawn. 11 -> 13 entries in a checkout, 11 -> 12 in a packaged artifact (which omits
@@ -670,6 +672,20 @@ test('the advertised capability list is exactly this, in this order', async () =
     // Added 2026-09-27 for neovibe (the CLI's own permission prompts routed to the host): 24 -> 25
     // entries in a checkout, 23 -> 24 packaged; ahead of the executable pair, which stays last.
     'provider_permission_prompts',
+    // Added at protocol 3.13: explicit fields for what the sidecar infers from a request's shape
+    // (ToolAllowList.init_check, CreateSession.await_account_identity, the handshake's egress_probe and
+    // structured_output_tools, SessionReady's effective tool lists). 25 -> 30 in a checkout, 24 -> 29
+    // packaged; ahead of the executable pair, which stays last.
+    'init_check',
+    'await_account_identity',
+    'egress_probe',
+    'structured_output_tools',
+    'effective_tool_report',
+    // Added at protocol 3.14: the CLI's own auto mode under the gate, a deferring answer, and the CLI's
+    // own refusals as events. 30 -> 33 in a checkout, 29 -> 32 packaged; ahead of the executable pair.
+    'cli_auto_mode',
+    'permission_defer',
+    'permission_denied_events',
     'executable_host_cli',
     'executable_sdk_bundled',
   ]);
@@ -837,6 +853,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     settingSources: undefined,
     permissionModeSwitchable: false,
     providerPermissionPrompts: false,
+    cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
     ...extra,
   };
 }
@@ -875,10 +892,10 @@ test('mapClaudeHostPolicy: an absent allow stays undefined; a present-but-empty 
   assert.equal(absent.toolPolicy?.allow, undefined);
   assert.deepEqual(absent.toolPolicy?.deny, ['Bash']);
 
-  const empty = mapClaudeHostPolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: [] } } }));
+  const empty = mapClaudeHostPolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: [], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }));
   assert.deepEqual(empty.toolPolicy?.allow, []);
 
-  const stated = mapClaudeHostPolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read'] } } }));
+  const stated = mapClaudeHostPolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }));
   assert.deepEqual(stated.toolPolicy?.allow, ['Read']);
 });
 
@@ -908,9 +925,9 @@ test('mapClaudeHostPolicy: unrestricted reaches the kernel policy in both states
 test('validatePolicy: unrestricted together with deny or allow is invalid_configuration', () => {
   for (const policy of [
     protoPolicy({ toolPolicy: { unrestricted: true, deny: ['Bash'], allow: undefined } }),
-    protoPolicy({ toolPolicy: { unrestricted: true, deny: [], allow: { tools: [] } } }),
-    protoPolicy({ toolPolicy: { unrestricted: true, deny: [], allow: { tools: ['Read'] } } }),
-    protoPolicy({ toolPolicy: { unrestricted: true, deny: ['Bash'], allow: { tools: ['Read'] } } }),
+    protoPolicy({ toolPolicy: { unrestricted: true, deny: [], allow: { tools: [], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
+    protoPolicy({ toolPolicy: { unrestricted: true, deny: [], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
+    protoPolicy({ toolPolicy: { unrestricted: true, deny: ['Bash'], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
   ]) {
     assert.throws(
       () => validatePolicy(policy),
@@ -993,8 +1010,8 @@ test('validatePolicy: an empty or whitespace tool name in deny or allow is inval
     protoPolicy({ toolPolicy: { unrestricted: false, deny: [''], allow: undefined } }),
     protoPolicy({ toolPolicy: { unrestricted: false, deny: ['   '], allow: undefined } }),
     protoPolicy({ toolPolicy: { unrestricted: false, deny: ['Bash', ''], allow: undefined } }),
-    protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: [''] } } }),
-    protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read', '\t'] } } }),
+    protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: [''], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
+    protoPolicy({ toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read', '\t'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
   ]) {
     assert.throws(
       () => validatePolicy(policy),
@@ -1009,7 +1026,7 @@ test('validatePolicy: an empty or whitespace tool name in deny or allow is inval
  * that tool is available. */
 test('validatePolicy: a tool named in both deny and allow is invalid_configuration', () => {
   assert.throws(
-    () => validatePolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: ['Bash'], allow: { tools: ['Read', 'Bash'] } } })),
+    () => validatePolicy(protoPolicy({ toolPolicy: { unrestricted: false, deny: ['Bash'], allow: { tools: ['Read', 'Bash'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } })),
     (err: unknown) => (err as { code: number }).code === ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
   );
 });
@@ -1018,7 +1035,7 @@ test('validatePolicy: a well-formed policy, and an absent one, are both accepted
   assert.doesNotThrow(() => validatePolicy(undefined));
   assert.doesNotThrow(() => validatePolicy(protoPolicy()));
   assert.doesNotThrow(() => validatePolicy(protoPolicy({
-    toolPolicy: { unrestricted: false, deny: ['Bash', 'Write'], allow: { tools: ['Read'] } },
+    toolPolicy: { unrestricted: false, deny: ['Bash', 'Write'], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } },
     settingSources: { sources: [SettingSourceProto.SETTING_SOURCE_PROJECT, SettingSourceProto.SETTING_SOURCE_LOCAL] },
   })));
 });
@@ -1103,7 +1120,7 @@ test('handshake advertises setting_sources and tool_policy, both reach the kerne
   await callResult(impl.createSession.bind(impl), {
     cwd: '/tmp',
     policy: protoPolicy({
-      toolPolicy: { unrestricted: false, deny: ['Bash'], allow: { tools: ['Read'] } },
+      toolPolicy: { unrestricted: false, deny: ['Bash'], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } },
       settingSources: { sources: [SettingSourceProto.SETTING_SOURCE_PROJECT, SettingSourceProto.SETTING_SOURCE_LOCAL] },
     }),
   });

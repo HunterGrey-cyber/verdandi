@@ -1,0 +1,21 @@
+# Eitri 0.2.0's requests, as prost encodes them (hex), one per line: name<TAB>hex.
+#
+# Source of truth for "what Eitri sends". Two tests read it:
+#   rust-client/tests/old_client.rs          asserts prost (the b3aa188 types Eitri links) still encodes
+#                                            Eitri's requests to exactly these bytes;
+#   oldClient.conformance.test.ts            replays them against the real sidecar, and checks the frozen
+#                                            TypeScript client encodes the same bytes.
+# Session, command and permission ids are placeholders (S, c1, p1): the shape is what is frozen.
+# Regenerate ONLY when Eitri's own requests change:
+#   cargo test --manifest-path rust-client/Cargo.toml print_golden -- --ignored --nocapture
+handshake	0803
+create_session_fresh_partial	0a062f746d702f70121608011001180120012802320218013a040a0202034801
+create_session_fresh_complete	0a062f746d702f70121608011001180120012801320218013a040a0202034801
+create_session_resume_partial	0a062f746d702f70121608011001180120012802320218013a040a02020348011a09636c617564652d6964
+watch_after_sequence_0	0a015318022000
+watch_after_sequence_5	0a015318022005
+send_turn	0a0153120263311a0568656c6c6f
+interrupt_turn	0a015312026331
+resolve_permission_allow	0a0153120263311a0270312001
+resolve_permission_deny	0a0153120263311a0270312a076e6f74206e6f77
+close_session	0a015312026331

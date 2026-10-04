@@ -50,7 +50,8 @@ import { REAL, realSessionConfig } from './realConfig.js';
  *
  * Cost: one short haiku turn per test, four in all. Run under the TEST profile:
  *
- *   VERDANDI_CLAUDE_ACCOUNT=test bash -c 'cd packages/claude-runtime && npm run build && \
+ *   VERDANDI_CLAUDE_CONFIG_DIR=<a test login's dir> VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR=<its anthropic dir> \
+ *     bash -c 'cd packages/claude-runtime && npm run build && \
  *     RUN_REAL_CLAUDE_TESTS=1 node --test dist/tests/realSdk.defaultMode.integration.test.js'
  *
  * Scratch projects go under `$XDG_CACHE_HOME` (else `~/.cache`), not `/tmp`, and are removed after.

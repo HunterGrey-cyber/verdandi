@@ -23,7 +23,7 @@ function overTheWire(event: ClaudeRuntimeEvent): SessionEvent {
 }
 
 /**
- * The sidecar half of the muninn spec §6.3 P2 runtime contract: request validation and mapping for
+ * The sidecar half of the consumer spec §6.3 P2 runtime contract: request validation and mapping for
  * the new CreateSession fields, and the new event fields on the way out. Each later P2 task appends
  * its own tests here; the pinned capability list stays in runtimeServiceImpl.test.ts.
  */

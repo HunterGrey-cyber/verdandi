@@ -17,8 +17,9 @@ import {
 } from './generated/verdandi/claude/runtime/v1/runtime.js';
 
 /** A field the kernel reports as `null` ("accountInfo() gave nothing for it") is left out on the
- * wire, where absence is what says the same thing. */
-function accountIdentityToProto(identity: KernelAccountIdentity): AccountIdentity {
+ * wire, where absence is what says the same thing. Shared by SessionReady and by a CreateSession that
+ * awaited the identity, so the two cannot describe one probe differently. */
+export function accountIdentityToProto(identity: KernelAccountIdentity): AccountIdentity {
   if (identity.status === 'unavailable') {
     return { error: identity.error };
   }
@@ -62,6 +63,7 @@ const PERMISSION_OUTCOME_MAP: Record<string, PermissionOutcome> = {
   cancelled_by_session_close: PermissionOutcome.PERMISSION_OUTCOME_CANCELLED_BY_SESSION_CLOSE,
   provider_failed: PermissionOutcome.PERMISSION_OUTCOME_PROVIDER_FAILED,
   expired: PermissionOutcome.PERMISSION_OUTCOME_EXPIRED,
+  deferred: PermissionOutcome.PERMISSION_OUTCOME_DEFERRED,
 };
 
 // Keyed by the kernel's own union, so a new kernel origin fails to compile here instead of falling
@@ -132,6 +134,10 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
                   mcpServers: event.initFingerprint.mcpServers.map((server) => ({ name: server.name, status: server.status })),
                   apiKeySource: event.initFingerprint.apiKeySource ?? '',
                 },
+          // What the session handed the SDK, recorded when it was created. Empty and absent for a
+          // kernel session that recorded nothing; createSession always records it.
+          effectiveDisallowedTools: [...(event.effectiveToolOptions?.disallowedTools ?? [])],
+          effectiveTools: event.effectiveToolOptions?.tools === undefined ? undefined : { tools: [...event.effectiveToolOptions.tools] },
         },
       };
     case 'turn_started':
@@ -247,6 +253,18 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           mode: PERMISSION_MODE_MAP[event.permissions] ?? PermissionMode.PERMISSION_MODE_UNSPECIFIED,
           permissionMode: event.permissionMode,
           bypassDefaultDenyApplied: event.bypassDefaultDenyApplied,
+        },
+      };
+    case 'permission_denied':
+      // Only a session whose policy stated cli_permission_mode produces this kernel event; every other
+      // session still gets the ProviderNotice{system, permission_denied} it always got. `typeof`
+      // guards for the reason permission_requested's provider fields have them.
+      return {
+        permissionDenied: {
+          toolUseId: event.toolUseId,
+          toolName: event.toolName,
+          ...(typeof event.reasonType === 'string' ? { reasonType: event.reasonType } : {}),
+          ...(typeof event.reason === 'string' ? { reason: event.reason } : {}),
         },
       };
     case 'provider_notice':

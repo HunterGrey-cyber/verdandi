@@ -11,8 +11,11 @@ export type {
   TurnUsage,
   AccountIdentity,
   InitFingerprint,
+  InitCheckMode,
+  EffectiveToolOptions,
+  CliPermissionMode,
 } from './types.js';
-export { STRUCTURED_OUTPUT_CARRIER_TOOLS, permittedInitTools, requiredInitTools, initToolViolation } from './toolInvariant.js';
+export { STRUCTURED_OUTPUT_CARRIER_TOOLS, permittedInitTools, requiredInitTools, initToolViolation, verifiesInitTools, initCheckProblem } from './toolInvariant.js';
 export { WEBFETCH_PRIVATE_DENY, webFetchDenyFor } from './webFetchDeny.js';
 export { probeAccountIdentity, accountIdentityFromInfo, DEFAULT_ACCOUNT_INFO_TIMEOUT_MS } from './accountIdentity.js';
 export { resultDetail, boundErrors, usageFromModelUsage, MAX_RESULT_ERRORS, MAX_RESULT_ERROR_CHARS } from './resultDetail.js';
@@ -36,10 +39,13 @@ export {
   gateDecision,
   providerPermissionMode,
   PermissionModeError,
+  cliPermissionModeProblem,
+  permissionDeniedEventsFor,
 } from './session.js';
 export type { QueryFn, SessionGuards, PermissionGateState } from './session.js';
-export type { GateDecision } from './permissionBroker.js';
+export type { MinimalQuery } from './queryTypes.js';
+export type { GateDecision, PermissionAnswer } from './permissionBroker.js';
 export type { AccountProbe } from './accountIdentity.js';
-export { PermissionBroker, DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE } from './permissionBroker.js';
+export { PermissionBroker, PermissionAnswerError, DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE } from './permissionBroker.js';
 export { resolveAccount, resolveAccountSpec, assertAccountUsable, accountEnv, applyAccountEnv, accountGlobalConfigPath, ACCOUNT_ENV_VARS, IDENTITY_SEED_ENV_VARS, DEFAULT_ACCOUNT_NAME } from './account.js';
 export type { ClaudeAccount } from './account.js';

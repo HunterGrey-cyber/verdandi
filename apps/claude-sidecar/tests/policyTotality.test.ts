@@ -12,6 +12,8 @@ import {
   StreamingMode,
   SettingSource,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
+  InitCheck,
+  CliPermissionMode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 /**
@@ -91,7 +93,7 @@ const TABLE: Record<string, Row> = {
   },
   'toolPolicy.allow': {
     a: { toolPolicy: { unrestricted: false, deny: [], allow: undefined } },
-    b: { toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read'] } } },
+    b: { toolPolicy: { unrestricted: false, deny: [], allow: { tools: ['Read'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } },
     observe: (o) => o.tools,
   },
   settingSources: {
@@ -112,6 +114,13 @@ const TABLE: Record<string, Row> = {
     b: { providerPermissionPrompts: true },
     observe: (o) => o.disallowedTools,
   },
+  // AUTO is the value that moves the CLI's mode; DEFAULT reaches it as the same `default` UNSPECIFIED
+  // does, and differs only in the session's events (the kernel's cliPermissionMode tests pin that).
+  cliPermissionMode: {
+    a: { cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED },
+    b: { cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_AUTO },
+    observe: (o) => o.permissionMode,
+  },
 };
 
 /** A policy with every field at a stated, non-default value, so a row's `a`/`b` overlay changes one
@@ -128,6 +137,7 @@ const BASE: ClaudeHostPolicyProto = {
   settingSources: undefined,
   permissionModeSwitchable: false,
   providerPermissionPrompts: false,
+  cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
 };
 
 function optionsFor(overlay: Partial<ClaudeHostPolicyProto>): Options {

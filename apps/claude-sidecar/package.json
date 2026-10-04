@@ -1,16 +1,17 @@
 {
   "name": "@verdandi/claude-sidecar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "./dist/src/index.js",
   "scripts": {
-    "generate": "mkdir -p src/generated && node scripts/generateSdkVersions.mjs && grpc_tools_node_protoc --plugin=protoc-gen-ts_proto=../../node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./src/generated --ts_proto_opt=outputServices=grpc-js,esModuleInterop=true,env=node,forceLong=bigint --proto_path=../../proto ../../proto/verdandi/claude/runtime/v1/runtime.proto",
+    "generate": "mkdir -p src/generated && node scripts/generateSdkVersions.mjs && node scripts/generateProtocolConstants.mjs && grpc_tools_node_protoc --plugin=protoc-gen-ts_proto=../../node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./src/generated --ts_proto_opt=outputServices=grpc-js,esModuleInterop=true,env=node,forceLong=bigint --proto_path=../../proto ../../proto/verdandi/claude/runtime/v1/runtime.proto",
     "build": "npm run generate && tsc",
     "start": "node dist/src/index.js",
     "test": "npm run build && node --test 'dist/tests/**/*.test.js'",
     "typecheck": "npm run generate && tsc --noEmit",
     "test:real": "npm run build && RUN_REAL_CLAUDE_TESTS=1 node --test 'dist/tests/realSidecar.integration.test.js'",
+    "proto:fingerprint": "npm run -s build 1>&2 && node scripts/protoFingerprint.mjs",
     "build:binary": "node scripts/buildBinary.mjs"
   },
   "dependencies": {

@@ -12,3 +12,9 @@ tonic-prost = "0.14"
 [build-dependencies]
 # tonic-build's prost codegen (configure()/compile()) moved to this crate as of tonic 0.13/0.14.
 tonic-prost-build = "0.14"
+# build.rs reads capabilities.json, the one source for the protocol numbers and capability strings.
+serde_json = "1"
+
+[dev-dependencies]
+# tests/protocol_constants.rs reads the same file and compares it with the generated constants.
+serde_json = "1"

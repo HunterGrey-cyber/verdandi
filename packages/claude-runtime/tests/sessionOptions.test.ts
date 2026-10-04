@@ -5,7 +5,7 @@ import { makeFakeQuery } from './fakeQuery.js';
 import { buildSessionOptions, createSession, type QueryFn } from '../src/session.js';
 import type { ClaudeHostPolicy, ClaudeSessionConfig } from '../src/types.js';
 
-/** The completion lane's policy (muninn spec §6.3 P3): ISOLATED, BYPASS, an explicit empty allow list. */
+/** The completion lane's policy (consumer spec §6.3 P3): ISOLATED, BYPASS, an explicit empty allow list. */
 const COMPLETION: ClaudeHostPolicy = {
   configuration: 'isolated',
   permissions: 'bypass',

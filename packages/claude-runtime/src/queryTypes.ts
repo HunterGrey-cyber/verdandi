@@ -8,7 +8,7 @@ import type { AccountInfo, PermissionMode, SDKMessage } from '@anthropic-ai/clau
 export type MinimalQuery = AsyncGenerator<SDKMessage, void> & {
   interrupt(): Promise<unknown>;
   close(): void;
-  /** Widened for the account-identity gate (muninn spec §6.3 P2): a session asks once, before its
+  /** Widened for the account-identity gate (consumer spec §6.3 P2): a session asks once, before its
    * first turn reaches the provider, which account the CLI authenticated as. The real `Query` has
    * had it all along (sdk.d.ts `accountInfo(): Promise<AccountInfo>`). */
   accountInfo(): Promise<AccountInfo>;

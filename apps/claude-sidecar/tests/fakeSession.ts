@@ -1,4 +1,4 @@
-import type { ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
+import type { AccountIdentity, ClaudeRuntimeEvent, PermissionAnswer, SessionCloseReason } from '@verdandi/claude-runtime';
 import type { MinimalKernelSession } from '../src/sessionRegistry.js';
 
 export type FakeSessionController = {
@@ -7,7 +7,7 @@ export type FakeSessionController = {
   /** Every text passed to sendTurn(), in call order. */
   readonly sentTurns: string[];
   /** Every (permissionId, decision) pair passed to resolvePermission(), in call order. */
-  readonly resolvePermissionCalls: Array<{ permissionId: string; decision: { allow: boolean; reason?: string } }>;
+  readonly resolvePermissionCalls: Array<{ permissionId: string; decision: PermissionAnswer }>;
   readonly interruptCalls: number;
   readonly closeCalls: number;
   /** Every mode passed to setPermissionMode(), in call order. */
@@ -30,6 +30,16 @@ export type FakeSessionController = {
    * must still reach the client as a real SidecarError/ErrorCode, never an unmapped UNKNOWN) against
    * some concrete throw, without inventing a fake failure mode the real kernel doesn't have. */
   makeNextInterruptThrow(message: string): void;
+  /** How many times accountIdentity() was called: zero proves a CreateSession did not wait on it. */
+  readonly accountIdentityCalls: number;
+  /** Settles the promise accountIdentity() returns. Until then it is pending, like a probe the CLI has
+   * not answered yet. */
+  settleAccountIdentity(identity: AccountIdentity | undefined): void;
+  /** Ends the session the way the kernel does when its provider goes away: closeReason() reports
+   * `reason` from now on and pump() delivers the session_closed. */
+  endSession(reason: SessionCloseReason): void;
+  /** Makes the NEXT accountIdentity() call return a rejected promise (the kernel's never rejects). */
+  makeNextAccountIdentityReject(err: unknown): void;
 };
 
 /**
@@ -50,6 +60,11 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
   const setPermissionModeCalls: string[] = [];
   let nextSetPermissionModeError: { err: unknown } | undefined;
   let nextSetPermissionModeHold: Promise<void> | undefined;
+  let accountIdentityCalls = 0;
+  let closeReason: SessionCloseReason | undefined;
+  let nextAccountIdentityError: { err: unknown } | undefined;
+  let settleIdentity!: (identity: AccountIdentity | undefined) => void;
+  const identity = new Promise<AccountIdentity | undefined>((resolve) => (settleIdentity = resolve));
 
   const session: MinimalKernelSession = {
     async pump() {
@@ -74,13 +89,14 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
     },
     close() {
       closeCalls += 1;
+      closeReason ??= 'closed_by_host';
       // Mirrors the real kernel's own close(), which provably drives a `session_closed` event
       // through a subsequent pump() call -- without this, PumpDriver's interval for any session this
       // fake backs would never observe a terminal event and would never self-stop (final whole-branch
       // review, "make the fake session's close() emit session_closed").
       pending.push({ type: 'session_closed', reason: 'closed_by_host' });
     },
-    resolvePermission(permissionId: string, decision: { allow: boolean; reason?: string }) {
+    resolvePermission(permissionId: string, decision: PermissionAnswer) {
       resolvePermissionCalls.push({ permissionId, decision });
       return true;
     },
@@ -100,6 +116,18 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       // As the real kernel: the change is announced through pump() for every watcher.
       pending.push({ type: 'permission_mode_changed', permissions: mode, permissionMode, bypassDefaultDenyApplied: false });
       return { permissionMode, bypassDefaultDenyApplied: false };
+    },
+    accountIdentity() {
+      accountIdentityCalls += 1;
+      if (nextAccountIdentityError !== undefined) {
+        const { err } = nextAccountIdentityError;
+        nextAccountIdentityError = undefined;
+        return Promise.reject(err);
+      }
+      return identity;
+    },
+    closeReason() {
+      return closeReason;
     },
   };
 
@@ -124,6 +152,17 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       setPermissionModeCalls,
       makeNextSetPermissionModeReject: (err: unknown) => {
         nextSetPermissionModeError = { err };
+      },
+      get accountIdentityCalls() {
+        return accountIdentityCalls;
+      },
+      settleAccountIdentity: (value) => settleIdentity(value),
+      endSession: (reason) => {
+        closeReason ??= reason;
+        pending.push({ type: 'session_closed', reason });
+      },
+      makeNextAccountIdentityReject: (err) => {
+        nextAccountIdentityError = { err };
       },
       holdNextSetPermissionMode: () => {
         let release!: () => void;

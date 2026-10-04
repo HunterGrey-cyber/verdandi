@@ -61,7 +61,7 @@ test('M1 recording: the real success result sums to its own modelUsage, in the r
   assert.equal(usage.cacheReadInputTokens, sum('cacheReadInputTokens'));
   assert.ok(Math.abs(usage.totalCostUsd - sum('costUSD')) < 1e-9);
   assert.ok(Object.keys(result.modelUsage).includes(usage.model), usage.model);
-  // The whole prompt is the sum of all three input counters -- the number muninn's arrival check
+  // The whole prompt is the sum of all three input counters -- the number consumer's arrival check
   // (spec §6.2) compares against its own estimate. The success prompt is ~10k tokens.
   assert.ok(usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens > 5_000);
   const cacheDominant = usage.inputTokens < usage.cacheCreationInputTokens + usage.cacheReadInputTokens;

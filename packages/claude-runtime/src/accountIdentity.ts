@@ -4,11 +4,12 @@ import type { MinimalQuery } from './queryTypes.js';
 
 /**
  * How long the account probe may take, and so how long a completion-shaped session (see
- * `holdsFirstTurnForAccount` in session.ts) holds its first turn at most. Generous on purpose: the
+ * `holdsFirstTurnForAccount` in session.ts) holds its first turn at most -- and how long a sidecar
+ * CreateSession that asked to await the identity waits before answering. Generous on purpose: the
  * CLI answers once its process is up and initialized, which the first turn has to wait for anyway,
  * so a healthy session pays nothing extra. Only a CLI that never answers pays the full wait -- and
  * then the turn is delivered regardless, with the identity reported as unavailable. A session that
- * does not hold never waits on this at all.
+ * does not hold, and nobody awaiting it, never waits on this at all.
  */
 export const DEFAULT_ACCOUNT_INFO_TIMEOUT_MS = 20_000;
 

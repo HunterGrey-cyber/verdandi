@@ -19,10 +19,11 @@ import { REAL, realSessionConfig } from './realConfig.js';
  * is the client this exists for. The scratch project is a fresh `git init`, so `.git/` is a real
  * repository directory. Run through the TEST profile only:
  *
- *   VERDANDI_CLAUDE_ACCOUNT=test npm run test:real -w @verdandi/claude-runtime
+ *   VERDANDI_CLAUDE_CONFIG_DIR=<a test login's dir> VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR=<its anthropic dir> \
+ *     npm run test:real -w @verdandi/claude-runtime
  *
  * (or `RUN_REAL_CLAUDE_TESTS=1 node --test dist/tests/realSdk.providerPrompt.integration.test.js`
- * with VERDANDI_CLAUDE_ACCOUNT set to a test account). The model defaults to `haiku` to keep the cost down; the check being
+ * with VERDANDI_CLAUDE_CONFIG_DIR and VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR naming a test login). The model defaults to `haiku` to keep the cost down; the check being
  * exercised is the CLI's, not the model's. VERDANDI_REAL_TEST_MODEL overrides it.
  */
 
