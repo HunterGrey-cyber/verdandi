@@ -51,6 +51,9 @@ export function initCheckProblem(config: Pick<ClaudeSessionConfig, 'policy'>): s
  * Until the consumer client spec (§9.1) only an explicit EMPTY list was checked; a non-empty one had
  * no user. The web-tool completion (`allow: ['WebFetch', 'WebSearch']`) is the first, and a check
  * that stopped at "empty" would let it run with whatever else the CLI decided to hand it.
+ *
+ * The tools of the session's expected MCP servers are not listed here: `initToolViolation` permits
+ * each one whose server part (`mcpToolServer`) is one of them (see `expectedInitMcpServers`).
  */
 export function permittedInitTools(config: Pick<ClaudeSessionConfig, 'policy' | 'outputFormat'>): readonly string[] | undefined {
   const allow = config.policy.toolPolicy?.allow;
@@ -73,23 +76,98 @@ export function requiredInitTools(config: Pick<ClaudeSessionConfig, 'policy'>): 
 }
 
 /**
+ * The MCP servers system/init must report for this session, exactly: the extra servers merged into
+ * it (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`), sorted. Read only for a session whose allow list is
+ * verified (see `verifiesInitTools`); a session without an allow list -- an interactive one that
+ * loads the user's own servers, where an extra server is optional -- is not checked at all.
+ */
+export function expectedInitMcpServers(config: Pick<ClaudeSessionConfig, 'extraMcpServers'>): readonly string[] {
+  return Object.freeze(Object.keys(config.extraMcpServers ?? {}).sort());
+}
+
+const MCP_TOOL_PREFIX = 'mcp__';
+
+/**
+ * The server part of an MCP tool's name, or `undefined` when `tool` is not one. The CLI names a tool
+ * of MCP server `s` `mcp__<s>__<tool>` (measured: `mcp__stub__echo`), and the tool part may itself
+ * contain `__` (`mcp__s__do__it`), so the server part ends at the FIRST `__` after `mcp__`.
+ *
+ * A tool belongs to a server when this equals the server's name exactly, never because the tool's
+ * name starts with `mcp__<server>__`: `a__x`'s tool `mcp__a__x__t` and `a_`'s tool `mcp__a___t` both
+ * start with `mcp__a__`. A configured name contains no `__` and does not end in `_`
+ * (`resolveExtraMcpServers`), so the first `__` after it is the one that ends it; a name that broke
+ * that rule would never equal a server part, and its tools would fail the check rather than count for
+ * another server.
+ */
+export function mcpToolServer(tool: string): string | undefined {
+  if (!tool.startsWith(MCP_TOOL_PREFIX)) {
+    return undefined;
+  }
+  const end = tool.indexOf('__', MCP_TOOL_PREFIX.length);
+  if (end <= MCP_TOOL_PREFIX.length || end + 2 === tool.length) {
+    return undefined;
+  }
+  return tool.slice(MCP_TOOL_PREFIX.length, end);
+}
+
+function isToolOfMcpServer(tool: string, servers: readonly string[]): boolean {
+  const server = mcpToolServer(tool);
+  return server !== undefined && servers.includes(server);
+}
+
+/**
  * Why this system/init breaks the explicit allow list, or `null` when it does not. A missing
  * fingerprint (no `tools` array) is a violation: an allow list that cannot be verified must not be
  * treated as honoured.
+ *
+ * `mcpServers` is the set system/init must report as its MCP servers (`expectedInitMcpServers`), by
+ * the same rule the control plane applies to a caller's `expect_mcp_servers`:
+ * - a tool is permitted when `permitted` names it or its server part (`mcpToolServer`) is in the set;
+ * - `required` is still the allow list alone;
+ * - every server in the set is reported, `connected`, with at least one tool whose server part it is;
+ * - no other server is reported. With an empty set (every caller but one) any MCP server fails --
+ *   a claude.ai connector included;
+ * - a server list that could not be read (`mcpServersUnreadable`) fails: it is not an empty one.
  */
-export function initToolViolation(init: InitFingerprint | undefined, permitted: readonly string[], required: readonly string[] = []): string | null {
+export function initToolViolation(
+  init: InitFingerprint | undefined,
+  permitted: readonly string[],
+  required: readonly string[] = [],
+  mcpServers: readonly string[] = [],
+): string | null {
   if (init === undefined) {
-    return required.length === 0
+    return required.length === 0 && mcpServers.length === 0
       ? 'system/init reported no tools list, so the explicit empty allow list cannot be verified'
       : 'system/init reported no tools list, so the explicit allow list cannot be verified';
   }
-  const extra = init.tools.filter((tool) => !permitted.includes(tool));
+  const extra = init.tools.filter((tool) => !permitted.includes(tool) && !isToolOfMcpServer(tool, mcpServers));
   if (extra.length > 0) {
-    return `system/init reported ${JSON.stringify(extra)} beyond the permitted ${JSON.stringify([...permitted])}`;
+    const servers = mcpServers.length > 0 ? ` and the tools of MCP servers ${JSON.stringify([...mcpServers])}` : '';
+    return `system/init reported ${JSON.stringify(extra)} beyond the permitted ${JSON.stringify([...permitted])}${servers}`;
   }
   const missing = required.filter((tool) => !init.tools.includes(tool));
   if (missing.length > 0) {
     return `system/init did not report ${JSON.stringify(missing)}, which the allow list requested`;
+  }
+  if (init.mcpServersUnreadable === true) {
+    return 'system/init reported no readable mcp_servers list, so its MCP servers cannot be verified';
+  }
+  const unexpected = init.mcpServers.filter((server) => !mcpServers.includes(server.name)).map((server) => server.name);
+  if (unexpected.length > 0) {
+    return `system/init reported MCP servers ${JSON.stringify(unexpected)} beyond the expected ${JSON.stringify([...mcpServers])}`;
+  }
+  for (const name of mcpServers) {
+    const reported = init.mcpServers.filter((server) => server.name === name);
+    if (reported.length === 0) {
+      return `system/init did not report the expected MCP server ${JSON.stringify(name)}`;
+    }
+    const notConnected = reported.find((server) => server.status !== 'connected');
+    if (notConnected !== undefined) {
+      return `system/init reported the expected MCP server ${JSON.stringify(name)} as ${JSON.stringify(notConnected.status)}, not "connected"`;
+    }
+    if (!init.tools.some((tool) => mcpToolServer(tool) === name)) {
+      return `system/init reported no tools of the expected MCP server ${JSON.stringify(name)}`;
+    }
   }
   return null;
 }

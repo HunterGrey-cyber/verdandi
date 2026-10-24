@@ -2,14 +2,15 @@ import { query as realQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallbackMatcher, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { translateMessage, type TranslationContext } from './eventTranslation.js';
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, EffectiveToolOptions, PermissionOutcome, SessionCloseReason, TurnOutcome } from './types.js';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, EffectiveSessionOptions, EffectiveToolOptions, PermissionOutcome, SessionCloseReason, SlashCommandInfo, SteerDropReason, TurnOutcome } from './types.js';
 import type { PermissionMode as SdkPermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { applyAccountEnv, type ClaudeAccount } from './account.js';
 import type { MinimalQuery } from './queryTypes.js';
 import { PermissionBroker, type GateDecision, type PermissionAnswer } from './permissionBroker.js';
 import { resultDetail } from './resultDetail.js';
 import { DEFAULT_ACCOUNT_INFO_TIMEOUT_MS, probeAccountIdentity, type AccountProbe } from './accountIdentity.js';
-import { initCheckProblem, initToolViolation, permittedInitTools, requiredInitTools, verifiesInitTools } from './toolInvariant.js';
+import { expectedInitMcpServers, initCheckProblem, initToolViolation, permittedInitTools, requiredInitTools, verifiesInitTools } from './toolInvariant.js';
+import { CONNECTOR_SWITCH_ENV, copyExtraMcpServers, type ExtraMcpServers } from './extraMcpServers.js';
 import { webFetchDenyFor } from './webFetchDeny.js';
 
 /**
@@ -196,7 +197,7 @@ export function permissionDeniedEventsFor(policy: ClaudeHostPolicy): boolean {
 export function policyToBaseOptions(
   policy: ClaudeHostPolicy,
   cwd: string,
-  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string } = {},
+  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string; extraMcpServers?: ExtraMcpServers } = {},
 ): Options {
   const options: Options = {
     cwd,
@@ -300,6 +301,25 @@ export function policyToBaseOptions(
     options.mcpServers = {};
     options.settings = { autoMemoryEnabled: false };
     envOverlay.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
+  }
+  // The servers the process that started this sidecar declared (VERDANDI_CLAUDE_EXTRA_MCP_SERVERS,
+  // extraMcpServers.ts), for NATIVE and ISOLATED alike: they are stated, not discovered, so an
+  // ISOLATED session keeps `strictMcpConfig` and now sees exactly these. Absent, nothing below runs
+  // and the options are byte-identical to a build without it.
+  //
+  // An ISOLATED session that has them also turns the claude.ai connectors off, twice, through this
+  // session's own settings and environment (never the process's, which a NATIVE session shares).
+  // `strictMcpConfig` already keeps them out on CLI 2.1.288; these two are for a CLI that stops
+  // doing so, since a connector would then sit beside the declared servers. Measured: each one alone
+  // removes a connector a non-strict session loads, and `ENABLE_CLAUDEAI_MCP_SERVERS` disables on
+  // 0/false/no/off (docs/measurements/2026-10-08-c0-extra-mcp-servers.md §2). A NATIVE session
+  // keeps the user's connectors: they are part of the configuration it loads on purpose.
+  if (overrides.extraMcpServers !== undefined) {
+    options.mcpServers = { ...(options.mcpServers ?? {}), ...copyExtraMcpServers(overrides.extraMcpServers) };
+    if (policy.configuration === 'isolated') {
+      options.settings = { autoMemoryEnabled: false, disableClaudeAiConnectors: true };
+      envOverlay[CONNECTOR_SWITCH_ENV] = 'false';
+    }
   }
 
   // Overlay, never replacement: the subprocess still needs PATH, HOME, proxy variables and the rest
@@ -426,6 +446,93 @@ export class PermissionModeError extends Error {
 }
 
 /**
+ * The `system/init` capability with which the CLI says it reports the fate of every queued user
+ * message that carries a uuid, as `command_lifecycle` frames on its output stream (`queued`, `started`,
+ * then one of `completed`, `cancelled`, `discarded`, `refused`). The frame is marked internal and is
+ * missing from the SDK's public message union, but the SDK passes it through its iterator unchanged.
+ * Steering depends on it: without the frames nothing says whether a steered message reached the model
+ * or which turn it ran in. Read per session from the CLI's own report on every `system/init`, so a CLI
+ * that stops sending it turns steering off instead of leaving messages unaccounted for.
+ */
+export const CLI_MESSAGE_LIFECYCLE_CAPABILITY = 'msg_lifecycle_v1';
+
+/**
+ * The oldest CLI version known to advertise `CLI_MESSAGE_LIFECYCLE_CAPABILITY` and emit the frames:
+ * the CLI bundled in agent SDK 0.3.252 (2.1.252), whose binary lists it among its init capabilities
+ * and forwards every lifecycle callback as a `command_lifecycle` frame; 2.1.293 does the same. Read from
+ * the binaries, not run. It is the floor of the supported CLI range, so a sidecar whose CLI is inside
+ * that range passes it. The sidecar uses it only for the handshake's per-process promise
+ * (`steer_turn`); each session still waits for its own CLI to advertise the capability before it
+ * accepts a steer.
+ */
+export const STEER_MIN_CLI_VERSION = '2.1.252';
+
+/** The stable names of `steerTurn`'s refusals that have one (the sidecar's `ErrorDetail.reason`). */
+export type SteerRefusalReason =
+  | 'steer_client_message_id_missing'
+  | 'steer_expected_turn_id_missing'
+  | 'steer_text_empty'
+  | 'steer_client_message_id_reused'
+  | 'cli_lifecycle_not_reported'
+  | 'first_turn_held';
+
+/** Why `steerTurn` refused. Nothing was sent to the CLI in any of these cases. */
+export class SteerError extends Error {
+  constructor(
+    /** `closed`: the session ended. `no_active_turn`: nothing is running, so the message is a turn of
+     * its own (`sendTurn`). `turn_mismatch`: a turn is running but not the one the caller named (the
+     * one it meant has ended). `unavailable`: this session cannot steer now (`reason` says why:
+     * `cli_lifecycle_not_reported` -- its CLI has not said in a `system/init` that it reports message
+     * lifecycles, which includes no `system/init` yet; `first_turn_held` -- the first turn is still
+     * held for the account probe). `invalid`: the request itself is unusable; `reason` names the rule. */
+    readonly kind: 'closed' | 'no_active_turn' | 'turn_mismatch' | 'unavailable' | 'invalid',
+    message: string,
+    readonly reason: SteerRefusalReason | '' = '',
+  ) {
+    super(message);
+    this.name = 'SteerError';
+  }
+}
+
+/** One message sent with `steerTurn`, from the moment it is pushed until its fate is known. Keyed by
+ * the uuid the session gave it on the way to the CLI, which is what the CLI's lifecycle frames name. */
+type SteeredMessage = {
+  clientMessageId: string;
+  /** The turn that was running when it was steered. */
+  steeredInto: string;
+  state: 'pending' | 'delivered' | 'dropped';
+};
+
+/** A turn the session opened by itself, because steered messages will run after the turn they were
+ * steered into ended. `delivered` counts the steered messages that started in it; while it is 0 the CLI
+ * has not begun the turn, and if every message it was opened for is dropped the session ends it. */
+type FollowUpTurn = { turnId: string; delivered: number };
+
+const DROP_STATES: ReadonlySet<string> = new Set(['cancelled', 'discarded', 'refused']);
+
+/** The slash-command list in a value the SDK handed over, or `undefined` when it is not a list. Entries
+ * without a usable name are skipped; the other fields default to empty. */
+function slashCommandsOf(raw: unknown): SlashCommandInfo[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw.flatMap((entry: unknown) => {
+    const command = entry as { name?: unknown; description?: unknown; argumentHint?: unknown; aliases?: unknown } | null;
+    if (command === null || typeof command !== 'object' || typeof command.name !== 'string' || command.name === '') {
+      return [];
+    }
+    return [
+      {
+        name: command.name,
+        description: typeof command.description === 'string' ? command.description : '',
+        argumentHint: typeof command.argumentHint === 'string' ? command.argumentHint : '',
+        aliases: Array.isArray(command.aliases) ? command.aliases.filter((alias): alias is string => typeof alias === 'string') : [],
+      },
+    ];
+  });
+}
+
+/**
  * Per-session behaviour `createSession` switches on, grouped so the constructor does not grow a
  * positional parameter per feature.
  */
@@ -443,6 +550,11 @@ export type SessionGuards = {
   /** With `permittedInitTools`: the tool names every system/init MUST report (see
    * `requiredInitTools`). Any one missing closes the session with `tool_policy_violation` too. */
   requiredInitTools?: readonly string[];
+  /** With `permittedInitTools`: the MCP servers system/init must report, exactly (see
+   * `expectedInitMcpServers`). A tool is theirs when its server part (`mcpToolServer`) is one of
+   * them; each must be `connected` with at least one tool, and any other server closes the session
+   * too. Absent is the empty set: a verified session then fails on any MCP server at all. */
+  expectedMcpServers?: readonly string[];
   /** Enables `setPermissionMode`: the gate's shared state and the policy the session was created
    * with. Absent (a session built directly in a test), `setPermissionMode` refuses. */
   permissionSwitch?: { state: PermissionGateState; policy: Readonly<ClaudeHostPolicy> };
@@ -450,6 +562,9 @@ export type SessionGuards = {
    * `effectiveToolOptions`, so a host reads what was applied instead of re-deriving it from its
    * request. */
   effectiveToolOptions?: EffectiveToolOptions;
+  /** The setting tiers and profile the session was created with. When present, every session_ready
+   * reports them as `effectiveSessionOptions`. */
+  effectiveSessionOptions?: EffectiveSessionOptions;
   /** Translate `system/permission_denied` into `permission_denied` events (see
    * `permissionDeniedEventsFor`). Absent or false: the `provider_notice` it always was. */
   permissionDeniedEvents?: boolean;
@@ -560,6 +675,7 @@ export class ClaudeRuntimeSession {
     this.accountProbe = guards.accountProbe;
     this.permittedInitTools = guards.permittedInitTools;
     this.requiredInitTools = guards.requiredInitTools ?? [];
+    this.expectedMcpServers = guards.expectedMcpServers ?? [];
     // Registered here, before any sendTurn can register its own continuation on the same promise,
     // so by the time a held turn is released the settled identity is already recorded.
     void this.accountProbe?.identity.then((identity) => {
@@ -568,12 +684,51 @@ export class ClaudeRuntimeSession {
     this.holdFirstTurnForAccount = guards.holdFirstTurnForAccount === true;
     this.permissionSwitch = guards.permissionSwitch;
     this.effectiveToolOptions = guards.effectiveToolOptions;
+    this.effectiveSessionOptions = guards.effectiveSessionOptions;
     this.permissionDeniedEvents = guards.permissionDeniedEvents === true;
+    // Asked at once: the answer needs only the SDK's initialize exchange, which every session makes
+    // before its first turn, so a consumer has the list before it has typed anything. A failure says
+    // so once and leaves the list to a later `system/commands_changed`. A query object without the
+    // method (a stand-in written before it was asked for) gets no list rather than a broken session.
+    if (typeof this.rawQuery.supportedCommands !== 'function') {
+      return;
+    }
+    this.rawQuery.supportedCommands().then(
+      (raw) => {
+        const commands = slashCommandsOf(raw);
+        if (this.terminal || this.commandsChangedSeen) {
+          return;
+        }
+        if (commands === undefined) {
+          this.pendingPermissionEvents.push({ type: 'provider_notice', kind: 'verdandi_commands', subtype: 'unreadable', raw: null });
+          return;
+        }
+        this.pushEarly({ type: 'commands_updated', commands, source: 'initialize' });
+      },
+      () => {
+        if (!this.terminal) {
+          this.pendingPermissionEvents.push({ type: 'provider_notice', kind: 'verdandi_commands', subtype: 'unavailable', raw: null });
+        }
+      },
+    );
   }
+
+  /** Set by the first `system/commands_changed`: from then on the initialize answer is stale. */
+  private commandsChangedSeen = false;
+  /** Whether the latest `system/init` listed `CLI_MESSAGE_LIFECYCLE_CAPABILITY`. False until one has. */
+  private lifecycleReported = false;
+  /** Every message sent with `steerTurn`, by the uuid it went to the CLI with. */
+  private readonly steered = new Map<string, SteeredMessage>();
+  /** The client ids `steerTurn` has accepted on this session, so one cannot be used twice. */
+  private readonly steeredClientIds = new Set<string>();
+  /** The current turn when the session opened it for steered messages; `undefined` otherwise. */
+  private followUp: FollowUpTurn | undefined;
 
   private readonly permissionDeniedEvents: boolean;
 
   private readonly effectiveToolOptions: EffectiveToolOptions | undefined;
+
+  private readonly effectiveSessionOptions: EffectiveSessionOptions | undefined;
 
   private readonly permissionSwitch: SessionGuards['permissionSwitch'];
   /** Serialises `setPermissionMode` calls, so two overlapping switches apply in call order and the
@@ -586,6 +741,7 @@ export class ClaudeRuntimeSession {
   private readonly accountProbe: AccountProbe | undefined;
   private readonly permittedInitTools: readonly string[] | undefined;
   private readonly requiredInitTools: readonly string[];
+  private readonly expectedMcpServers: readonly string[];
   /** Set by translateOne when a system/init breaks `permittedInitTools`; pump() then terminates the
    * session before translating anything else. */
   private toolPolicyViolation: string | undefined;
@@ -710,6 +866,10 @@ export class ClaudeRuntimeSession {
         // This call settled -- clear it so the next loop iteration (or the next pump() call, if
         // this iteration's drain ends here) starts a fresh one instead of re-awaiting a done promise.
         this.pendingNext = undefined;
+        // What happened while this call waited, and must come before what it read: a turn_started
+        // from sendTurn (the message just read may already be that turn's), the initial command list
+        // (older than a commands_changed just read). See `pushEarly`.
+        this.drainEarlyEvents(drained);
         if (next.done) {
           // Spec §7.3 lists a clean child exit as a fail-closed trigger alongside an SDK query
           // throw -- this must terminate exactly the same way the catch branch above does, not
@@ -811,6 +971,15 @@ export class ClaudeRuntimeSession {
     } catch {
       // Best-effort; see this method's own doc comment.
     }
+    // Every steered message whose fate the CLI never reported will not run now. Reported before the
+    // turn's own end, so a consumer sees each message settled while the turn it went to is still open.
+    for (const message of this.steered.values()) {
+      if (message.state === 'pending') {
+        message.state = 'dropped';
+        sink.push({ type: 'user_message_dropped', clientMessageId: message.clientMessageId, reason: 'session_closed' });
+      }
+    }
+    this.followUp = undefined;
     if (this.turnInProgress) {
       const turnId = this.currentTurnId ?? 'unknown-turn';
       this.turnInProgress = false;
@@ -818,6 +987,34 @@ export class ClaudeRuntimeSession {
       sink.push({ type: 'turn_completed', turnId, outcome: 'failed', resultText: '', isError: true, stopReason: null });
     }
     sink.push({ type: 'session_closed', reason });
+  }
+
+  /**
+   * Into the out-of-band buffer, marked as an event that must precede any provider message read after
+   * it was produced. `pump()` drains the buffer before each read anyway; this mark matters only for
+   * an event produced while a read was already waiting, which would otherwise come out after the
+   * message that read returns. Not used for the permission broker's events: a hook call that runs
+   * while a read waits belongs to an assistant message that read is about to return, and the
+   * consumer must see that tool call before the request about it.
+   */
+  private pushEarly(event: ClaudeRuntimeEvent): void {
+    this.earlyEvents.add(event);
+    this.pendingPermissionEvents.push(event);
+  }
+
+  private readonly earlyEvents = new WeakSet<ClaudeRuntimeEvent>();
+
+  /** Drains the out-of-band buffer up to and including its last early event, keeping its order. */
+  private drainEarlyEvents(sink: ClaudeRuntimeEvent[]): void {
+    let last = -1;
+    this.pendingPermissionEvents.forEach((event, index) => {
+      if (this.earlyEvents.has(event)) {
+        last = index;
+      }
+    });
+    if (last >= 0) {
+      sink.push(...this.pendingPermissionEvents.splice(0, last + 1));
+    }
   }
 
   private drainPendingPermissionEvents(sink: ClaudeRuntimeEvent[]): void {
@@ -831,6 +1028,7 @@ export class ClaudeRuntimeSession {
       this.turnInProgress = false;
       const turnId = this.currentTurnId ?? 'unknown-turn';
       this.currentTurnId = undefined;
+      this.followUp = undefined;
       const outcome = mapTerminalReason(message);
       // `result` (the final assistant text) only exists on the SDK's `SDKResultSuccess` variant --
       // `SDKResultError` has no such field, so an error-subtype result surfaces as empty text
@@ -838,7 +1036,36 @@ export class ClaudeRuntimeSession {
       const resultText = message.subtype === 'success' ? message.result : '';
       // Everything else the result message says about how the turn ended (subtype, terminal reason,
       // API error status, errors, structured output) rides along unmapped -- see resultDetail().
-      return [{ type: 'turn_completed', turnId, outcome, resultText, isError: message.is_error, stopReason: message.stop_reason, ...resultDetail(message) }];
+      const events: ClaudeRuntimeEvent[] = [{ type: 'turn_completed', turnId, outcome, resultText, isError: message.is_error, stopReason: message.stop_reason, ...resultDetail(message) }];
+      // A steered message whose fate is still open when its turn's result arrives was not folded into
+      // that turn (a folded one reports `started` before the result), so the CLI holds it and will
+      // either run it as a turn of its own or report it cancelled, discarded or refused -- and a
+      // drop closes this turn again (see `drop`). The turn is opened now, before the CLI's next
+      // message, so everything it produces lands on a turn the consumer was told about, and so a
+      // SendTurn cannot be accepted meanwhile: the CLI would run the steered message first, and the
+      // SendTurn's turn would end with the steered message's answer. The result's
+      // `queued_turn_count` is not consulted: a steer that reached the CLI just after it built the
+      // result is not counted there, and an interrupted turn's result may not count at all.
+      if (this.pendingSteers().length > 0) {
+        events.push(this.openFollowUpTurn());
+      }
+      return events;
+    }
+    const lifecycle = this.lifecycleFrame(message);
+    if (lifecycle !== undefined) {
+      return lifecycle;
+    }
+    if (message.type === 'system' && message.subtype === 'init') {
+      // The latest report wins: a CLI that stops listing the capability stops accepting steers.
+      const capabilities = (message as { capabilities?: unknown }).capabilities;
+      this.lifecycleReported = Array.isArray(capabilities) && capabilities.includes(CLI_MESSAGE_LIFECYCLE_CAPABILITY);
+    }
+    if (message.type === 'system' && (message as { subtype?: unknown }).subtype === 'commands_changed') {
+      const commands = slashCommandsOf((message as { commands?: unknown }).commands);
+      if (commands !== undefined) {
+        this.commandsChangedSeen = true;
+        return [{ type: 'commands_updated', commands, source: 'changed' }];
+      }
     }
     let streamKey: string | undefined;
     if (message.type === 'stream_event') {
@@ -895,9 +1122,15 @@ export class ClaudeRuntimeSession {
         const { disallowedTools, tools } = this.effectiveToolOptions;
         ready.effectiveToolOptions = { disallowedTools: [...disallowedTools], ...(tools === undefined ? {} : { tools: [...tools] }) };
       }
+      if (this.effectiveSessionOptions !== undefined) {
+        ready.effectiveSessionOptions = {
+          settingSources: [...this.effectiveSessionOptions.settingSources],
+          configuration: this.effectiveSessionOptions.configuration,
+        };
+      }
       if (this.permittedInitTools !== undefined) {
         // Every session_ready, not only the first: the CLI re-sends system/init at each turn.
-        this.toolPolicyViolation ??= initToolViolation(ready.initFingerprint, this.permittedInitTools, this.requiredInitTools) ?? undefined;
+        this.toolPolicyViolation ??= initToolViolation(ready.initFingerprint, this.permittedInitTools, this.requiredInitTools, this.expectedMcpServers) ?? undefined;
       }
       const attached: ClaudeRuntimeEvent[] = [];
       this.emitResumeOutcome(attached, 'attached', { attachedProviderSessionId: ready.providerSessionId });
@@ -951,8 +1184,155 @@ export class ClaudeRuntimeSession {
     // event") stopped being true. `pump()` drains this buffer into its own return value, and into
     // `this.events` from there, so `turn_started` now reaches every consumer rather than only
     // whoever called `sendTurn`.
-    this.pendingPermissionEvents.push({ type: 'turn_started', turnId });
+    this.pushEarly({ type: 'turn_started', turnId });
     return { turnId };
+  }
+
+  /**
+   * Adds a user message to the turn that is running now, the way the CLI's own composer does when the
+   * user types while Claude works: the message goes to the CLI at once, with priority `next`, and the
+   * CLI decides when it reaches the model. After the current tool batch it is folded into the running
+   * turn; when no tool boundary comes (a plain-text answer), or the turn is interrupted, it runs as a
+   * turn of its own right after this one. Which of the two happened, and when, is reported by
+   * `user_message_delivered` (or `user_message_dropped`), read from the CLI's `command_lifecycle`
+   * frames; a turn of its own is opened with a `turn_started` like any other.
+   *
+   * Interrupting does not withdraw a steered message the CLI still holds: like Esc in the CLI's own
+   * terminal, the interrupt stops the running turn and the held message then runs as a turn of its
+   * own. Nothing here withdraws one. The SDK's runtime has `cancelAsyncMessage(uuid)` and an
+   * `interrupt({ cancelQueued: true })` option, but its public `Query` type declares neither, so they
+   * are left for a later change.
+   *
+   * `expectedTurnId` must name the running turn: a caller that meant a turn which has since ended gets
+   * `turn_mismatch` rather than a message in a turn it did not choose. Returns the turn it was steered
+   * into. Synchronous like `sendTurn`, and never changes `turnInProgress` itself.
+   */
+  steerTurn(expectedTurnId: string, clientMessageId: string, text: string): { turnId: string } {
+    if (this.terminal) {
+      throw new SteerError('closed', 'session is closed');
+    }
+    if (clientMessageId === '') {
+      throw new SteerError('invalid', 'a steered message needs a client_message_id', 'steer_client_message_id_missing');
+    }
+    if (expectedTurnId === '') {
+      throw new SteerError('invalid', 'a steered message needs the expected_turn_id of the turn it is meant for', 'steer_expected_turn_id_missing');
+    }
+    if (text.trim() === '') {
+      throw new SteerError('invalid', 'a steered message needs text that is not only whitespace', 'steer_text_empty');
+    }
+    if (this.steeredClientIds.has(clientMessageId)) {
+      throw new SteerError('invalid', `client_message_id ${clientMessageId} was already steered on this session`, 'steer_client_message_id_reused');
+    }
+    if (!this.turnInProgress || this.currentTurnId === undefined) {
+      throw new SteerError('no_active_turn', 'no turn is running on this session; send the message as a turn of its own');
+    }
+    if (this.currentTurnId !== expectedTurnId) {
+      throw new SteerError('turn_mismatch', `turn ${expectedTurnId} is not the running turn (${this.currentTurnId} is)`);
+    }
+    if (this.heldFirstTurn !== undefined) {
+      throw new SteerError('unavailable', 'the first turn is still held until the account is known, so it cannot take a second message yet', 'first_turn_held');
+    }
+    if (!this.lifecycleReported) {
+      throw new SteerError(
+        'unavailable',
+        `this session's CLI has not reported ${CLI_MESSAGE_LIFECYCLE_CAPABILITY} in a system/init, so nothing would say whether a steered message ran; hold it until the turn ends`,
+        'cli_lifecycle_not_reported',
+      );
+    }
+    const turnId = this.currentTurnId;
+    // The session's own uuid, not the client's id: the CLI keys lifecycle frames, interrupt receipts
+    // and its transcript by it, and the client's id has no format the CLI promises to keep.
+    const uuid = randomUUID();
+    this.steeredClientIds.add(clientMessageId);
+    this.steered.set(uuid, { clientMessageId, steeredInto: turnId, state: 'pending' });
+    this.inputQueue.push({
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      uuid,
+      priority: 'next',
+    });
+    return { turnId };
+  }
+
+  private pendingSteers(): SteeredMessage[] {
+    return [...this.steered.values()].filter((steer) => steer.state === 'pending');
+  }
+
+  /** Opens the turn steered messages will run in once the turn they were steered into has ended. */
+  private openFollowUpTurn(): ClaudeRuntimeEvent {
+    const turnId = randomUUID();
+    this.turnInProgress = true;
+    this.currentTurnId = turnId;
+    this.followUp = { turnId, delivered: 0 };
+    return { type: 'turn_started', turnId };
+  }
+
+  /**
+   * The events for one `command_lifecycle` frame naming a steered message, or `undefined` when the
+   * message is not such a frame (it then goes through the normal translation, which reports any other
+   * lifecycle frame as the notice it always was).
+   *
+   * Only the first of `started` or `completed` (the CLI marks a batch started, then settles it) and the
+   * three drop states decide anything; `queued`, unknown states and any frame after the message's fate
+   * is known are swallowed. A message that already reached the model stays delivered when its turn is
+   * later cancelled: the model saw it.
+   */
+  private lifecycleFrame(message: SDKMessage): ClaudeRuntimeEvent[] | undefined {
+    const raw = message as unknown as { type?: unknown; command_uuid?: unknown; state?: unknown };
+    if (raw.type !== 'command_lifecycle' || typeof raw.command_uuid !== 'string') {
+      return undefined;
+    }
+    const steer = this.steered.get(raw.command_uuid);
+    if (steer === undefined) {
+      return undefined;
+    }
+    if (steer.state !== 'pending') {
+      return [];
+    }
+    if (raw.state === 'started' || raw.state === 'completed') {
+      return this.deliver(steer);
+    }
+    if (typeof raw.state === 'string' && DROP_STATES.has(raw.state)) {
+      return this.drop(steer, raw.state as SteerDropReason);
+    }
+    return [];
+  }
+
+  private deliver(steer: SteeredMessage): ClaudeRuntimeEvent[] {
+    const events: ClaudeRuntimeEvent[] = [];
+    if (!this.turnInProgress || this.currentTurnId === undefined) {
+      // The CLI began a turn for it without a result having said one would follow: open it now, so
+      // what it produces still lands on a turn.
+      events.push(this.openFollowUpTurn());
+    }
+    const turnId = this.currentTurnId!;
+    // A follow-up turn nothing has started yet is not running in the CLI: a message steered into it
+    // starts it, as a turn of its own, like the messages it was opened for.
+    const unstartedFollowUp = this.followUp !== undefined && this.followUp.turnId === turnId && this.followUp.delivered === 0;
+    const intoRunningTurn = turnId === steer.steeredInto && !unstartedFollowUp;
+    if (this.followUp !== undefined && this.followUp.turnId === turnId) {
+      this.followUp.delivered += 1;
+    }
+    steer.state = 'delivered';
+    events.push({ type: 'user_message_delivered', clientMessageId: steer.clientMessageId, turnId, intoRunningTurn });
+    return events;
+  }
+
+  private drop(steer: SteeredMessage, reason: SteerDropReason): ClaudeRuntimeEvent[] {
+    steer.state = 'dropped';
+    const events: ClaudeRuntimeEvent[] = [{ type: 'user_message_dropped', clientMessageId: steer.clientMessageId, reason }];
+    // A turn opened only for messages that will now never run would never get a result from the CLI
+    // and would refuse every later sendTurn. When nothing it was opened for is left, it ends here, in
+    // the shape of a turn that was stopped before it produced anything.
+    const followUp = this.followUp;
+    if (followUp !== undefined && followUp.turnId === this.currentTurnId && followUp.delivered === 0 && this.pendingSteers().length === 0) {
+      this.followUp = undefined;
+      this.turnInProgress = false;
+      this.currentTurnId = undefined;
+      events.push({ type: 'turn_completed', turnId: followUp.turnId, outcome: 'interrupted', resultText: '', isError: false, stopReason: null });
+    }
+    return events;
   }
 
   /** Answers one pending request; see `PermissionBroker.resolve`, including what `defer` does and
@@ -1093,9 +1473,11 @@ export class ClaudeRuntimeSession {
       this.heldFirstTurn = undefined;
       this.turnInProgress = false;
       this.currentTurnId = undefined;
-      this.pendingPermissionEvents.push({ type: 'turn_completed', turnId: held.turnId, outcome: 'interrupted', resultText: '', isError: false, stopReason: null });
+      this.pushEarly({ type: 'turn_completed', turnId: held.turnId, outcome: 'interrupted', resultText: '', isError: false, stopReason: null });
       return;
     }
+    // The CLI's receipt (`still_queued`) is not needed: a steered message it still holds is pending
+    // here, and the interrupted turn's result opens the turn it will run in (see translateOne).
     try {
       await this.rawQuery.interrupt();
     } finally {
@@ -1207,7 +1589,7 @@ function classifyResumeFailure(err: unknown): 'rejected' | 'initialization_faile
  * from the real ones. `createSession` calls this and nothing else to build its options.
  */
 export function buildSessionOptions(config: ClaudeSessionConfig): Options {
-  const options = policyToBaseOptions(config.policy, config.cwd, { account: config.account, hostCliPath: config.hostCliPath });
+  const options = policyToBaseOptions(config.policy, config.cwd, { account: config.account, hostCliPath: config.hostCliPath, extraMcpServers: config.extraMcpServers });
   if (config.resume) {
     options.resume = config.resume.providerSessionId;
     if (config.fork) {
@@ -1324,7 +1706,9 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
       holdFirstTurnForAccount: holdsFirstTurnForAccount(config),
       // Only a verified allow list closes the session; `report_only` leaves both lists unset, so the
       // fingerprint is reported and nothing is compared.
-      ...(verifiesInitTools(config) === true ? { permittedInitTools: permittedInitTools(config), requiredInitTools: requiredInitTools(config) } : {}),
+      ...(verifiesInitTools(config) === true
+        ? { permittedInitTools: permittedInitTools(config), requiredInitTools: requiredInitTools(config), expectedMcpServers: expectedInitMcpServers(config) }
+        : {}),
       permissionSwitch: { state: gateState, policy: creationPolicy },
       permissionDeniedEvents: permissionDeniedEventsFor(config.policy),
       // Copied from the options object `queryFn` was just handed, after every addition to it, so what
@@ -1334,6 +1718,12 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
         // Only ever a list here (`policyToBaseOptions`); the SDK's other form, the `claude_code` preset,
         // means the default tool set, which is what an absent `tools` reports.
         ...(Array.isArray(options.tools) ? { tools: [...options.tools] } : {}),
+      },
+      // Likewise copied from the options object the SDK received. `policyToBaseOptions` always sets
+      // `settingSources`; the empty fallback only keeps the type honest.
+      effectiveSessionOptions: {
+        settingSources: [...(options.settingSources ?? [])],
+        configuration: config.policy.configuration,
       },
     },
   );

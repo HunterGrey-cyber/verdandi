@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as grpc from '@grpc/grpc-js';
-import { accountEnv, resolveAccount, resolveAccountSpec } from '@verdandi/claude-runtime';
+import { accountEnv } from '@verdandi/claude-runtime';
+import { resolveAccount, resolveAccountSpec } from '../../src/legacyAccountName.js';
 import * as old from './b3aa188/generated/runtime.js';
 import { HOST_CLI_PATH, withHarness } from './harness.js';
 import { SIDECAR_DIR } from './paths.js';

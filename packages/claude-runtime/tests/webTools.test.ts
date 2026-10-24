@@ -36,7 +36,10 @@ async function replayInit(config: Omit<ClaudeSessionConfig, 'cwd'>, tools: strin
   session.sendTurn('fetch the page');
   const init: Record<string, unknown> = { type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/tmp/project', permissionMode: 'bypassPermissions', apiKeySource: 'none' };
   if (tools !== undefined) {
+    // As the CLI sends it (the SDK types it required; every M1 recording has it): without a readable
+    // mcp_servers list the server half of the check fails closed.
     init.tools = tools;
+    init.mcp_servers = [];
   }
   fake.controller.emit(init as unknown as SDKMessage);
   fake.controller.emit({ type: 'result', subtype: 'success', is_error: false, result: '', stop_reason: 'end_turn', structured_output: { title: 't' } } as unknown as SDKMessage);

@@ -79,3 +79,28 @@ test('PumpDriver: stop() prevents further tick()s from doing anything, even if c
 
   assert.deepEqual(broadcasted, []);
 });
+
+test('PumpDriver: pumpNow() waits for a tick already running, then runs one of its own after it', async () => {
+  const { registry, session } = setup();
+  const releases: Array<() => void> = [];
+  let pumps = 0;
+  // A pump that does not finish until released, standing in for one the interval started.
+  const slow = Object.create(session) as typeof session;
+  slow.pump = () => {
+    pumps += 1;
+    return new Promise((resolve) => releases.push(() => resolve([])));
+  };
+  const entry = registry.create('sess-slow', slow, 100);
+  const driver = new PumpDriver(entry, { onEvent: () => {}, onTerminal: () => {} });
+
+  const first = driver.pumpNow();
+  const second = driver.pumpNow();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(pumps, 1, 'the second waits instead of pumping beside the first');
+  releases[0]!();
+  await first;
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(pumps, 2, 'and then pumps on its own, so it sees whatever happened meanwhile');
+  releases[1]!();
+  await second;
+});

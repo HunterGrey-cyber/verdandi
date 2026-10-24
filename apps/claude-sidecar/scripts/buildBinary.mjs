@@ -30,24 +30,23 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractVerifiedNode } from './extractNode.mjs';
+import { loadNodePin } from './nodePin.mjs';
+import { bundledPackages, checkManifest, describeBuild } from './buildManifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = join(here, '..');
 const repoRoot = join(workspaceRoot, '..', '..');
 
-/**
- * The Node the artifact carries. Bumping this is a deliberate act with a consequence: the shipped
- * runtime changes, and every certification recorded against the old one is about a different
- * program. Update the checksums from https://nodejs.org/dist/v<VERSION>/SHASUMS256.txt in the same
- * edit -- a version without its checksum is a pin that does not pin anything.
- */
-const NODE_VERSION = 'v22.23.2';
-const NODE_TARBALL_SHA256 = {
-  'linux-x64': 'd60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307',
-  'linux-arm64': 'fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8',
-};
+// The Node the artifact carries, and the checksum that proves the tarball is it, live in
+// ../node-pin.json -- the single source (read through ./nodePin.mjs, which refuses a malformed one).
+// Bumping it is a deliberate act with a consequence: the shipped runtime changes, and every
+// certification recorded against the old one is about a different program. Update the checksums from
+// https://nodejs.org/dist/v<VERSION>/SHASUMS256.txt in the same edit -- a version without its checksum
+// is a pin that does not pin anything.
+const { version: NODE_VERSION, tarballSha256: NODE_TARBALL_SHA256 } = loadNodePin(workspaceRoot);
 
 /** postject's own sentinel, fixed by Node's SEA format. Not a value to invent. */
 const SEA_FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
@@ -64,9 +63,27 @@ const cacheDir = join(buildDir, 'node-cache');
 for (const dir of [buildDir, outDir, cacheDir]) {
   mkdirSync(dir, { recursive: true });
 }
+// A manifest is written last, so one that is present must come from a build that finished. Without
+// this, a rebuild that fails part-way leaves the previous build's manifest beside whatever it left.
+rmSync(join(outDir, 'manifest.json'), { force: true });
 
 const run = (cmd, args, options = {}) => execFileSync(cmd, args, { stdio: 'inherit', cwd: repoRoot, ...options });
 const step = (message) => console.error(`[build-binary] ${message}`);
+
+// 0. The base Node: pinned, checksum-verified, cached. First, so a tarball that does not match the pin
+//    stops the build before anything expensive runs -- the check itself is unchanged.
+const tarballName = `node-${NODE_VERSION}-${platform}.tar.xz`;
+const tarballPath = join(cacheDir, tarballName);
+if (!existsSync(tarballPath)) {
+  step(`downloading ${tarballName}`);
+  run('curl', ['-fsSL', '-o', tarballPath, `https://nodejs.org/dist/${NODE_VERSION}/${tarballName}`]);
+}
+const actualSha = createHash('sha256').update(readFileSync(tarballPath)).digest('hex');
+if (actualSha !== expectedSha) {
+  rmSync(tarballPath, { force: true });
+  throw new Error(`buildBinary: ${tarballName} sha256 ${actualSha} does not match the pinned ${expectedSha} -- refusing to build an artifact around an unverified runtime (the cached copy has been removed)`);
+}
+step(`verified ${tarballName} against its pinned checksum`);
 
 // 1. Compile TypeScript -- BOTH workspaces, via the root fan-out, regenerating the build-time
 //    version constants on the way.
@@ -141,6 +158,7 @@ step(`build stamp ${buildStamp}`);
 // were worked out when the SEA build was introduced.
 step('bundling to CommonJS');
 const bundlePath = join(buildDir, 'sidecar.cjs');
+const metafilePath = join(buildDir, 'sidecar.metafile.json');
 run('npx', [
   'esbuild',
   join(workspaceRoot, 'dist', 'src', 'index.js'),
@@ -150,6 +168,7 @@ run('npx', [
   `--define:import.meta.url="file:///verdandi-claude-sidecar"`,
   `--define:__VERDANDI_BUILD_STAMP__="${buildStamp}"`,
   `--outfile=${bundlePath}`,
+  `--metafile=${metafilePath}`,
 ]);
 
 // 3. Node's SEA preparation blob.
@@ -159,24 +178,9 @@ const blobPath = join(buildDir, 'sea-prep.blob');
 writeFileSync(seaConfigPath, JSON.stringify({ main: bundlePath, output: blobPath, disableExperimentalSEAWarning: true }, null, 2));
 run(process.execPath, ['--experimental-sea-config', seaConfigPath]);
 
-// 4. The base Node: pinned, checksum-verified, cached.
-const tarballName = `node-${NODE_VERSION}-${platform}.tar.xz`;
-const tarballPath = join(cacheDir, tarballName);
-if (!existsSync(tarballPath)) {
-  step(`downloading ${tarballName}`);
-  run('curl', ['-fsSL', '-o', tarballPath, `https://nodejs.org/dist/${NODE_VERSION}/${tarballName}`]);
-}
-const actualSha = createHash('sha256').update(readFileSync(tarballPath)).digest('hex');
-if (actualSha !== expectedSha) {
-  rmSync(tarballPath, { force: true });
-  throw new Error(`buildBinary: ${tarballName} sha256 ${actualSha} does not match the pinned ${expectedSha} -- refusing to build an artifact around an unverified runtime (the cached copy has been removed)`);
-}
-step(`verified ${tarballName} against its pinned checksum`);
-
-const extractedNode = join(cacheDir, `node-${NODE_VERSION}-${platform}`, 'bin', 'node');
-if (!existsSync(extractedNode)) {
-  run('tar', ['xf', tarballPath, '-C', cacheDir]);
-}
+// 4. Unpack the base Node from the tarball verified in step 0 -- every run, never reusing an earlier
+//    extraction (see ./extractNode.mjs).
+const extractedNode = extractVerifiedNode({ tarballPath, cacheDir, version: NODE_VERSION, platform });
 
 // 5. Inject. Strip first, not after: stripping a binary that already carries the blob risks removing
 //    the section it was injected into.
@@ -216,6 +220,30 @@ const refusal = spawnSync(outPath, [], { encoding: 'utf8', env: noSocketEnv });
 if (refusal.status !== 1 || !refusal.stderr.includes('VERDANDI_CLAUDE_SIDECAR_SOCKET must be set')) {
   throw new Error(`buildBinary: the artifact does not refuse a missing socket path correctly -- exit ${refusal.status}, stderr:\n${refusal.stderr}`);
 }
+
+// The machine-readable report must say the same thing about the same artifact.
+const jsonReport = JSON.parse(execFileSync(outPath, ['--version', '--json'], { encoding: 'utf8' }));
+if (jsonReport.sidecar_version !== sidecarVersion || jsonReport.node !== NODE_VERSION || jsonReport.build_stamp !== buildStamp || JSON.stringify(jsonReport.executables) !== '["host_cli"]') {
+  throw new Error(`buildBinary: the artifact's --version --json does not report this build:\n${JSON.stringify(jsonReport)}`);
+}
+
+// 7. The manifest: written last, after every check above has passed, and read back against the file.
+const manifestPath = join(outDir, 'manifest.json');
+const manifest = describeBuild({
+  distBin: outDir,
+  file: basename(outPath),
+  platform,
+  sidecarVersion,
+  node: { version: NODE_VERSION, tarballSha256: expectedSha },
+  buildStamp,
+  packages: bundledPackages(JSON.parse(readFileSync(metafilePath, 'utf8')), repoRoot),
+});
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+const manifestProblems = checkManifest(outDir);
+if (manifestProblems.length > 0) {
+  throw new Error(`buildBinary: the manifest just written disagrees with the artifact:\n${manifestProblems.join('\n')}`);
+}
+step(`wrote ${manifestPath} (sha256 ${manifest.artifact.sha256})`);
 
 console.error(`\n${report}`);
 console.error(`[build-binary] ${outPath} (${(statSync(outPath).size / 1024 / 1024).toFixed(1)} MiB)`);

@@ -15,7 +15,7 @@
     "build": "npm run build:claude",
     "build:claude": "npm run build -w @verdandi/claude-runtime && npm run build -w @verdandi/claude-sidecar",
     "test": "npm run test:claude",
-    "test:claude": "npm run build:claude && node --test --test-timeout=60000 'packages/claude-runtime/dist/tests/**/*.test.js' && node --test --test-timeout=30000 'apps/claude-sidecar/dist/tests/**/*.test.js'",
+    "test:claude": "npm run build:claude && node --test --test-timeout=60000 'packages/claude-runtime/dist/tests/**/*.test.js' && node --test --test-timeout=90000 'apps/claude-sidecar/dist/tests/**/*.test.js'",
     "typecheck": "npm run typecheck:claude",
     "typecheck:claude": "npm run build -w @verdandi/claude-runtime && npm run typecheck -w @verdandi/claude-runtime && npm run typecheck -w @verdandi/claude-sidecar"
   },

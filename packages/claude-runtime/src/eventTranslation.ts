@@ -5,22 +5,29 @@ import type { ClaudeRuntimeEvent, InitFingerprint } from './types.js';
  * system/init's tools, MCP servers and API key source, read defensively: present only when the
  * message carries a `tools` array, with every entry type-checked. A drifted CLI yields a missing
  * fingerprint -- which the zero-tools invariant treats as unverifiable -- never an invented one.
+ *
+ * The server list keeps the entries it can read, and says so when it could not read all of them
+ * (`mcpServersUnreadable`): a missing or non-array `mcp_servers`, or an entry without a string name,
+ * is not the same as "no servers", and a verified session's server check fails on it rather than
+ * passing an empty set.
  */
 function initFingerprintOf(message: SDKMessage): { initFingerprint?: InitFingerprint } {
   const raw = message as unknown as Record<string, unknown>;
   if (!Array.isArray(raw.tools) || !raw.tools.every((tool): tool is string => typeof tool === 'string')) {
     return {};
   }
-  const servers = Array.isArray(raw.mcp_servers) ? raw.mcp_servers : [];
+  const servers: unknown[] = Array.isArray(raw.mcp_servers) ? raw.mcp_servers : [];
+  const readable = servers.flatMap((server: unknown) => {
+    const entry = server as { name?: unknown; status?: unknown } | null;
+    return entry !== null && typeof entry === 'object' && typeof entry.name === 'string'
+      ? [{ name: entry.name, status: typeof entry.status === 'string' ? entry.status : '' }]
+      : [];
+  });
   return {
     initFingerprint: {
       tools: raw.tools,
-      mcpServers: servers.flatMap((server: unknown) => {
-        const entry = server as { name?: unknown; status?: unknown } | null;
-        return entry !== null && typeof entry === 'object' && typeof entry.name === 'string'
-          ? [{ name: entry.name, status: typeof entry.status === 'string' ? entry.status : '' }]
-          : [];
-      }),
+      mcpServers: readable,
+      ...(!Array.isArray(raw.mcp_servers) || readable.length !== servers.length ? { mcpServersUnreadable: true as const } : {}),
       apiKeySource: typeof raw.apiKeySource === 'string' ? raw.apiKeySource : null,
     },
   };

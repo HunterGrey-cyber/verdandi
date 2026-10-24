@@ -5,7 +5,7 @@ import { makeFakeQuery } from './fakeQuery.js';
 import { m1Manifest, readM1Fixture } from './m1FixtureFiles.js';
 import { translateMessage } from '../src/eventTranslation.js';
 import { createSession, type ClaudeRuntimeSession } from '../src/session.js';
-import { STRUCTURED_OUTPUT_CARRIER_TOOLS, initCheckProblem, initToolViolation, permittedInitTools, verifiesInitTools } from '../src/toolInvariant.js';
+import { STRUCTURED_OUTPUT_CARRIER_TOOLS, expectedInitMcpServers, initCheckProblem, initToolViolation, mcpToolServer, permittedInitTools, verifiesInitTools } from '../src/toolInvariant.js';
 import { buildSessionOptions } from '../src/session.js';
 import type { ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig } from '../src/types.js';
 
@@ -70,7 +70,7 @@ test('initToolViolation: exact set passes, anything extra or an unreported list 
 test('translateMessage: system/init yields the fingerprint verbatim; no tools array, no fingerprint', () => {
   const [ready] = translateMessage({
     type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/c', permissionMode: 'bypassPermissions',
-    tools: ['StructuredOutput'], mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }, { bogus: true }], apiKeySource: 'none',
+    tools: ['StructuredOutput'], mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }], apiKeySource: 'none',
   } as unknown as SDKMessage, { currentTurnId: undefined });
   assert.ok(ready?.type === 'session_ready');
   assert.deepEqual(ready.initFingerprint, { tools: ['StructuredOutput'], mcpServers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }], apiKeySource: 'none' });
@@ -266,4 +266,133 @@ test('initCheck without an allow list is refused before any provider is started'
     );
     assert.equal(started, 0, 'no provider process for a policy that cannot be honoured');
   }
+});
+
+// ---- extra MCP servers (the host's seam answer, §2) -----------------------------------------
+
+const REMOTE_SERVERS = Object.freeze({
+  remote: Object.freeze({ type: 'http' as const, url: 'http://127.0.0.1:8930/mcp', headers: Object.freeze({ Authorization: '${REMOTE_MCP_AUTHORIZATION}' }), alwaysLoad: true }),
+});
+
+test('expectedInitMcpServers: the extra servers merged into the session, sorted; none is the empty set', () => {
+  assert.deepEqual(expectedInitMcpServers({}), []);
+  assert.deepEqual(expectedInitMcpServers({ extraMcpServers: { zeta: { command: '/bin/z' }, alpha: { command: '/bin/a' } } }), ['alpha', 'zeta']);
+});
+
+test('initToolViolation with expected MCP servers: the rule both checks apply', () => {
+  const init = (tools: string[], mcpServers: Array<{ name: string; status: string }>) => ({ tools, mcpServers, apiKeySource: 'none' });
+  const permitted = ['StructuredOutput'];
+  const connected = [{ name: 'remote', status: 'connected' }];
+  // remote's tools plus the carrier pass
+  assert.equal(initToolViolation(init(['StructuredOutput', 'mcp__remote__lookup', 'mcp__remote__list'], connected), permitted, [], ['remote']), null);
+  // one more built-in fails
+  assert.match(initToolViolation(init(['StructuredOutput', 'mcp__remote__lookup', 'Bash'], connected), permitted, [], ['remote']) ?? '', /reported \["Bash"\] beyond the permitted \["StructuredOutput"\] and the tools of MCP servers \["remote"\]/);
+  // one more server fails, a claude.ai connector included, even with no tools of its own
+  assert.match(
+    initToolViolation(init(['StructuredOutput', 'mcp__remote__lookup'], [...connected, { name: 'claude.ai Claude Docs', status: 'pending' }]), permitted, [], ['remote']) ?? '',
+    /reported MCP servers \["claude\.ai Claude Docs"\] beyond the expected \["remote"\]/,
+  );
+  // another server's tools are not permitted as remote's
+  assert.match(initToolViolation(init(['mcp__remotex__a', 'mcp__remote__b'], connected), permitted, [], ['remote']) ?? '', /\["mcp__remotex__a"\] beyond/);
+  // remote failed, missing, or without tools fails
+  assert.match(initToolViolation(init(['StructuredOutput'], [{ name: 'remote', status: 'failed' }]), permitted, [], ['remote']) ?? '', /"remote" as "failed", not "connected"/);
+  assert.match(initToolViolation(init(['StructuredOutput'], [{ name: 'remote', status: 'pending' }]), permitted, [], ['remote']) ?? '', /as "pending"/);
+  assert.match(initToolViolation(init(['StructuredOutput'], []), permitted, [], ['remote']) ?? '', /did not report the expected MCP server "remote"/);
+  assert.match(initToolViolation(init(['StructuredOutput'], connected), permitted, [], ['remote']) ?? '', /no tools of the expected MCP server "remote"/);
+  // a caller that expects no server fails on any server at all
+  assert.match(initToolViolation(init(['StructuredOutput'], [{ name: 'claude.ai Gmail', status: 'needs-auth' }]), permitted) ?? '', /MCP servers \["claude\.ai Gmail"\] beyond the expected \[\]/);
+  assert.match(initToolViolation(init(['mcp__remote__a'], connected), permitted) ?? '', /\["mcp__remote__a"\] beyond the permitted \["StructuredOutput"\]$/);
+  // the allow list is still required, and still the only thing required among tools
+  assert.match(initToolViolation(init(['mcp__remote__a'], connected), ['WebFetch'], ['WebFetch'], ['remote']) ?? '', /did not report \["WebFetch"\]/);
+  // no tools list cannot be verified
+  assert.match(initToolViolation(undefined, permitted, [], ['remote']) ?? '', /no tools list, so the explicit allow list cannot be verified/);
+});
+
+test('mcpToolServer: the server part ends at the first "__" after mcp__, whatever the tool part holds', () => {
+  assert.equal(mcpToolServer('mcp__remote__lookup'), 'remote');
+  assert.equal(mcpToolServer('mcp__remote__do__it'), 'remote');
+  assert.equal(mcpToolServer('mcp__a__x__tool'), 'a');
+  assert.equal(mcpToolServer('mcp__a___x'), 'a');
+  for (const tool of ['Bash', 'StructuredOutput', 'mcp_remote__x', 'mcp__remote', 'mcp____x', 'mcp__remote__']) {
+    assert.equal(mcpToolServer(tool), undefined, tool);
+  }
+});
+
+test('initToolViolation gives an MCP tool to the server its server part names exactly, never by prefix', () => {
+  const init = (tools: string[], mcpServers: Array<{ name: string; status: string }>) => ({ tools, mcpServers, apiKeySource: 'none' });
+  const permitted = ['StructuredOutput'];
+  const connected = (...names: string[]) => names.map((name) => ({ name, status: 'connected' }));
+  // `a__x`'s tool starts with mcp__a__: by prefix it counted for a toolless `a` as well, and both passed
+  assert.match(initToolViolation(init(['mcp__a__x__tool'], connected('a', 'a__x')), permitted, [], ['a', 'a__x']) ?? '', /no tools of the expected MCP server "a__x"/);
+  // the same for a name ending in "_": `a_`'s tool x is mcp__a___x
+  assert.match(initToolViolation(init(['mcp__a___x'], connected('a', 'a_')), permitted, [], ['a', 'a_']) ?? '', /no tools of the expected MCP server "a_"/);
+  // such a name never owns a tool at all (resolveExtraMcpServers refuses both)
+  assert.match(initToolViolation(init(['mcp__a__x__tool'], connected('a__x')), permitted, [], ['a__x']) ?? '', /\["mcp__a__x__tool"\] beyond/);
+  assert.match(initToolViolation(init(['mcp__a___x'], connected('a_')), permitted, [], ['a_']) ?? '', /\["mcp__a___x"\] beyond/);
+  // a tool part with "__" in it still belongs to its server
+  assert.equal(initToolViolation(init(['mcp__remote__do__it'], connected('remote')), permitted, [], ['remote']), null);
+});
+
+function mcpInit(tools: string[], mcpServers: unknown[]) {
+  return { type: 'system', subtype: 'init', session_id: 'prov-1', model: 'claude-haiku', cwd: '/tmp/project', permissionMode: 'bypassPermissions', apiKeySource: 'none', tools, mcp_servers: mcpServers };
+}
+
+test('a verified session with an extra server passes when init reports exactly it, connected, with its tools', async () => {
+  const { session, events } = await replay(
+    { policy: COMPLETION, outputFormat: SCHEMA, extraMcpServers: REMOTE_SERVERS },
+    [mcpInit(['StructuredOutput', 'mcp__remote__lookup'], [{ name: 'remote', status: 'connected', source: 'dynamic' }]), { type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { ok: true }, session_id: 'prov-1', num_turns: 1, duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [] }],
+  );
+  assert.equal(events.some((e) => e.type === 'session_closed'), false, JSON.stringify(events.filter((e) => e.type === 'session_closed')));
+  assert.ok(events.some((e) => e.type === 'turn_completed' && e.outcome === 'completed'));
+  session.close();
+});
+
+test('a verified session closes with tool_policy_violation when its extra server failed, or another server is there', async () => {
+  for (const servers of [
+    [{ name: 'remote', status: 'failed' }],
+    [{ name: 'remote', status: 'connected' }, { name: 'claude.ai Claude Docs', status: 'connected' }],
+  ]) {
+    const { events } = await replay({ policy: COMPLETION, outputFormat: SCHEMA, extraMcpServers: REMOTE_SERVERS }, [mcpInit(['StructuredOutput', 'mcp__remote__lookup'], servers)]);
+    assert.deepEqual(events.at(-1), { type: 'session_closed', reason: 'tool_policy_violation' }, JSON.stringify(servers));
+  }
+});
+
+test('a session without an allow list is not checked: an optional extra server that failed does not end it', async () => {
+  const unchecked: ClaudeHostPolicy = { configuration: 'native', permissions: 'bypass', persistence: 'host_cli', executable: 'host_cli', toolPolicy: { unrestricted: true } };
+  const { session, events } = await replay(
+    { policy: unchecked, extraMcpServers: { host_ab12cd: { command: '/usr/lib/host/host-mcp' } } },
+    [mcpInit(['Read', 'Bash'], [{ name: 'host_ab12cd', status: 'failed' }, { name: 'project_server', status: 'connected' }])],
+  );
+  assert.equal(events.some((e) => e.type === 'session_closed'), false);
+  assert.ok(events.some((e) => e.type === 'session_ready'));
+  session.close();
+});
+
+test('report_only reports and never closes, extra servers or not', async () => {
+  const { session, events } = await replay(
+    { policy: { ...COMPLETION, toolPolicy: { allow: [], initCheck: 'report_only' } }, outputFormat: SCHEMA, extraMcpServers: REMOTE_SERVERS },
+    [mcpInit(['StructuredOutput'], [{ name: 'remote', status: 'failed' }])],
+  );
+  assert.equal(events.some((e) => e.type === 'session_closed'), false);
+  session.close();
+});
+
+test('an mcp_servers list that cannot be read is reported as such, and fails a verified session even when it expects none', () => {
+  const init = (extra: Record<string, unknown>) => {
+    const [ready] = translateMessage({ type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/c', permissionMode: 'bypassPermissions', tools: ['StructuredOutput'], apiKeySource: 'none', ...extra } as unknown as SDKMessage, { currentTurnId: undefined });
+    assert.ok(ready?.type === 'session_ready');
+    return ready.initFingerprint;
+  };
+  for (const [name, extra] of [
+    ['missing', {}],
+    ['renamed', { mcpServers: [{ name: 'claude.ai X', status: 'connected' }] }],
+    ['not an array', { mcp_servers: { 'claude.ai X': 'connected' } }],
+    ['an entry without a string name', { mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }, { bogus: true }] }],
+  ] as const) {
+    const fingerprint = init(extra);
+    assert.equal(fingerprint?.mcpServersUnreadable, true, name);
+    assert.match(initToolViolation(fingerprint, ['StructuredOutput']) ?? '', /no readable mcp_servers list/, name);
+  }
+  assert.deepEqual(init({ mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }, { bogus: true }] })?.mcpServers, [{ name: 'claude.ai Gmail', status: 'needs-auth' }], 'what could be read is still reported');
+  assert.equal('mcpServersUnreadable' in (init({ mcp_servers: [] }) ?? {}), false, 'an empty array is a readable empty list');
 });

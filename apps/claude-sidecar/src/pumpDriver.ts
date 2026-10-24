@@ -26,6 +26,8 @@ export class PumpDriver {
   private readonly callbacks: PumpDriverCallbacks;
   private stopped = false;
   private intervalHandle: ReturnType<typeof setInterval> | undefined;
+  /** The tick running now, whoever started it; the guard that serializes the interval and pumpNow(). */
+  private inFlight: Promise<void> | undefined;
 
   constructor(entry: SessionEntry, callbacks: PumpDriverCallbacks) {
     this.entry = entry;
@@ -37,21 +39,53 @@ export class PumpDriver {
       return;
     }
     this.intervalHandle = setInterval(() => {
-      void this.tick().catch((err: unknown) => {
-        // session.pump() itself threw, rather than this tick() draining a normal event array -- the
-        // kernel is carefully written not to (there's no hard guarantee against it: translateMessage
-        // iterates message content with no guard against malformed input), so this isn't provably
-        // unreachable. Under Node's default unhandled-rejection behavior, a rejection escaping this
-        // setInterval callback would terminate the ENTIRE sidecar process, including every other
-        // unrelated session -- fail closed instead: this one session's driver stops and is reported
-        // terminal (even though, unlike the normal path, no session_closed event was ever actually
-        // broadcast for it -- there's none to broadcast, since pump() itself failed rather than
-        // yielding one), and every other session's driver keeps running untouched.
-        console.error(`PumpDriver: session ${this.entry.sessionId}'s pump() threw, terminating this session`, err);
-        this.stop();
-        this.callbacks.onTerminal(this.entry.sessionId);
-      });
+      // A tick still running (a pumpNow() caller's, or a slow previous one) already covers this
+      // interval; queueing another behind it would only pile up drains.
+      if (this.inFlight !== undefined) {
+        return;
+      }
+      void this.pumpNow();
     }, pollIntervalMs);
+  }
+
+  /**
+   * One drain cycle now, serialized with the interval's: waits for a tick already running, then runs
+   * one of its own and resolves when it is done. A caller that must know whether the provider has
+   * already gone (a provider exit that happened but that no tick has looked at yet) awaits this and
+   * then asks the session. Calling session.pump() directly would not do: while another pump is
+   * running it returns nothing at all, so it could miss exactly the exit it was meant to see.
+   *
+   * Never rejects: a pump() that throws stops this session's driver and reports it terminal.
+   */
+  async pumpNow(): Promise<void> {
+    while (this.inFlight !== undefined) {
+      await this.inFlight;
+    }
+    if (this.stopped) {
+      return;
+    }
+    const run = this.tick().catch((err: unknown) => {
+      // session.pump() itself threw, rather than this tick() draining a normal event array -- the
+      // kernel is carefully written not to (there's no hard guarantee against it: translateMessage
+      // iterates message content with no guard against malformed input), so this isn't provably
+      // unreachable. Under Node's default unhandled-rejection behavior, a rejection escaping this
+      // setInterval callback would terminate the ENTIRE sidecar process, including every other
+      // unrelated session -- fail closed instead: this one session's driver stops and is reported
+      // terminal (even though, unlike the normal path, no session_closed event was ever actually
+      // broadcast for it -- there's none to broadcast, since pump() itself failed rather than
+      // yielding one), and every other session's driver keeps running untouched.
+      console.error(`PumpDriver: session ${this.entry.sessionId}'s pump() threw, terminating this session`, err);
+      this.stop();
+      this.callbacks.onTerminal(this.entry.sessionId);
+    });
+    this.inFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.inFlight === run) {
+        this.inFlight = undefined;
+      }
+    }
   }
 
   stop(): void {
@@ -62,7 +96,9 @@ export class PumpDriver {
     }
   }
 
-  /** Exposed directly (not just via start()'s interval) so tests can drive exactly one drain cycle
+  /** One unguarded drain cycle. Production goes through pumpNow(), which serializes it.
+   *
+   * Exposed directly (not just via start()'s interval) so tests can drive exactly one drain cycle
    * deterministically without waiting on a real timer. Deliberately does NOT call translateEvent
    * itself -- onEvent's SequencedEvent carries the raw kernel ClaudeRuntimeEvent, and Task 7's
    * broadcast code calls translateEvent at broadcast time to build the full proto SessionEvent
@@ -79,6 +115,9 @@ export class PumpDriver {
       this.entry.sequence += 1n;
       const sequenced: SequencedEvent = { sequence: this.entry.sequence, occurredAt: BigInt(Date.now()), event };
       this.entry.ringBuffer.push(sequenced);
+      if (event.type === 'commands_updated') {
+        this.entry.latestCommands = sequenced;
+      }
       this.callbacks.onEvent(sequenced);
       if (event.type === 'session_closed') {
         sawTerminal = true;

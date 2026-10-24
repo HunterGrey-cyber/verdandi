@@ -88,6 +88,15 @@ export function spawnSidecar(options: SpawnOptions = {}): Spawned {
   child.stderr?.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
   });
+  // 'close', not 'exit': 'exit' can fire while the child's last stderr bytes are still unread, and a
+  // caller that reads stderr() right after exited() would then see less than the process printed.
+  let closed: { code: number | null } | undefined;
+  const closing = new Promise<number | null>((resolve) => {
+    child.once('close', (code: number | null) => {
+      closed = { code };
+      resolve(code);
+    });
+  });
   return {
     child,
     dir,
@@ -97,12 +106,14 @@ export function spawnSidecar(options: SpawnOptions = {}): Spawned {
     spawnedAt,
     stderr: () => stderr,
     exited: (ms) => {
-      if (child.exitCode !== null) {
-        return Promise.resolve(child.exitCode);
+      if (closed !== undefined) {
+        return Promise.resolve(closed.code);
       }
       return new Promise((resolve) => {
-        const timer = setTimeout(() => resolve('running'), ms);
-        child.once('exit', (code) => {
+        // Out of time: a process that has exited still reports its code (its stderr is then what
+        // arrived so far); only one that is still running reports 'running'.
+        const timer = setTimeout(() => resolve(child.exitCode !== null || child.signalCode !== null ? child.exitCode : 'running'), ms);
+        void closing.then((code) => {
           clearTimeout(timer);
           resolve(code);
         });

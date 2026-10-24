@@ -1,0 +1,961 @@
+[
+  {
+    "version": "unknown",
+    "surface": "sdk",
+    "policy": {
+      "knownIncompatible": [
+        "unknown"
+      ],
+      "tested": [
+        "unknown"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "sdk",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "tested": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "sdk",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "sdk",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "sdk",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "sdk",
+    "policy": {
+      "tested": [
+        "0.0.1"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "3.0.0",
+    "surface": "sdk",
+    "policy": {
+      "tested": [
+        "3.0.0"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.252",
+    "surface": "sdk",
+    "policy": {
+      "tested": [
+        "2.1.252"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.252",
+    "surface": "sdk",
+    "policy": {
+      "tested": []
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.279-beta+build ",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279.5",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "v2.1.279",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "sdk",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "sdk",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.280",
+    "surface": "sdk",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.268",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.283",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.267-beta",
+    "surface": "sdk",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.267 ",
+    "surface": "sdk",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "unknown",
+    "surface": "interactive",
+    "policy": {
+      "knownIncompatible": [
+        "unknown"
+      ],
+      "tested": [
+        "unknown"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "interactive",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "tested": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "interactive",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "interactive",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "interactive",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "interactive",
+    "policy": {
+      "tested": [
+        "0.0.1"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.2.0",
+    "surface": "interactive",
+    "policy": {
+      "tested": [
+        "2.2.0"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "interactive",
+    "policy": {
+      "tested": [
+        "2.1.267"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "interactive",
+    "policy": {
+      "tested": []
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.279-beta+build ",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279.5",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "v2.1.279",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "interactive",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "interactive",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.280",
+    "surface": "interactive",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.268",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.283",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.267-beta",
+    "surface": "interactive",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.267 ",
+    "surface": "interactive",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "unknown",
+    "surface": "screen",
+    "policy": {
+      "knownIncompatible": [
+        "unknown"
+      ],
+      "tested": [
+        "unknown"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "screen",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "tested": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "screen",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "screen",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "screen",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "screen",
+    "policy": {
+      "tested": [
+        "0.0.1"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.2.0",
+    "surface": "screen",
+    "policy": {
+      "tested": [
+        "2.2.0"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "screen",
+    "policy": {
+      "tested": [
+        "2.1.278"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "screen",
+    "policy": {
+      "tested": []
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.279-beta+build ",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279.5",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "v2.1.279",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "screen",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "screen",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.280",
+    "surface": "screen",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.268",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.283",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.267-beta",
+    "surface": "screen",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": " 2.1.267 ",
+    "surface": "screen",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "unknown",
+    "surface": "transcript",
+    "policy": {
+      "knownIncompatible": [
+        "unknown"
+      ],
+      "tested": [
+        "unknown"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "transcript",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "tested": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "transcript",
+    "policy": {
+      "knownIncompatible": [
+        "0.0.1"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "known_incompatible"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "transcript",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "transcript",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  },
+  {
+    "version": "0.0.1",
+    "surface": "transcript",
+    "policy": {
+      "tested": [
+        "0.0.1"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.2.0",
+    "surface": "transcript",
+    "policy": {
+      "tested": [
+        "2.2.0"
+      ]
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "transcript",
+    "policy": {
+      "tested": [
+        "2.1.267"
+      ],
+      "strict": true
+    },
+    "verdict": {
+      "kind": "supported"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "transcript",
+    "policy": {
+      "tested": []
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.279-beta+build ",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.279.5",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "v2.1.279",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "refused",
+      "reason": "unparseable"
+    }
+  },
+  {
+    "version": "2.1.278",
+    "surface": "transcript",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.279",
+    "surface": "transcript",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.280",
+    "surface": "transcript",
+    "policy": {
+      "minVersion": "2.1.279",
+      "maxVersionExclusive": "2.1.280"
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "out_of_range"
+    }
+  },
+  {
+    "version": "2.1.267",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.268",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.283",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": "2.1.267-beta",
+    "surface": "transcript",
+    "policy": {},
+    "verdict": {
+      "kind": "untested"
+    }
+  },
+  {
+    "version": " 2.1.267 ",
+    "surface": "transcript",
+    "policy": {
+      "strict": true
+    },
+    "verdict": {
+      "kind": "refused",
+      "reason": "strict_untested"
+    }
+  }
+]

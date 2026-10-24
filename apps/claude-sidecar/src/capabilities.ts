@@ -1,4 +1,6 @@
+import { STEER_MIN_CLI_VERSION } from '@verdandi/claude-runtime';
 import { CAPABILITY_TABLE, type CapabilityCondition } from './generated/protocolConstants.js';
+import { compareVersions, parseVersion } from './cliCompatibility.js';
 
 /**
  * What decides whether a conditional capability is advertised. Both are facts of THIS process or
@@ -9,15 +11,21 @@ import { CAPABILITY_TABLE, type CapabilityCondition } from './generated/protocol
  *   `egress_restricted` may be claimed.
  * - `sdkBundledAvailable`: this build can spawn the CLI inside the agent SDK's npm package, which a
  *   packaged single-file build cannot, so `executable_sdk_bundled` may be claimed.
+ * - `cliMessageLifecycle`: the host CLI's version, as probed at startup, is at least the kernel's
+ *   `STEER_MIN_CLI_VERSION`, the oldest CLI known to report `command_lifecycle` frames, so
+ *   `steer_turn` may be claimed. A promise about the process, not a session: each session still
+ *   refuses a steer until its own CLI lists `msg_lifecycle_v1` in a `system/init`.
  */
 export type CapabilityFacts = {
   egressRestricted: boolean;
   sdkBundledAvailable: boolean;
+  cliMessageLifecycle: boolean;
 };
 
 const CONDITION_OF: Record<CapabilityCondition, (facts: CapabilityFacts) => boolean> = {
   egress_restricted: (facts) => facts.egressRestricted,
   sdk_bundled: (facts) => facts.sdkBundledAvailable,
+  cli_message_lifecycle: (facts) => facts.cliMessageLifecycle,
 };
 
 /**
@@ -32,4 +40,14 @@ const CONDITION_OF: Record<CapabilityCondition, (facts: CapabilityFacts) => bool
  */
 export function handshakeCapabilities(facts: CapabilityFacts): string[] {
   return CAPABILITY_TABLE.filter((entry) => entry.when === undefined || CONDITION_OF[entry.when](facts)).map((entry) => entry.name);
+}
+
+/**
+ * The `cliMessageLifecycle` fact for a CLI version as the startup probe read it: its leading
+ * `major.minor.patch` is at least `STEER_MIN_CLI_VERSION`. A version that cannot be read is not.
+ */
+export function cliReportsMessageLifecycle(version: string): boolean {
+  const parsed = parseVersion(version);
+  const floor = parseVersion(STEER_MIN_CLI_VERSION);
+  return parsed !== undefined && floor !== undefined && compareVersions(parsed, floor) >= 0;
 }

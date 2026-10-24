@@ -6,6 +6,8 @@ import {
   cliPermissionModeProblem,
   PermissionAnswerError,
   PermissionModeError,
+  SteerError,
+  effectiveClaudeConfigDir,
   PROVIDER_PROMPT_TOOL_DENY,
   STRUCTURED_OUTPUT_CARRIER_TOOLS,
   usesProviderPermissionPrompts,
@@ -14,6 +16,7 @@ import {
   type ClaudeAccount,
   type ClaudeSessionConfig,
   type CliPermissionMode as KernelCliPermissionMode,
+  type ExtraMcpServers,
   type InitCheckMode,
 } from '@verdandi/claude-runtime';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
@@ -36,9 +39,19 @@ import {
 // from crates/claude-runtime-protocol/capabilities.json, which the Rust crate reads too. The capability
 // list is built from the same file in capabilities.ts.
 import { PROTOCOL_MAJOR as SOURCE_PROTOCOL_MAJOR, PROTOCOL_MINOR, PERMISSION_MODES } from './generated/protocolConstants.js';
-import { handshakeCapabilities } from './capabilities.js';
+import { cliReportsMessageLifecycle, handshakeCapabilities } from './capabilities.js';
+import { omittedCliOutput, withoutCliVersion } from './startupReport.js';
+import {
+  classifyCliVersion,
+  cliVerdictNeedsAcceptance,
+  reportForUnreadableCli,
+  reportForVerdict,
+  type CliCompatibilityReport,
+  type CliGateMode,
+  type CliReportVerdict,
+} from './cliCompatibility.js';
 import { PumpDriver } from './pumpDriver.js';
-import type { SequencedEvent } from './ringBuffer.js';
+import type { ReplayRequest, SequencedEvent } from './ringBuffer.js';
 import { translateEvent, extractTurnId, accountIdentityToProto } from './eventTranslation.js';
 import { SidecarError, toGrpcStatusCode, toGrpcMetadata } from './errorMapping.js';
 import {
@@ -53,6 +66,8 @@ import {
   EgressProbe,
   InitCheck,
   CliPermissionMode,
+  CliVerdict,
+  type CliCompatibility as CliCompatibilityProto,
   SettingSource as SettingSourceProto,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
 } from './generated/verdandi/claude/runtime/v1/runtime.js';
@@ -102,8 +117,23 @@ export const PROTOCOL_MAJOR = SOURCE_PROTOCOL_MAJOR;
 export type ClaudeCodeVersions = {
   /** What `executable: 'sdk_bundled'` runs: the CLI inside the SDK npm package. */
   sdkDeclared: string;
-  /** What `executable: 'host_cli'` runs: the CLI installed on this machine. */
+  /** What `executable: 'host_cli'` runs: the CLI installed on this machine. Empty when
+   * `hostCliProbeError` is set. */
   hostCli: string;
+  /**
+   * Why `claude --version` could not be read, when it could not. Only ever set by a process started
+   * with `VERDANDI_CLAUDE_SIDECAR_CLI_GATE=report`, which turns the probe's failure into a reported
+   * UNKNOWN verdict; in the default mode the probe's own error is thrown instead and the process does
+   * not start (src/index.ts).
+   *
+   * In the sidecar's own words only, without anything the CLI printed: this is the text the handshake
+   * and a refused CreateSession carry, and a host may store or show either. What a launcher prints on
+   * refusing `--version` can be anything, a credential included.
+   */
+  hostCliProbeError?: string;
+  /** The same sentence with the CLI's own output in it, for this process's stderr only, which has
+   * always shown it. Absent when there is no such output to add. */
+  hostCliProbeErrorPrinted?: string;
 };
 
 export function getSdkDeclaredClaudeCodeVersion(): string {
@@ -163,6 +193,23 @@ export function resolveClaudeCliPath(env: NodeJS.ProcessEnv = process.env): stri
   return override !== undefined && override !== '' ? override : 'claude';
 }
 
+/**
+ * `getActualClaudeCodeVersion` could not read a version. The message is the text a host has always seen;
+ * `probe` is the same fact in pieces, for the startup report (which tells "no such program" from "the
+ * program refused").
+ */
+export class CliProbeError extends SidecarError {
+  constructor(
+    message: string,
+    /** The same sentence with the CLI's own output replaced by a marker: the only form that may go in a file. */
+    readonly sentenceWithoutOutput: string,
+    readonly probe: { cliPath: string; spawnErrorCode?: string; exitStatus?: number; signal?: string },
+  ) {
+    super(ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE, message);
+    this.name = 'CliProbeError';
+  }
+}
+
 /** The *installed* CLI's version -- what an `executable: 'host_cli'` session runs. Real
  * implementation, used only by src/index.ts's production wiring -- never called by
  * runtimeServiceImpl.test.ts, which injects a fake instead so the fake-driven suite never depends on
@@ -174,18 +221,28 @@ export function getActualClaudeCodeVersion(cliPath: string = resolveClaudeCliPat
     // Carry the reason, not just the verdict. The failure this most often is -- a guarded launcher
     // sitting ahead of the real binary in PATH and refusing this caller -- explains itself on
     // stderr, and dropping that left a startup failure whose only clue was "could not determine".
-    const detail = [
-      result.error !== undefined ? `spawn error: ${result.error.message}` : undefined,
-      result.status !== null && result.status !== 0 ? `exit status ${result.status}` : undefined,
-      result.signal !== null && result.signal !== undefined ? `signal ${result.signal}` : undefined,
-      result.stderr !== undefined && result.stderr.trim() !== '' ? `stderr: ${result.stderr.trim()}` : undefined,
-    ]
-      .filter((part): part is string => part !== undefined)
-      .join('; ');
-    throw new SidecarError(
-      ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE,
-      `could not determine the installed claude CLI version via ${JSON.stringify(cliPath)}${detail === '' ? '' : ` (${detail})`}`,
-    );
+    // The sentence is built twice from the same parts: with the CLI's own stderr (what is printed, as it
+    // always was) and with that output replaced by a marker (what the startup report file may hold: the
+    // CLI's output can carry whatever a launcher prints, a credential included).
+    const sentence = (stderrPart: string | undefined): string => {
+      const detail = [
+        result.error !== undefined ? `spawn error: ${result.error.message}` : undefined,
+        result.status !== null && result.status !== 0 ? `exit status ${result.status}` : undefined,
+        result.signal !== null && result.signal !== undefined ? `signal ${result.signal}` : undefined,
+        stderrPart !== undefined ? `stderr: ${stderrPart}` : undefined,
+      ]
+        .filter((part): part is string => part !== undefined)
+        .join('; ');
+      return `could not determine the installed claude CLI version via ${JSON.stringify(cliPath)}${detail === '' ? '' : ` (${detail})`}`;
+    };
+    const stderrText = result.stderr !== undefined && result.stderr.trim() !== '' ? result.stderr.trim() : undefined;
+    const spawnErrorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    throw new CliProbeError(sentence(stderrText), sentence(stderrText === undefined ? undefined : omittedCliOutput(stderrText)), {
+      cliPath,
+      ...(typeof spawnErrorCode === 'string' ? { spawnErrorCode } : {}),
+      ...(result.status !== null && result.status !== 0 ? { exitStatus: result.status } : {}),
+      ...(result.signal !== null && result.signal !== undefined ? { signal: result.signal } : {}),
+    });
   }
   // `claude --version` prints something like "2.0.0 (Claude Code)" -- take the leading token.
   return result.stdout.trim().split(/\s+/)[0] ?? 'unknown';
@@ -226,6 +283,7 @@ export function validateEffort(config: ClaudeSessionConfigLike): void {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       `effort must be one of ${EFFORT_LEVELS.join(', ')} (or empty for the CLI default), got ${JSON.stringify(effort)}`,
+      'effort_unknown',
     );
   }
 }
@@ -241,6 +299,7 @@ export function validateSystemPrompt(config: ClaudeSessionConfigLike): void {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       'system_prompt was set but is blank -- omit the field to keep Claude Code\'s default system prompt',
+      'system_prompt_blank',
     );
   }
 }
@@ -262,6 +321,7 @@ export function parseOutputSchema(spec: { jsonSchemaJson: string }): Record<stri
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       `output_format.json_schema_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      'output_schema_not_json',
     );
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -269,6 +329,7 @@ export function parseOutputSchema(spec: { jsonSchemaJson: string }): Record<stri
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       `output_format.json_schema_json must be a JSON object (a JSON Schema), got ${kind}`,
+      'output_schema_not_object',
     );
   }
   return parsed as Record<string, unknown>;
@@ -298,12 +359,14 @@ export function validateResumeRequest(config: ClaudeSessionConfigLike): void {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       'resume_provider_session_id was set but is empty -- omit the field to start a fresh session',
+      'resume_id_empty',
     );
   }
   if (fork === true && resumeProviderSessionId === undefined) {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       'fork was requested without resume_provider_session_id -- there is no session to fork from',
+      'fork_without_resume',
     );
   }
 }
@@ -332,48 +395,69 @@ export const DEFAULT_CLAUDE_HOST_POLICY: ClaudeHostPolicy = {
 
 // ts-proto's default output keeps a proto enum's declared member names unchanged (unlike message
 // fields, which get camelCased) -- these *_MAP lookups mirror eventTranslation.ts's existing pattern
-// (Task 4) rather than inventing a new mapping style. Each generated enum also carries ts-proto's
-// synthetic UNRECOGNIZED = -1 member (an unknown value seen on the wire) -- Record<Enum, X> is total
-// over every declared member including that one, so it must be mapped too. Mirrors this file's own
-// STATUS_CODE_MAP-style pattern in errorMapping.ts (Task 6), which maps ErrorCode.UNRECOGNIZED
-// explicitly rather than leaving it out; here it gets the same safe default as the corresponding
-// *_UNSPECIFIED member.
-const CONFIGURATION_MAP: Record<ConfigurationProfile, ClaudeHostPolicy['configuration']> = {
+// rather than inventing a new mapping style. Each map covers exactly the members the proto declares;
+// UNSPECIFIED (0, what a sender that never set the field sends) keeps its default meaning.
+//
+// Anything else is refused, never defaulted (see declaredValue). The binary decoder keeps any number
+// it reads as it is, so a value from a newer protocol arrives as itself, and every default would
+// silently change what the session loads or runs: a configuration nobody declared loaded no settings
+// tiers yet skipped isolation, an executable nobody declared ran the SDK's bundled CLI. ts-proto's
+// synthetic UNRECOGNIZED (-1) gets no row either: no proto declares it, the binary decoder only
+// produces it for a sender that literally wrote -1, and that is as undeclared as any other number.
+type Declared<E extends number> = Exclude<E, -1>;
+
+const CONFIGURATION_MAP: Record<Declared<ConfigurationProfile>, ClaudeHostPolicy['configuration']> = {
   [ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED]: 'native',
   [ConfigurationProfile.CONFIGURATION_PROFILE_NATIVE]: 'native',
   [ConfigurationProfile.CONFIGURATION_PROFILE_ISOLATED]: 'isolated',
-  [ConfigurationProfile.UNRECOGNIZED]: 'native',
 };
 
-const PERMISSIONS_MAP: Record<PermissionMode, ClaudeHostPolicy['permissions']> = {
+const PERMISSIONS_MAP: Record<Declared<PermissionMode>, ClaudeHostPolicy['permissions']> = {
   [PermissionMode.PERMISSION_MODE_UNSPECIFIED]: 'interactive',
   [PermissionMode.PERMISSION_MODE_INTERACTIVE]: 'interactive',
   [PermissionMode.PERMISSION_MODE_VERDANDI_RULES]: 'verdandi_rules',
   [PermissionMode.PERMISSION_MODE_BYPASS]: 'bypass',
-  [PermissionMode.UNRECOGNIZED]: 'interactive',
 };
 
-const PERSISTENCE_MAP: Record<PersistenceMode, ClaudeHostPolicy['persistence']> = {
+const PERSISTENCE_MAP: Record<Declared<PersistenceMode>, ClaudeHostPolicy['persistence']> = {
   [PersistenceMode.PERSISTENCE_MODE_UNSPECIFIED]: 'ephemeral',
   [PersistenceMode.PERSISTENCE_MODE_HOST_CLI]: 'host_cli',
   [PersistenceMode.PERSISTENCE_MODE_EPHEMERAL]: 'ephemeral',
   [PersistenceMode.PERSISTENCE_MODE_EXTERNAL_STORE]: 'external_store',
-  [PersistenceMode.UNRECOGNIZED]: 'ephemeral',
 };
 
-const STREAMING_MAP: Record<StreamingMode, NonNullable<ClaudeHostPolicy['streaming']>> = {
+const STREAMING_MAP: Record<Declared<StreamingMode>, NonNullable<ClaudeHostPolicy['streaming']>> = {
   [StreamingMode.STREAMING_MODE_UNSPECIFIED]: 'complete',
   [StreamingMode.STREAMING_MODE_COMPLETE]: 'complete',
   [StreamingMode.STREAMING_MODE_PARTIAL]: 'partial',
-  [StreamingMode.UNRECOGNIZED]: 'complete',
 };
 
-const EXECUTABLE_MAP: Record<ExecutableSource, ClaudeHostPolicy['executable']> = {
+const EXECUTABLE_MAP: Record<Declared<ExecutableSource>, ClaudeHostPolicy['executable']> = {
   [ExecutableSource.EXECUTABLE_SOURCE_UNSPECIFIED]: 'host_cli',
   [ExecutableSource.EXECUTABLE_SOURCE_HOST_CLI]: 'host_cli',
   [ExecutableSource.EXECUTABLE_SOURCE_SDK_BUNDLED]: 'sdk_bundled',
-  [ExecutableSource.UNRECOGNIZED]: 'host_cli',
 };
+
+/** The policy fields read through the maps above, by their wire names. */
+type PolicyEnumField = 'configuration' | 'permissions' | 'persistence' | 'executable' | 'streaming';
+
+/**
+ * `map[value]` for a value the proto declares; any other number is refused as INVALID_CONFIGURATION
+ * with the reason `<field>_unknown`, the same shape as the other unknown-value refusals. A field
+ * missing from a policy built in process rather than decoded reads as UNSPECIFIED, which is what the
+ * decoder makes of a field absent from the wire.
+ */
+function declaredValue<V>(map: Record<number, V>, wireValue: number | undefined, field: PolicyEnumField): V {
+  const value = wireValue ?? 0;
+  if (!Object.prototype.hasOwnProperty.call(map, value)) {
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+      `policy.${field} is ${value}, which is not a value this sidecar knows -- refused rather than read as a default, which would silently change the session from what was asked for`,
+      `${field}_unknown`,
+    );
+  }
+  return map[value]!;
+}
 
 /**
  * Deliberately NOT a total `Record<SettingSourceProto, SettingSource>` like the five maps above --
@@ -396,6 +480,7 @@ export function mapSettingSource(value: SettingSourceProto): SettingSource {
       throw new SidecarError(
         ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
         `setting_sources contains ${value}, which is not a settings tier this sidecar can load`,
+        'setting_source_unknown',
       );
   }
 }
@@ -442,6 +527,7 @@ export function mapInitCheck(value: InitCheck | undefined): InitCheckMode | unde
       throw new SidecarError(
         ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
         `tool_policy.allow.init_check is ${value}, which is not a check this sidecar knows (UNSPECIFIED, VERIFY, REPORT_ONLY)`,
+        'init_check_unknown',
       );
   }
 }
@@ -471,6 +557,7 @@ export function mapCliPermissionMode(value: CliPermissionMode | undefined): Kern
       throw new SidecarError(
         ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
         `cli_permission_mode is ${value}, which is not a CLI mode this sidecar knows (UNSPECIFIED, DEFAULT, AUTO)`,
+        'cli_permission_mode_unknown',
       );
   }
 }
@@ -492,11 +579,11 @@ export function mapClaudeHostPolicy(policy: ClaudeHostPolicyProto | undefined): 
   const initCheck = policy.toolPolicy?.allow === undefined ? undefined : mapInitCheck(policy.toolPolicy.allow.initCheck);
   const cliPermissionMode = mapCliPermissionMode(policy.cliPermissionMode);
   return {
-    configuration: CONFIGURATION_MAP[policy.configuration],
-    permissions: PERMISSIONS_MAP[policy.permissions],
-    persistence: PERSISTENCE_MAP[policy.persistence],
-    executable: EXECUTABLE_MAP[policy.executable],
-    streaming: STREAMING_MAP[policy.streaming],
+    configuration: declaredValue(CONFIGURATION_MAP, policy.configuration, 'configuration'),
+    permissions: declaredValue(PERMISSIONS_MAP, policy.permissions, 'permissions'),
+    persistence: declaredValue(PERSISTENCE_MAP, policy.persistence, 'persistence'),
+    executable: declaredValue(EXECUTABLE_MAP, policy.executable, 'executable'),
+    streaming: declaredValue(STREAMING_MAP, policy.streaming, 'streaming'),
     // Presence, not emptiness: `undefined` here means "defer to `configuration`", `[]` means "load
     // no filesystem settings tiers". A `?? []` anywhere on this line would erase the difference and
     // flip every existing caller from user+project+local to full isolation.
@@ -550,6 +637,9 @@ export function mapClaudeHostPolicy(policy: ClaudeHostPolicyProto | undefined): 
  *      invariant would then close the session over the missing tool at its first turn.
  *   7. An `allow.init_check` value this sidecar does not know -- via `mapInitCheck`. No client that
  *      predates the field can send one: its absence decodes as UNSPECIFIED.
+ *   0. A `configuration`, `permissions`, `persistence`, `executable` or `streaming` value the proto
+ *      does not declare (UNSPECIFIED is declared and keeps its default) -- via `declaredValue`. First,
+ *      because every later rule reads these fields. No client that predates a value can send it.
  *   8. A `cli_permission_mode` value this sidecar does not know -- via `mapCliPermissionMode` -- and
  *      AUTO outside an interactive session or together with `permission_mode_switchable`, by the
  *      kernel's own `cliPermissionModeProblem`. Neither can fire on a client that predates the field:
@@ -568,7 +658,13 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
   if (policy === undefined) {
     return;
   }
-  // Before anything else, and for the same reason the settings-tier check below throws rather than
+  // Rule 0, called for its throws.
+  declaredValue(CONFIGURATION_MAP, policy.configuration, 'configuration');
+  declaredValue(PERMISSIONS_MAP, policy.permissions, 'permissions');
+  declaredValue(PERSISTENCE_MAP, policy.persistence, 'persistence');
+  declaredValue(EXECUTABLE_MAP, policy.executable, 'executable');
+  declaredValue(STREAMING_MAP, policy.streaming, 'streaming');
+  // Next, and for the same reason the settings-tier check below throws rather than
   // dropping: a policy this build cannot honour as written must fail as a typed client error at the
   // field that caused it. Left alone, `sdk_bundled` in a packaged build is accepted here, creates a
   // session, and surfaces as the SDK's own `Native CLI binary for <platform> not found` from inside
@@ -577,6 +673,7 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       "executable: sdk_bundled is not available in this build -- it spawns the CLI inside the agent SDK's npm package, which a packaged single-file build has no node_modules to resolve. Use executable: host_cli, which this build serves.",
+      'executable_unavailable',
     );
   }
   if (policy.settingSources !== undefined) {
@@ -588,11 +685,17 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
   }
   // Rule 8, before the tool-policy rules (which return early when there is no tool policy). The
   // unknown-value half throws inside mapCliPermissionMode; the combinations are the kernel's rule on
-  // the mapped policy, so UNSPECIFIED / unrecognized `permissions` count as interactive here exactly
-  // as they do for the session.
-  const cliModeProblem = cliPermissionModeProblem(mapClaudeHostPolicy(policy));
+  // the mapped policy, so UNSPECIFIED `permissions` counts as interactive here exactly as it does for
+  // the session.
+  const mappedPolicy = mapClaudeHostPolicy(policy);
+  const cliModeProblem = cliPermissionModeProblem(mappedPolicy);
   if (cliModeProblem !== null) {
-    throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, cliModeProblem);
+    // The kernel's rule names no reason; its two cases are told apart the way it tells them apart.
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+      cliModeProblem,
+      mappedPolicy.permissions !== 'interactive' ? 'cli_auto_needs_interactive' : 'cli_auto_with_switchable',
+    );
   }
   const toolPolicy = policy.toolPolicy;
   if (toolPolicy === undefined) {
@@ -608,6 +711,7 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       'tool_policy sets unrestricted together with deny/allow -- "no tool restriction at all" and a stated restriction cannot both be honoured, and picking either one would silently discard the other',
+      'tool_policy_unrestricted_with_restriction',
     );
   }
   const allow = toolPolicy.allow?.tools ?? [];
@@ -617,6 +721,7 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
         throw new SidecarError(
           ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
           `tool_policy.${fieldName} contains an empty tool name -- it would restrict nothing while looking like it restricts something`,
+          'tool_policy_empty_name',
         );
       }
     }
@@ -627,17 +732,19 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
       throw new SidecarError(
         ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
         `tool_policy names ${name} in both deny and allow -- deny wins, so the allow entry can only mislead a reader`,
+        'tool_policy_deny_allow_overlap',
       );
     }
   }
   // Rule 6, by the kernel's own predicate on the mapped policy, so "where the flag is in force" has one
-  // definition (UNSPECIFIED and UNRECOGNIZED map to interactive and count).
+  // definition (UNSPECIFIED maps to interactive and counts).
   if (usesProviderPermissionPrompts(mapClaudeHostPolicy(policy))) {
     for (const name of allow) {
       if (PROVIDER_PROMPT_TOOL_DENY.includes(name)) {
         throw new SidecarError(
           ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
           `tool_policy.allow names ${name}, which provider_permission_prompts removes from the session (the CLI only offers it because of the prompt channel that flag opens) -- drop it from allow, or do not set the flag`,
+          'tool_policy_allow_provider_prompt_tool',
         );
       }
     }
@@ -656,13 +763,14 @@ export function validatePolicy(policy: ClaudeHostPolicyProto | undefined, option
  */
 export function buildKernelSessionConfig(
   config: ClaudeSessionConfigLike,
-  hostDefaults: { account?: ClaudeAccount; hostCliPath?: string } = {},
+  hostDefaults: { account?: ClaudeAccount; hostCliPath?: string; extraMcpServers?: ExtraMcpServers } = {},
 ): ClaudeSessionConfig {
   return {
     cwd: config.cwd,
     policy: mapClaudeHostPolicy(config.policy as ClaudeHostPolicyProto | undefined),
     account: hostDefaults.account,
     hostCliPath: hostDefaults.hostCliPath,
+    ...(hostDefaults.extraMcpServers !== undefined ? { extraMcpServers: hostDefaults.extraMcpServers } : {}), // absent: as before the variable existed
     ...(config.resumeProviderSessionId !== undefined
       ? { resume: { providerSessionId: config.resumeProviderSessionId }, fork: config.fork === true }
       : {}),
@@ -736,11 +844,12 @@ export type RuntimeServiceOptions = {
   ringBufferCapacity?: number;
   /** A test seam; see `replayConfig.ts`. Absent in production. */
   watchFault?: WatchFaultInjection;
-  /** A diagnostic seam; see `replayConfig.ts`. Absent in production, and absent means no timer,
-   *  no listeners, and no reading of `call.write`'s result. */
+  /** A diagnostic seam; see `replayConfig.ts`. Absent in production, and absent means no timer and
+   *  no per-write bookkeeping. The write-queue bound itself is not part of the seam: it is always on. */
   writeQueueStats?: WriteQueueStats;
-  /** Where the stats line goes. Injectable so a test can capture it; defaults to stderr, which is
-   *  what a spawning host actually drains. */
+  /** Where diagnostic lines go: the stats line, and the line saying a watcher was ended by the
+   *  write-queue bound. Injectable so a test can capture them; defaults to stderr, which is what a
+   *  spawning host actually drains. */
   onDiagnostic?: (line: string) => void;
   /** Whether this build can serve `executable: 'sdk_bundled'`. Defaults to the real runtime answer.
    *  Governs BOTH what the handshake advertises and what `validatePolicy` accepts, from one value,
@@ -750,21 +859,63 @@ export type RuntimeServiceOptions = {
    *  `buildKernelSessionConfig` -- reported by Handshake. Absent means nothing is pinned, and
    *  Handshake says ACCOUNT_BINDING_UNPINNED. */
   account?: { name: string; configDir: string };
+  /** The environment the sessions inherit, which an UNPINNED handshake reads `CLAUDE_CONFIG_DIR` and
+   *  `HOME` from to say where the CLI keeps its configuration. Defaults to this process's own; a test
+   *  injects one. Only paths are taken from it. */
+  env?: NodeJS.ProcessEnv;
   /** True only when index.ts proved at startup that this process cannot reach loopback
    *  (VERDANDI_CLAUDE_SIDECAR_EGRESS=restricted, egress.ts). Governs the `egress_restricted`
    *  capability and nothing else; absent is false. */
   egressRestricted?: boolean;
+  /**
+   * What the startup gate made of each CLI binary, and what to do about it. Absent means the default
+   * `refuse` mode with the verdicts derived from `cachedClaudeCodeVersions` by the default policy
+   * (a hand-built service in a test). `startSidecar` always passes it.
+   *
+   * In `refuse` mode a REFUSED or UNKNOWN verdict never gets this far -- the process did not start --
+   * so the only thing it governs is what the handshake reports. In `report` mode it also decides
+   * CreateSession: see `requireCliAllowed`.
+   */
+  cliGate?: { mode: CliGateMode; host: CliCompatibilityReport; bundled?: CliCompatibilityReport };
 };
 
 /**
- * Counts what grpc-js is holding per watch subscriber, for the write-queue diagnostic.
+ * How many messages grpc-js is holding for one watch call. The stats seam reports it as it is; the
+ * write-queue bound starts from it and leaves out the replay and the current tick (see the watcher's
+ * `send`), so the seam can show a healthy reader at or above the capacity.
  *
- * `outstanding` is the honest number: writes grpc-js accepted into its own buffer (`write()`
- * returned false) minus the drains that cleared it. It is not an estimate and it is not RSS -- it
- * is the count of messages sitting in the sidecar's heap because a subscriber is not reading them.
+ * It is `call.writableLength`, read from grpc-js 1.14 rather than assumed. The server-streaming call
+ * (`ServerWritableStreamImpl`, `server-call.js`) is an objectMode Node `Writable` whose `_write` hands
+ * one message to `sendMessage` (`server-interceptors.js`), which serializes it and calls the HTTP/2
+ * stream's `write`; `_write`'s callback runs only when THAT write's callback does, i.e. once HTTP/2 has
+ * taken the frame. So `writableLength` counts every message this handler passed to `write()` that HTTP/2
+ * has not taken yet: the ones queued in the Writable plus the one in flight. Those are the messages in
+ * this process's heap because a reader is not keeping up; what already went into HTTP/2's flow-control
+ * window or the socket buffer is not counted, and is bounded by them rather than by this code.
+ *
+ * `write()`'s return value and `'drain'` are two thresholds on that same number, not a count of it:
+ * `write()` returns `false` once `writableLength` has reached `writableHighWaterMark` (16 for objectMode,
+ * so the 16th write is the first `false`), and `'drain'` fires when it gets back to 0 after a `false`.
+ * Counting `false` returns between drains -- what this seam first did -- misses the first 15 messages
+ * and never subtracts a partial flush, so a slow-but-steady reader that never quite empties its queue
+ * would climb towards the bound while really holding a dozen messages. The bound must not end a reader
+ * that is keeping up, so it reads the number itself.
+ */
+function outstandingWrites(call: { writableLength: number }): number {
+  return call.writableLength;
+}
+
+/**
+ * The write-queue stats seam: per watch subscriber, what grpc-js is holding (see `outstandingWrites`),
+ * printed on a timer.
+ *
+ * `outstanding` is sampled live at each print; `peak_outstanding` is the largest value seen right after
+ * a write; `buffered_writes` counts the writes `write()` answered `false` -- grpc-js raising its
+ * congestion signal -- which is reported, not used for anything. It is not RSS: it is the count of
+ * messages sitting in the sidecar's heap because a subscriber is not reading them.
  */
 function makeWriteQueueDepth(intervalMs: number, emit: (line: string) => void) {
-  type Entry = { sessionId: string; outstanding: number; maxOutstanding: number; writes: number; backpressured: number };
+  type Entry = { sessionId: string; outstanding: () => number; maxOutstanding: number; writes: number; backpressured: number };
   const entries = new Map<object, Entry>();
 
   const timer = setInterval(() => {
@@ -776,7 +927,7 @@ function makeWriteQueueDepth(intervalMs: number, emit: (line: string) => void) {
     let writes = 0;
     let backpressured = 0;
     for (const e of entries.values()) {
-      outstanding += e.outstanding;
+      outstanding += e.outstanding();
       maxOutstanding = Math.max(maxOutstanding, e.maxOutstanding);
       writes += e.writes;
       backpressured += e.backpressured;
@@ -789,13 +940,13 @@ function makeWriteQueueDepth(intervalMs: number, emit: (line: string) => void) {
   timer.unref?.();
 
   return {
-    onSubscribe(sub: object, sessionId: string): void {
-      entries.set(sub, { sessionId, outstanding: 0, maxOutstanding: 0, writes: 0, backpressured: 0 });
+    onSubscribe(sub: object, sessionId: string, outstanding: () => number): void {
+      entries.set(sub, { sessionId, outstanding, maxOutstanding: 0, writes: 0, backpressured: 0 });
     },
     onUnsubscribe(sub: object): void {
       entries.delete(sub);
     },
-    onWrite(sub: object, accepted: boolean): void {
+    onWrite(sub: object, accepted: boolean, outstanding: number): void {
       const e = entries.get(sub);
       if (e === undefined) {
         return;
@@ -803,15 +954,8 @@ function makeWriteQueueDepth(intervalMs: number, emit: (line: string) => void) {
       e.writes += 1;
       if (!accepted) {
         e.backpressured += 1;
-        e.outstanding += 1;
-        e.maxOutstanding = Math.max(e.maxOutstanding, e.outstanding);
       }
-    },
-    onDrain(sub: object): void {
-      const e = entries.get(sub);
-      if (e !== undefined) {
-        e.outstanding = 0;
-      }
+      e.maxOutstanding = Math.max(e.maxOutstanding, outstanding);
     },
     stop(): void {
       clearInterval(timer);
@@ -823,6 +967,46 @@ function makeWriteQueueDepth(intervalMs: number, emit: (line: string) => void) {
  * session has one; this keeps a session that does not from looking like an answer. */
 const NO_ACCOUNT_PROBE: KernelAccountIdentity = { status: 'unavailable', error: 'this session has no account probe' };
 
+const CLI_VERDICT_PROTO: Record<CliReportVerdict, CliVerdict> = {
+  supported: CliVerdict.CLI_VERDICT_SUPPORTED,
+  untested: CliVerdict.CLI_VERDICT_UNTESTED,
+  refused: CliVerdict.CLI_VERDICT_REFUSED,
+  unknown: CliVerdict.CLI_VERDICT_UNKNOWN,
+};
+
+function cliReportToProto(report: CliCompatibilityReport): CliCompatibilityProto {
+  return {
+    verdict: CLI_VERDICT_PROTO[report.verdict],
+    version: report.version,
+    supportedRange: report.supportedRange,
+    testedVersions: report.testedVersions,
+    diagnostic: report.diagnostic,
+  };
+}
+
+/** What the handshake reports when the caller did not hand the service a gate: the default policy's
+ * reading of the two versions. The same function `startSidecar` classifies with unless it was given
+ * another, so a service built by hand and one built by `startSidecar` agree. */
+function derivedCliGate(versions: ClaudeCodeVersions, sdkBundledServed: boolean): NonNullable<RuntimeServiceOptions['cliGate']> {
+  return {
+    mode: 'refuse',
+    host:
+      versions.hostCliProbeError !== undefined
+        ? reportForUnreadableCli(versions.hostCliProbeError)
+        : reportForVerdict(versions.hostCli, classifyCliVersion(versions.hostCli)),
+    ...(sdkBundledServed ? { bundled: reportForVerdict(versions.sdkDeclared, classifyCliVersion(versions.sdkDeclared)) } : {}),
+  };
+}
+
+/** How each kernel steer refusal reaches the wire. Total over the kernel's kinds. */
+const STEER_ERROR_CODES: Record<SteerError['kind'], ErrorCode> = {
+  closed: ErrorCode.ERROR_CODE_SESSION_NOT_FOUND,
+  no_active_turn: ErrorCode.ERROR_CODE_NO_ACTIVE_TURN,
+  turn_mismatch: ErrorCode.ERROR_CODE_TURN_MISMATCH,
+  unavailable: ErrorCode.ERROR_CODE_STEER_UNAVAILABLE,
+  invalid: ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+};
+
 export function createRuntimeServiceImpl(
   registry: SessionRegistry,
   sessionFactory: (config: ClaudeSessionConfigLike) => MinimalKernelSession,
@@ -831,13 +1015,19 @@ export function createRuntimeServiceImpl(
 ) {
   const canRunSdkBundled = options.sdkBundledAvailable ?? sdkBundledAvailable();
   const boundAccount = options.account;
+  // Once, at construction, like the account itself: where the CLI reads its configuration is a property
+  // of this process, not of a handshake.
+  const effectiveConfigDir = effectiveClaudeConfigDir(boundAccount, options.env ?? process.env);
   const egressRestricted = options.egressRestricted === true;
+  const cliGate = options.cliGate ?? derivedCliGate(cachedClaudeCodeVersions, canRunSdkBundled);
+  // From the version the gate already read and reports, so the handshake's steer promise and its CLI
+  // report cannot name two different binaries. An unreadable version promises nothing.
+  const cliMessageLifecycle = cliReportsMessageLifecycle(cliGate.host.version);
   const ringBufferCapacity = options.ringBufferCapacity ?? RING_BUFFER_CAPACITY;
   const watchFault = options.watchFault;
+  const emitDiagnostic = options.onDiagnostic ?? ((line: string) => console.warn(line));
   const writeQueueDepth =
-    options.writeQueueStats === undefined
-      ? undefined
-      : makeWriteQueueDepth(options.writeQueueStats.intervalMs, options.onDiagnostic ?? ((line) => console.warn(line)));
+    options.writeQueueStats === undefined ? undefined : makeWriteQueueDepth(options.writeQueueStats.intervalMs, emitDiagnostic);
   // Which sessions have already had a watch stream broken on purpose. Per session and once only --
   // see `watchFaultInjectionFromEnv` for why firing on the reconnect too would defeat the very test
   // it exists to enable.
@@ -870,6 +1060,35 @@ export function createRuntimeServiceImpl(
         sub.send(full);
       }
     };
+  }
+
+  /**
+   * Makes sure a new watcher gets the session's slash-command list. CommandsUpdated is state, not
+   * history: a watcher that starts FROM_NOW, or whose replay no longer holds the newest list (the ring
+   * buffer evicted it, a reconnect after EVENT_GAP), would otherwise never learn the commands. Such a
+   * watch gets the newest list again as a NEW event -- next sequence, into the ring buffer, to every
+   * watcher of the session -- never as the old one re-sent, so sequences stay gapless for every
+   * client. A watcher whose replay holds it, or whose AFTER_SEQUENCE cursor is at or past it (it has
+   * seen it), causes nothing. The other watchers get a copy of a list they already hold, which a host
+   * replaces with itself.
+   */
+  function reannounceCommands(entry: SessionEntry, request: ReplayRequest, replayed: readonly SequencedEvent[]): void {
+    const latest = entry.latestCommands;
+    // Nothing after a session's last event: an ended session's stream stops at SessionClosed.
+    if (latest === undefined || entry.session.closeReason() !== undefined) {
+      return;
+    }
+    if (replayed.some((event) => event.sequence === latest.sequence)) {
+      return;
+    }
+    if (request.mode === 'after_sequence' && request.afterSequence >= latest.sequence) {
+      return;
+    }
+    entry.sequence += 1n;
+    const again: SequencedEvent = { sequence: entry.sequence, occurredAt: BigInt(Date.now()), event: latest.event };
+    entry.ringBuffer.push(again);
+    entry.latestCommands = again;
+    broadcastFor(entry.sessionId)(again);
   }
 
   /**
@@ -909,6 +1128,52 @@ export function createRuntimeServiceImpl(
   }
 
   /**
+   * The write-queue bound (PACKAGING.md section 6): ends ONE watch stream whose unflushed live writes
+   * from earlier ticks have reached the replay ring's capacity, with `ERROR_CODE_EVENT_GAP` --
+   * "reconnect with your cursor". What is and is not counted is at the call site in
+   * `watchSessionEvents`.
+   *
+   * The capacity is the number the handshake advertises as `bounded-<n>`, one number rather than two:
+   * a watcher holding that many unflushed events is already at the point past which a reconnect could
+   * no longer be served from the ring without a gap, so ending it here costs it nothing it had not
+   * already lost, and turns unbounded heap growth into the outcome the protocol already describes.
+   *
+   * Like `maybeBreakThisWatch`, it touches nothing but this subscriber: the session keeps running, the
+   * producer is never paused, and other watchers of the same session are not looked at. The subscriber
+   * leaves the Set before the stream fails, so the next broadcast cannot write to it. `failStream`
+   * emits the error, and grpc-js ends the call after the messages already queued (its 'error' handler
+   * calls `end()`, and `_final` runs after the queue), so the client receives every event written
+   * before the error status and can reconnect with the last one's sequence. Those queued messages stay
+   * in the heap until the client reads them or goes away: the bound caps them, it does not discard
+   * them.
+   */
+  function endForWriteQueueBound(
+    sessionId: string,
+    subscribers: Set<{ send: (event: unknown) => void; end: () => void }>,
+    sub: { send: (event: unknown) => void; end: () => void },
+    call: { emit: (event: 'error', err: grpc.ServiceError) => void },
+    outstanding: number,
+  ): void {
+    subscribers.delete(sub);
+    writeQueueDepth?.onUnsubscribe(sub);
+    emitDiagnostic(
+      `claude-sidecar: write-queue: ended a watcher of session ${sessionId} with EVENT_GAP: outstanding=${outstanding} reached the replay ring capacity ${ringBufferCapacity}`,
+    );
+    failStream(
+      call,
+      sidecarErrorToServiceError(
+        new SidecarError(
+          ErrorCode.ERROR_CODE_EVENT_GAP,
+          `this watcher stopped reading: ${outstanding} events were waiting to be sent to it, the replay buffer's ` +
+            `capacity (bounded-${ringBufferCapacity}), so the stream was ended rather than queued further. Every event ` +
+            `before this error was delivered. Reconnect with after_sequence set to the last sequence you received. ` +
+            `The session was not ended by this; if it has ended on its own since, the reconnect gets SESSION_NOT_FOUND.`,
+        ),
+      ),
+    );
+  }
+
+  /**
    * Ends a server-streaming call with a typed error the client actually receives.
    *
    * `call.destroy(err)` does NOT do this. Measured against a real grpc-js client over a real UDS:
@@ -938,6 +1203,39 @@ export function createRuntimeServiceImpl(
     call.emit('error', error);
   }
 
+  /**
+   * `report` mode's per-session decision. The process started on a CLI the sidecar does not vouch for
+   * only because the operator asked it to report instead of refusing; the answer to "run on it anyway?"
+   * is the host's, and it is given per session, in the request, never by configuration.
+   *
+   * Which binary: the one this session would spawn. `HOST_CLI` and an unset enum are the installed CLI
+   * (the default policy's and a missing policy's meaning too); anything else the sidecar maps to the
+   * SDK's own CLI, so it is judged by that binary's verdict -- or, in a build with none to run, by the
+   * host's, so that no request shape leaves a refused binary unjudged.
+   *
+   * Refused for REFUSED and UNKNOWN alike: an unknown version is not a supported one. SUPPORTED and
+   * UNTESTED start as they always have. In `refuse` mode this returns at once: a process whose CLI
+   * would need acceptance never started, so there is nothing to accept, and the field is ignored.
+   */
+  function requireCliAllowed(policy: ClaudeHostPolicyProto | undefined): void {
+    if (cliGate.mode !== 'report') {
+      return;
+    }
+    // Which binary the session will really run, read from the same table the kernel's mapping uses,
+    // never from a hand-written list: UNSPECIFIED maps to the host CLI there, and judging it by the
+    // bundled verdict would let a refused host CLI run unaccepted. validatePolicy has already refused
+    // a value the table does not hold.
+    const wantsHost = policy === undefined || declaredValue(EXECUTABLE_MAP, policy.executable, 'executable') === 'host_cli';
+    const [which, report] = wantsHost || cliGate.bundled === undefined ? (['host', cliGate.host] as const) : (['sdk-bundled', cliGate.bundled] as const);
+    if (!cliVerdictNeedsAcceptance(report.verdict) || policy?.acceptUnsupportedCli === true) {
+      return;
+    }
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_UNSUPPORTED_CLI_VERSION,
+      `the ${which} claude CLI is ${report.verdict.toUpperCase()} (${report.version === '' ? 'version unknown' : `version ${report.version}`}; this sidecar supports ${report.supportedRange}) and VERDANDI_CLAUDE_SIDECAR_CLI_GATE=report leaves the decision to the host: set ClaudeHostPolicy.accept_unsupported_cli to run a session on it anyway. ${report.diagnostic}`,
+    );
+  }
+
   function requireEntry(sessionId: string): SessionEntry {
     const entry = registry.get(sessionId);
     if (entry === undefined) {
@@ -963,7 +1261,14 @@ export function createRuntimeServiceImpl(
           // `sdk_declared_...` report a version the SDK had never declared and hid the fact that
           // the two binaries differ at all. They are now the two things their names say.
           sdkDeclaredClaudeCodeVersion: cachedClaudeCodeVersions.sdkDeclared,
-          actualClaudeCodeVersion: cachedClaudeCodeVersions.hostCli,
+          // In report mode a process binds with a REFUSED CLI, whose version is whatever it printed first
+          // on stdout, so it goes out in the form the verdict's own report uses (its leading
+          // major.minor.patch, or the omitted marker). A refuse-mode process never binds with one, and
+          // every other version is read exactly as before.
+          actualClaudeCodeVersion:
+            cliGate.mode === 'report' && cliGate.host.verdict === 'refused'
+              ? withoutCliVersion('', cachedClaudeCodeVersions.hostCli).version
+              : cachedClaudeCodeVersions.hostCli,
           // Built from crates/claude-runtime-protocol/capabilities.json, in its order: RPC names, plus the
           // capabilities that are parameters of CreateSession or fields of an event (so a client cannot
           // discover them from the service definition), each added in the same commit that wires it
@@ -972,7 +1277,7 @@ export function createRuntimeServiceImpl(
           // --user unit with IPAddressDeny= proves nothing), and `executable_sdk_bundled` only in a build
           // that can spawn the SDK's own CLI. The executable_* pair stays LAST, so a packaged build's list
           // is a checkout's minus its final entry (tests/packagedRuntime.test.ts).
-          capabilities: handshakeCapabilities({ egressRestricted, sdkBundledAvailable: canRunSdkBundled }),
+          capabilities: handshakeCapabilities({ egressRestricted, sdkBundledAvailable: canRunSdkBundled, cliMessageLifecycle }),
           configurationProfiles: ['native', 'isolated'],
           permissionModes: [...PERMISSION_MODES],
           maxMessageBytes: BigInt(4 * 1024 * 1024),
@@ -985,12 +1290,20 @@ export function createRuntimeServiceImpl(
           accountBinding: boundAccount === undefined ? AccountBinding.ACCOUNT_BINDING_UNPINNED : AccountBinding.ACCOUNT_BINDING_PINNED,
           accountName: boundAccount?.name ?? '',
           accountConfigDir: boundAccount?.configDir ?? '',
+          // Where the CLI really reads its configuration: the pinned account's directory, or for an
+          // unpinned process what the sessions inherit. A path computed from the environment; nothing
+          // under it is opened, so no credential can reach this message.
+          effectiveClaudeConfigDir: effectiveConfigDir,
           // The same startup fact `egress_restricted` is advertised from: the probe runs only when the
           // operator asked for it, and a sidecar whose probe reached loopback never gets this far.
           egressProbe: egressRestricted ? EgressProbe.EGRESS_PROBE_LOOPBACK_BLOCKED : EgressProbe.EGRESS_PROBE_NOT_RUN,
           // The constant the kernel's own tool-set check permits, so what a host is told and what the
           // sidecar enforces are one list.
           structuredOutputTools: [...STRUCTURED_OUTPUT_CARRIER_TOOLS],
+          // The verdict behind actual_claude_code_version, and the bundled one only where that CLI
+          // can run at all (a packaged build has none, and says so by leaving the field out).
+          cliCompatibility: cliReportToProto(cliGate.host),
+          ...(canRunSdkBundled && cliGate.bundled !== undefined ? { bundledCliCompatibility: cliReportToProto(cliGate.bundled) } : {}),
         });
       } catch (err) {
         callback(toServiceError(err));
@@ -1010,6 +1323,9 @@ export function createRuntimeServiceImpl(
         // session object -- and, in production, no Claude subprocess -- ever exists for a request
         // that was never going to be served correctly.
         validatePolicy(call.request.policy as ClaudeHostPolicyProto | undefined, { sdkBundledAvailable: canRunSdkBundled });
+        // After validatePolicy, which settles the executable this session would spawn, and before the
+        // factory: a refused CLI must not have a session, and so no subprocess, behind the refusal.
+        requireCliAllowed(call.request.policy as ClaudeHostPolicyProto | undefined);
         const sessionId = randomUUID();
         const session = sessionFactory(call.request);
         const entry = registry.create(sessionId, session, ringBufferCapacity);
@@ -1065,6 +1381,12 @@ export function createRuntimeServiceImpl(
         let answer: { sessionId: string; accountIdentity: ReturnType<typeof accountIdentityToProto> };
         try {
           const identity = await session.accountIdentity();
+          // A CLI that exits before it answers the SDK's initialize request ends the query's stream
+          // and, in the same burst, rejects accountInfo(): the probe settles at once, but the session
+          // learns of the exit only when a pump looks at the stream, which the driver's timer has
+          // not done yet. One pump here, serialized with the driver's own, lets the session see an
+          // exit that has already happened before this call vouches for it.
+          await driver.pumpNow();
           // Nothing below yields before the answer is sent, so a cancel cannot slip in between.
           waiting = false;
           if (cancelled || call.cancelled === true) {
@@ -1072,13 +1394,22 @@ export function createRuntimeServiceImpl(
             return;
           }
           // OK always means a session the client can use. Asked on the session itself: it is marked
-          // ended in the same step that settled the probe, while the registry drops it only on a
-          // later PumpDriver callback.
+          // ended by the pump above (or by a close), while the registry drops it only on a
+          // PumpDriver callback.
           const closeReason = session.closeReason();
           if (closeReason !== undefined) {
             throw new SidecarError(
               ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE,
               `the session ended (${closeReason}) while CreateSession was waiting for its account identity, so there is no session to return`,
+            );
+          }
+          // A pump that throws (an SDK message the translator cannot read) stops the driver and drops the
+          // session from the registry without closing it, so closeReason() says nothing; every later
+          // RPC on this id would answer SESSION_NOT_FOUND. The catch below closes the query.
+          if (registry.get(sessionId) === undefined) {
+            throw new SidecarError(
+              ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE,
+              'the session stopped while CreateSession was waiting for its account identity (its event pump failed), so there is no session to return',
             );
           }
           answer = { sessionId, accountIdentity: accountIdentityToProto(identity ?? NO_ACCOUNT_PROBE) };
@@ -1128,6 +1459,43 @@ export function createRuntimeServiceImpl(
           throw new SidecarError(message === 'session is closed' ? ErrorCode.ERROR_CODE_SESSION_NOT_FOUND : ErrorCode.ERROR_CODE_TURN_ALREADY_ACTIVE, message);
         }
         entry.sendTurnIdempotency.record(call.request.commandId, payloadHash, { turnId });
+        callback(null, { turnId });
+      } catch (err) {
+        callback(toServiceError(err));
+      }
+    },
+
+    /**
+     * SteerTurn (capability 'steer_turn'): a user message added to the running turn. Idempotent per
+     * command_id like SendTurn, and recorded only when the kernel accepted it, so a refused steer leaves
+     * nothing a retry could replay as success. Every refusal is the kernel's `SteerError`, mapped here.
+     */
+    steerTurn(
+      call: { request: { sessionId: string; commandId: string; expectedTurnId: string; clientMessageId: string; text: string } },
+      callback: (err: grpc.ServiceError | null, res?: unknown) => void,
+    ) {
+      try {
+        const entry = requireEntry(call.request.sessionId);
+        const { expectedTurnId, clientMessageId, text } = call.request;
+        const payloadHash = hashPayload({ expectedTurnId, clientMessageId, text });
+        const cached = entry.steerTurnIdempotency.check(call.request.commandId, payloadHash);
+        if (cached.kind === 'conflict') {
+          throw new SidecarError(ErrorCode.ERROR_CODE_IDEMPOTENCY_CONFLICT, `command_id ${call.request.commandId} reused with a different payload`);
+        }
+        if (cached.kind === 'replay') {
+          callback(null, cached.outcome);
+          return;
+        }
+        let turnId: string;
+        try {
+          ({ turnId } = entry.session.steerTurn(expectedTurnId, clientMessageId, text));
+        } catch (kernelErr) {
+          if (kernelErr instanceof SteerError) {
+            throw new SidecarError(STEER_ERROR_CODES[kernelErr.kind], kernelErr.message, kernelErr.reason);
+          }
+          throw kernelErr;
+        }
+        entry.steerTurnIdempotency.record(call.request.commandId, payloadHash, { turnId });
         callback(null, { turnId });
       } catch (err) {
         callback(toServiceError(err));
@@ -1187,7 +1555,7 @@ export function createRuntimeServiceImpl(
           if (kernelErr instanceof PermissionAnswerError) {
             // Nothing was resolved and nothing is recorded: the request stays pending for a real
             // answer, and a retry of this command gets this same refusal.
-            throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, kernelErr.message);
+            throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, kernelErr.message, kernelErr.kind);
           }
           throw kernelErr;
         }
@@ -1234,7 +1602,7 @@ export function createRuntimeServiceImpl(
           // Never defaulted: PERMISSIONS_MAP sends UNSPECIFIED to 'interactive' for CreateSession's
           // backwards compatibility, but a switch whose target nobody stated is not a request to be
           // gated -- it is a client that did not say.
-          throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, `set_permission_mode needs a mode (INTERACTIVE, VERDANDI_RULES or BYPASS), got ${mode}`);
+          throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, `set_permission_mode needs a mode (INTERACTIVE, VERDANDI_RULES or BYPASS), got ${mode}`, 'permission_mode_unspecified');
         }
         const payloadHash = hashPayload({ mode });
         const cached = entry.setPermissionModeIdempotency.check(call.request.commandId, payloadHash);
@@ -1268,6 +1636,7 @@ export function createRuntimeServiceImpl(
               throw new SidecarError(
                 kernelErr.kind === 'closed' ? ErrorCode.ERROR_CODE_SESSION_NOT_FOUND : ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
                 kernelErr.kind === 'provider_refused' ? `the provider refused the permission mode: ${kernelErr.message}` : kernelErr.message,
+                kernelErr.kind === 'closed' ? '' : `permission_mode_${kernelErr.kind}`,
               );
             }
             throw new SidecarError(ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE, kernelErr instanceof Error ? kernelErr.message : String(kernelErr));
@@ -1292,12 +1661,15 @@ export function createRuntimeServiceImpl(
       // process rather than out to the socket. Typed as `void` here, the value was not merely
       // ignored, it was unreachable: nobody could have consulted it without changing this line
       // first. A local structural type that is narrower than the real thing hides the API.
-      write: (chunk: unknown) => boolean;
+      // The optional callback is Node's per-message one: it runs once HTTP/2 has taken that message.
+      write: (chunk: unknown, callback?: () => void) => boolean;
+      // Node's Writable: the messages handed to write() that HTTP/2 has not taken yet. What the
+      // write-queue bound counts; see `outstandingWrites`.
+      writableLength: number;
       end: () => void;
       destroy: (err?: grpc.ServiceError) => void;
       emit: (event: 'error', err: grpc.ServiceError) => void;
-      // 'drain' is the other half of that signal: grpc-js emits it when the buffer above clears.
-      on: (event: 'cancelled' | 'close' | 'error' | 'drain', listener: () => void) => void;
+      on: (event: 'cancelled' | 'close' | 'error', listener: () => void) => void;
     }) {
       // This handler had no try/catch at all, which was survivable only while nothing in it could
       // throw. Parsing a typed replay request can, and an unmapped throw out of a grpc-js streaming
@@ -1306,7 +1678,8 @@ export function createRuntimeServiceImpl(
       try {
         const sessionId = call.request.sessionId;
         const entry = requireEntry(sessionId);
-        const replay = entry.ringBuffer.replay(replayRequestFromProto(call.request));
+        const replayRequest = replayRequestFromProto(call.request);
+        const replay = entry.ringBuffer.replay(replayRequest);
 
         if (replay.kind === 'gap') {
           throw new SidecarError(
@@ -1321,18 +1694,32 @@ export function createRuntimeServiceImpl(
             `after_sequence ${replay.requested} is beyond anything this session has ever emitted (latest: ` +
               `${replay.latest}), so it cannot have come from this stream. A sequence cursor is ephemeral ` +
               `state belonging to one session on one sidecar process -- it is not durable and not portable.`,
+            'replay_cursor_in_future',
           );
         }
 
+        // How many of the replay's messages HTTP/2 has not taken yet. The write-queue bound leaves
+        // them out: a replay is one burst of at most the ring's own contents, written in a single
+        // tick, so right after a full-ring replay `writableLength` equals the capacity for a reader
+        // that is perfectly healthy and simply has not had a chance to read yet. Counting it would end
+        // that reader at its first live event. Messages leave the queue in order, so the replay's are
+        // always the oldest, and each one's callback runs when it leaves.
+        let replayHeld = 0;
         for (const sequenced of replay.events) {
           const partial = translateEvent(sequenced.event);
-          call.write({
-            sessionId,
-            sequence: sequenced.sequence,
-            occurredAt: sequenced.occurredAt,
-            turnId: extractTurnId(sequenced.event),
-            ...partial,
-          });
+          replayHeld += 1;
+          call.write(
+            {
+              sessionId,
+              sequence: sequenced.sequence,
+              occurredAt: sequenced.occurredAt,
+              turnId: extractTurnId(sequenced.event),
+              ...partial,
+            },
+            () => {
+              replayHeld -= 1;
+            },
+          );
         }
 
         let subs = watchers.get(sessionId);
@@ -1345,33 +1732,69 @@ export function createRuntimeServiceImpl(
         // never actually run. Design spec §3.1: disconnecting a watcher never affects session lifecycle,
         // so this only removes the subscription, never touches the registry.
         const subscribers = subs;
+        // Set once this call must never be written to or ended again: ended by the session's end, by
+        // the write-queue bound, or gone from the client's side. Every path below that writes or ends
+        // checks it first, so no write follows an end and no end follows another.
+        let finished = false;
+        // Live messages written since this watcher's last reset, which runs in the next check phase
+        // (setImmediate) after the first of them -- after the I/O phase in which HTTP/2 could have sent
+        // them. One pump tick's burst, typically. They are left out of the bound too. The PumpDriver broadcasts a tick's
+        // events in one synchronous loop, and HTTP/2 cannot take any of them before that loop ends, so
+        // a tick of 14 events leaves 14 in `writableLength` even for a reader that is reading as fast
+        // as it can. What says a reader is not keeping up is what it is STILL holding from earlier
+        // ticks, after the transport has had a turn of the loop to send it.
+        let writtenThisTick = 0;
         const sub = {
           send: (event: unknown) => {
+            if (finished) {
+              return;
+            }
+            // The write-queue bound (PACKAGING.md section 6), checked before the write: once the live
+            // messages held from earlier ticks reach the ring's capacity, this event is not queued
+            // behind them and the stream ends instead. The client still receives everything already
+            // queued, then the error, so its cursor is the event just before this one -- which the ring
+            // still holds, because the ring has just stored it. `replayHeld` is subtracted (see there),
+            // and messages leave in order, so the newest `writtenThisTick` are the last to go. Node
+            // lowers `writableLength` a tick before it runs a message's callback, so for that tick
+            // this can read low, never high: the bound may act an event late, never on a reader early.
+            const heldFromEarlierTicks = Math.max(0, outstandingWrites(call) - replayHeld - writtenThisTick);
+            if (heldFromEarlierTicks >= ringBufferCapacity) {
+              finished = true;
+              endForWriteQueueBound(sessionId, subscribers, sub, call, heldFromEarlierTicks);
+              return;
+            }
             const accepted = call.write(event);
-            // Only consulted when the stats seam is on. `accepted === false` means grpc-js buffered
-            // this message in the sidecar's own heap instead of writing it to the socket, which is
-            // the growth this counts. Behaviour is unchanged either way: nothing here slows the
-            // producer down, because doing so would be a real backpressure policy rather than a
-            // measurement, and that is a separate decision with a client-visible consequence.
+            if (writtenThisTick === 0) {
+              setImmediate(() => {
+                writtenThisTick = 0;
+              });
+            }
+            writtenThisTick += 1;
             if (writeQueueDepth !== undefined) {
-              writeQueueDepth.onWrite(sub, accepted);
+              writeQueueDepth.onWrite(sub, accepted, outstandingWrites(call));
             }
             maybeBreakThisWatch(sessionId, subscribers, sub, call);
           },
-          end: () => call.end(),
+          end: () => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            call.end();
+          },
         };
         if (writeQueueDepth !== undefined) {
-          // 'drain' is grpc-js telling us its buffer for this call has emptied. Without it the
-          // counter would only ever climb, which would look like an unbounded queue even on a
-          // healthy stream -- a measurement that cannot show the good case is not a measurement.
-          call.on('drain', () => writeQueueDepth!.onDrain(sub));
-          writeQueueDepth.onSubscribe(sub, sessionId);
+          writeQueueDepth.onSubscribe(sub, sessionId, () => outstandingWrites(call));
           call.on('cancelled', () => writeQueueDepth!.onUnsubscribe(sub));
           call.on('close', () => writeQueueDepth!.onUnsubscribe(sub));
           call.on('error', () => writeQueueDepth!.onUnsubscribe(sub));
         }
         subscribers.add(sub);
-        const cleanup = () => subscribers.delete(sub);
+        reannounceCommands(entry, replayRequest, replay.events);
+        const cleanup = () => {
+          finished = true;
+          subscribers.delete(sub);
+        };
         call.on('cancelled', cleanup);
         call.on('close', cleanup);
         call.on('error', cleanup);

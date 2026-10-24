@@ -138,6 +138,7 @@ const BASE: ClaudeHostPolicyProto = {
   permissionModeSwitchable: false,
   providerPermissionPrompts: false,
   cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
+  acceptUnsupportedCli: false,
 };
 
 function optionsFor(overlay: Partial<ClaudeHostPolicyProto>): Options {
@@ -148,10 +149,24 @@ function optionsFor(overlay: Partial<ClaudeHostPolicyProto>): Options {
   return policyToBaseOptions(config.policy, config.cwd, { hostCliPath: config.hostCliPath });
 }
 
+/**
+ * Fields the sidecar itself acts on, before any session exists, and that therefore have NO effect on
+ * the SDK's `Options` by design. Each is observed by its own test, named here, and the test below this
+ * table asserts the absence of an Options effect, so a field cannot sit here while quietly also
+ * changing a session.
+ */
+const SIDECAR_LEVEL: Record<string, { a: Partial<ClaudeHostPolicyProto>; b: Partial<ClaudeHostPolicyProto>; observedBy: string }> = {
+  acceptUnsupportedCli: {
+    a: { acceptUnsupportedCli: false },
+    b: { acceptUnsupportedCli: true },
+    observedBy: 'tests/cliGate.test.ts (CreateSession in report mode)',
+  },
+};
+
 test('every field on the wire ClaudeHostPolicy is represented in this table', () => {
   // A row may be keyed `field.subField` to observe one half of a message-typed field on its own
   // Options key, so compare on the top-level field names the table actually covers.
-  const covered = [...new Set(Object.keys(TABLE).map((k) => k.split('.')[0]))].sort();
+  const covered = [...new Set([...Object.keys(TABLE), ...Object.keys(SIDECAR_LEVEL)].map((k) => k.split('.')[0]))].sort();
   assert.deepEqual(
     Object.keys(ClaudeHostPolicy.create({})).sort(),
     covered,
@@ -159,6 +174,12 @@ test('every field on the wire ClaudeHostPolicy is represented in this table', ()
       + 'wiring it is asserting) rather than deleting this check -- a policy field accepted on the '
       + 'wire and dropped on the floor is exactly the failure this file exists to catch.',
   );
+});
+
+test('a sidecar-level policy field changes nothing the SDK is told, and is observed by the test it names', () => {
+  for (const [field, row] of Object.entries(SIDECAR_LEVEL)) {
+    assert.deepEqual(optionsFor(row.a), optionsFor(row.b), `ClaudeHostPolicy.${field} must not reach the SDK Options (observed by ${row.observedBy})`);
+  }
 });
 
 test('every field on the wire ClaudeHostPolicy has an observable effect on the SDK Options', () => {
@@ -176,8 +197,8 @@ test('every field on the wire ClaudeHostPolicy has an observable effect on the S
 });
 
 /**
- * Every wire PermissionMode -- UNSPECIFIED and ts-proto's UNRECOGNIZED included, since a client can
- * send either -- reaches the SDK as an EXPLICIT `permissionMode`, fresh or resumed, switchable or
+ * Every declared wire PermissionMode -- UNSPECIFIED included, since a client can send it (any other
+ * number, ts-proto's UNRECOGNIZED among them, is refused) -- reaches the SDK as an EXPLICIT `permissionMode`, fresh or resumed, switchable or
  * not. The row above only proves `permissions` moves the field; this proves no value leaves it
  * unset. Unset is not neutral: the CLI then takes its starting mode from `permissions.defaultMode`
  * in the project/local settings tiers, which are files in the repository under work, so a gated
@@ -185,8 +206,8 @@ test('every field on the wire ClaudeHostPolicy has an observable effect on the S
  * The field list comes from the generated enum, so a new mode fails here until it is mapped.
  */
 test('every wire PermissionMode reaches the SDK as an explicit permissionMode, fresh or resumed', () => {
-  const modes = Object.values(PermissionMode).filter((v): v is PermissionMode => typeof v === 'number');
-  assert.equal(modes.length, 5, 'PermissionMode gained a member: decide what it maps to, then update this count');
+  const modes = Object.values(PermissionMode).filter((v): v is PermissionMode => typeof v === 'number' && v !== PermissionMode.UNRECOGNIZED);
+  assert.equal(modes.length, 4, 'PermissionMode gained a member: decide what it maps to, then update this count');
   for (const permissions of modes) {
     for (const permissionModeSwitchable of [false, true]) {
       for (const resumeProviderSessionId of [undefined, 'sess-resume']) {

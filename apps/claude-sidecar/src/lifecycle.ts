@@ -7,9 +7,10 @@ import { createRuntimeServiceImpl, sdkBundledAvailable, type ClaudeCodeVersions,
 import type { MinimalKernelSession } from './sessionRegistry.js';
 import { SidecarError } from './errorMapping.js';
 import { RuntimeServiceService, ErrorCode } from './generated/verdandi/claude/runtime/v1/runtime.js';
-import type { CliVersionVerdict } from './cliCompatibility.js';
+import { reportForUnreadableCli, reportForVerdict, type CliCompatibilityReport, type CliGateMode, type CliVersionVerdict } from './cliCompatibility.js';
 import type { ParentWatch } from './parentWatch.js';
 import { DEFAULT_CHILD_SHUTDOWN_TIMINGS, endChildProcesses, type ChildShutdownDeps, type ChildShutdownTimings } from './childReaper.js';
+import { NO_REPORT, StartupRefusal, omittedCliOutput, withoutCliVersion, type StartupReporter } from './startupReport.js';
 
 export type StartSidecarOptions = {
   socketPath: string;
@@ -26,6 +27,13 @@ export type StartSidecarOptions = {
    * for the policy and for why an exact-match gate was too tight.
    */
   classifyCliVersion: (version: string) => CliVersionVerdict;
+  /**
+   * What to do about a CLI the policy refuses or could not read. `refuse` (the default, and what
+   * leaving this out means): the process does not start. `report`: it starts, reports the verdict in the
+   * handshake, and refuses CreateSession unless the request carries `accept_unsupported_cli`. See
+   * `CliGateMode`.
+   */
+  cliGate?: CliGateMode;
   /**
    * Whether this build can serve `executable: 'sdk_bundled'`. Defaults to the real runtime answer
    * (`sdkBundledAvailable()`), and index.ts passes it explicitly so the gate below and
@@ -64,6 +72,13 @@ export type StartSidecarOptions = {
    * injectable so a test can shorten the waits or observe the signals.
    */
   childShutdown?: Partial<ChildShutdownTimings> & ChildShutdownDeps;
+  /**
+   * Where the machine-readable startup records go (see startupReport.ts). Defaults to a reporter that
+   * does nothing. Only the two things that happen here are written from here: `diagnostic` for an
+   * accepted but untested CLI, and `ready` once the socket is listening. A refusal is not written here:
+   * it is thrown, and whoever called this turns it into the one `refused` record on the way out.
+   */
+  report?: StartupReporter;
 };
 
 /**
@@ -92,8 +107,10 @@ export const SUN_PATH_LIMIT = process.platform === 'darwin' ? 103 : 107;
 export function assertBindableSocketPath(socketPath: string): void {
   const bytes = Buffer.byteLength(socketPath);
   if (bytes > SUN_PATH_LIMIT) {
-    throw new Error(
+    throw new StartupRefusal(
+      'SOCKET_PATH_TOO_LONG',
       `refusing to bind ${socketPath}: the path is ${bytes} bytes and a unix socket address holds at most ${SUN_PATH_LIMIT} on this platform. Binding it produces no socket and no error -- choose a shorter directory (VERDANDI_CLAUDE_SIDECAR_SOCKET, or a shorter TMPDIR).`,
+      { socket: socketPath, bytes, limit: SUN_PATH_LIMIT },
     );
   }
 }
@@ -193,7 +210,7 @@ async function prepareSocketPath(socketPath: string): Promise<void> {
   }
   if (existsSync(socketPath)) {
     if (!(await isStaleSocket(socketPath))) {
-      throw new Error(`refusing to bind ${socketPath}: another process is already listening on it`);
+      throw new StartupRefusal('SOCKET_IN_USE', `refusing to bind ${socketPath}: another process is already listening on it`, { socket: socketPath });
     }
     unlinkSync(socketPath);
   }
@@ -230,9 +247,19 @@ export async function startSidecar(options: StartSidecarOptions): Promise<{ clos
   // so a sidecar that booted with one usable binary would fail the first request that asked for the
   // other, at a point where the cause is no longer visible.
   const cachedClaudeCodeVersions = options.getClaudeCodeVersions();
+  const cliGate = options.cliGate ?? 'refuse';
   const emitDiagnostic = options.onDiagnostic ?? ((message: string) => console.warn(message));
   const watchStdin = (options.parentWatch ?? 'stdin') === 'stdin';
   const canRunSdkBundled = options.sdkBundledAvailable ?? sdkBundledAvailable();
+  const hostProbeError = cachedClaudeCodeVersions.hostCliProbeError;
+  /** What stderr shows for an unreadable CLI: the probe's whole text, the CLI's output included. */
+  const hostProbeErrorPrinted = cachedClaudeCodeVersions.hostCliProbeErrorPrinted ?? hostProbeError;
+  if (cliGate === 'refuse' && hostProbeErrorPrinted !== undefined) {
+    // Only `report` mode turns an unreadable CLI into a verdict (src/index.ts). A caller that hands
+    // this one anyway gets the refusal the default has always given, with the probe's own words.
+    // Printed as given; the file gets only the sidecar's own words, the probe's text may hold the CLI's output.
+    throw new StartupRefusal('CLI_PROBE_FAILED', hostProbeErrorPrinted, {}, `could not determine the installed claude CLI version ${omittedCliOutput(hostProbeErrorPrinted)}`);
+  }
   const classified = (
     [
       // (3) Only the binaries this build can actually spawn. In a packaged build `sdk_bundled` is
@@ -241,18 +268,86 @@ export async function startSidecar(options: StartSidecarOptions): Promise<{ clos
       ...(canRunSdkBundled ? ([['sdk-bundled', cachedClaudeCodeVersions.sdkDeclared]] as const) : []),
       ['host', cachedClaudeCodeVersions.hostCli],
     ] as const
-  ).map(([which, version]) => ({ which, version, verdict: options.classifyCliVersion(version) }));
-  const refused = classified.filter((entry) => entry.verdict.kind === 'refused');
-  if (refused.length > 0) {
-    throw new Error(
-      `refusing to start: ${refused
-        .map((entry) => `${entry.which} claude CLI version ${entry.version}: ${(entry.verdict as { diagnostic: string }).diagnostic}`)
-        .join(' and ')}`,
+  ).map(([which, version]) => ({
+    which,
+    version,
+    // A host CLI whose version could not be read has no version to classify; its verdict is the
+    // reported UNKNOWN (only reachable in `report` mode, see above).
+    verdict: which === 'host' && hostProbeError !== undefined ? undefined : options.classifyCliVersion(version),
+  }));
+  const refused = classified.filter((entry) => entry.verdict?.kind === 'refused');
+  if (cliGate === 'refuse' && refused.length > 0) {
+    const reasonOf = (entry: (typeof refused)[number]): string | undefined => (entry.verdict as { reason?: string }).reason;
+    const sentenceOf = (entry: (typeof refused)[number], safe: boolean): string => {
+      const text = `${entry.which} claude CLI version ${entry.version}: ${(entry.verdict as { diagnostic: string }).diagnostic}`;
+      return safe ? withoutCliVersion(text, entry.version).text : text;
+    };
+    throw new StartupRefusal(
+      // The first refused binary names the code; every one is in `details`.
+      reasonOf(refused[0]) === 'unparseable' ? 'CLI_VERSION_UNPARSEABLE' : 'CLI_OUT_OF_RANGE',
+      `refusing to start: ${refused.map((entry) => sentenceOf(entry, false)).join(' and ')}`,
+      { binaries: refused.map((entry) => ({ binary: entry.which, version: withoutCliVersion('', entry.version).version, reason: reasonOf(entry) ?? 'refused' })) },
+      // The version is the first word of the CLI's own output: the file gets its leading numbers, or a marker.
+      `refusing to start: ${refused.map((entry) => sentenceOf(entry, true)).join(' and ')}`,
     );
   }
+  const startupReport = options.report ?? NO_REPORT;
   for (const entry of classified) {
-    if (entry.verdict.kind === 'untested') {
-      emitDiagnostic(`claude-sidecar: ${entry.which} CLI version diagnostic: ${entry.verdict.diagnostic}`);
+    if (entry.verdict?.kind === 'untested') {
+      const message = `claude-sidecar: ${entry.which} CLI version diagnostic: ${entry.verdict.diagnostic}`;
+      emitDiagnostic(message);
+      const recorded = withoutCliVersion(message, entry.version);
+      startupReport.diagnostic('CLI_UNTESTED', recorded.text, { binary: entry.which, version: recorded.version });
+    }
+  }
+  // What the handshake reports, and in `report` mode what CreateSession judges a request by. Built from
+  // the very verdicts the loop above acted on, so what a host is told and what the process did cannot
+  // disagree.
+  //
+  // Nothing the CLI printed goes on the wire: an unreadable CLI is described by the probe's sentence
+  // without its output, and a refused version (the first word of the CLI's stdout, which for a version
+  // that does not parse can be anything) by its leading major.minor.patch or the omitted marker, as
+  // the report file already does. Only a refused verdict needs it: a default-mode process never binds
+  // with one, and an accepted version is read exactly as before.
+  const reportOf = (entry: (typeof classified)[number]): CliCompatibilityReport => {
+    if (entry.verdict === undefined) {
+      return reportForUnreadableCli(hostProbeError ?? 'the version could not be read');
+    }
+    const report = reportForVerdict(entry.version, entry.verdict);
+    if (report.verdict !== 'refused') {
+      return report;
+    }
+    const safe = withoutCliVersion(report.diagnostic, entry.version);
+    return { ...report, version: safe.version, diagnostic: safe.text };
+  };
+  /** The same account in the words stderr has always shown, the CLI's output included. */
+  const printedDiagnosticOf = (entry: (typeof classified)[number]): string =>
+    entry.verdict === undefined
+      ? (hostProbeErrorPrinted ?? 'the version could not be read')
+      : entry.verdict.kind === 'supported'
+        ? ''
+        : entry.verdict.diagnostic;
+  const hostEntry = classified.find((entry) => entry.which === 'host');
+  const bundledEntry = classified.find((entry) => entry.which === 'sdk-bundled');
+  if (hostEntry === undefined) {
+    throw new Error('claude-sidecar: internal error: no host CLI entry to report');
+  }
+  const gate = { mode: cliGate, host: reportOf(hostEntry), ...(bundledEntry !== undefined ? { bundled: reportOf(bundledEntry) } : {}) };
+  if (cliGate === 'report') {
+    // Said once at startup, in words a host's stderr tail shows, and deliberately NOT containing the
+    // marker a host matches for the diagnostic of an accepted CLI: nothing here was accepted, it was
+    // left for the host to decide. The report file gets the same line in the wire's words (nothing the
+    // CLI printed), under a code of its own, so a host that reads the file learns it too.
+    for (const [which, report, entry] of [
+      ['host', gate.host, hostEntry],
+      ...(gate.bundled !== undefined && bundledEntry !== undefined ? ([['sdk-bundled', gate.bundled, bundledEntry]] as const) : []),
+    ] as const) {
+      if (report.verdict === 'refused' || report.verdict === 'unknown') {
+        const line = (diagnostic: string): string =>
+          `claude-sidecar: CLI gate is in report mode and the ${which} claude CLI is ${report.verdict.toUpperCase()}: ${diagnostic} -- CreateSession is refused on it unless the request sets accept_unsupported_cli.`;
+        emitDiagnostic(line(printedDiagnosticOf(entry)));
+        startupReport.diagnostic('CLI_LEFT_TO_HOST', line(report.diagnostic), { binary: which, verdict: report.verdict, version: report.version });
+      }
     }
   }
 
@@ -272,7 +367,7 @@ export async function startSidecar(options: StartSidecarOptions): Promise<{ clos
       return options.sessionFactory(config);
     },
     cachedClaudeCodeVersions,
-    options.runtime ?? {},
+    { ...(options.runtime ?? {}), cliGate: gate },
   );
 
   const server = new grpc.Server();
@@ -289,7 +384,10 @@ export async function startSidecar(options: StartSidecarOptions): Promise<{ clos
   await new Promise<void>((resolve, reject) => {
     server.bindAsync(`unix://${options.socketPath}`, grpc.ServerCredentials.createInsecure(), (err) => {
       if (err) {
-        reject(err);
+        // An empty path is what an empty VERDANDI_CLAUDE_SIDECAR_SOCKET gives: set, but naming no
+        // socket, which is the missing variable as far as a host can act on it. grpc-js's own words
+        // stay the printed text, as they have always been.
+        reject(options.socketPath === '' ? new StartupRefusal('SOCKET_ENV_MISSING', err.message, { variable: 'VERDANDI_CLAUDE_SIDECAR_SOCKET' }) : err);
         return;
       }
       try {
@@ -375,5 +473,9 @@ export async function startSidecar(options: StartSidecarOptions): Promise<{ clos
     emitDiagnostic('claude-sidecar: parent watch is off (VERDANDI_CLAUDE_SIDECAR_PARENT_WATCH=none): stdin is not read; stop this process with SIGTERM');
   }
 
+  // Last, and only now: the socket accepts connections and everything a host's next move could depend on
+  // (the stop signals, the stdin watch) is in place, so a host that connects or closes stdin the moment it
+  // reads this finds a sidecar that is ready for it.
+  startupReport.ready({ socket: options.socketPath });
   return { close: shutdown };
 }

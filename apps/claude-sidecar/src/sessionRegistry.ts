@@ -1,5 +1,5 @@
 import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, PermissionAnswer, SessionCloseReason } from '@verdandi/claude-runtime';
-import { RingBuffer } from './ringBuffer.js';
+import { RingBuffer, type SequencedEvent } from './ringBuffer.js';
 import { IdempotencyCache } from './idempotency.js';
 
 /**
@@ -11,6 +11,8 @@ import { IdempotencyCache } from './idempotency.js';
 export interface MinimalKernelSession {
   pump(): Promise<ClaudeRuntimeEvent[]>;
   sendTurn(text: string): { turnId: string };
+  /** SteerTurn. Throws the kernel's `SteerError` for every refusal; nothing reached the CLI then. */
+  steerTurn(expectedTurnId: string, clientMessageId: string, text: string): { turnId: string };
   interrupt(): Promise<void>;
   close(): void;
   /** Throws the kernel's `PermissionAnswerError` for an answer it refuses without resolving (a
@@ -34,6 +36,7 @@ export type SessionEntry = {
   sequence: bigint;
   readonly ringBuffer: RingBuffer;
   readonly sendTurnIdempotency: IdempotencyCache<{ turnId: string }>;
+  readonly steerTurnIdempotency: IdempotencyCache<{ turnId: string }>;
   readonly interruptIdempotency: IdempotencyCache<Record<string, never>>;
   readonly resolvePermissionIdempotency: IdempotencyCache<Record<string, never>>;
   readonly closeIdempotency: IdempotencyCache<Record<string, never>>;
@@ -42,6 +45,9 @@ export type SessionEntry = {
    * whose outcome is recorded after an await, so a duplicate arriving in that window must join the
    * call in flight rather than run the switch a second time. */
   readonly setPermissionModeInFlight: Map<string, { payloadHash: string; outcome: Promise<{ permissionMode: string }> }>;
+  /** The newest `commands_updated` this session emitted, as sequenced; set by PumpDriver and by a
+   * watch that sends it again (see `reannounceCommands` in runtimeServiceImpl.ts). */
+  latestCommands: SequencedEvent | undefined;
 };
 
 /**
@@ -60,11 +66,13 @@ export class SessionRegistry {
       sequence: 0n,
       ringBuffer: new RingBuffer(ringBufferCapacity),
       sendTurnIdempotency: new IdempotencyCache(),
+      steerTurnIdempotency: new IdempotencyCache(),
       interruptIdempotency: new IdempotencyCache(),
       resolvePermissionIdempotency: new IdempotencyCache(),
       closeIdempotency: new IdempotencyCache(),
       setPermissionModeIdempotency: new IdempotencyCache(),
       setPermissionModeInFlight: new Map(),
+      latestCommands: undefined,
     };
     this.entries.set(sessionId, entry);
     return entry;

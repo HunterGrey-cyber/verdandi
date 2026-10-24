@@ -89,21 +89,19 @@ export function watchFaultInjectionFromEnv(env: NodeJS.ProcessEnv = process.env)
  *
  * ### Why this exists, and why it is a measurement rather than a proxy
  *
- * `broadcastFor` calls `call.write(event)` and discards the return value. grpc-js returns `false`
- * from that call when the message went into its own internal buffer rather than out to the socket,
- * and emits `'drain'` when that buffer clears. Discarding the return value means the server has no
- * congestion signal at all: a subscriber that stops reading does not slow the producer down, it
- * just makes grpc-js accumulate, without bound, in the sidecar's own heap.
+ * A subscriber that stops reading its socket does not slow the producer down: grpc-js queues what
+ * it cannot send in the sidecar's own heap. A consumer CANNOT see that queue -- it is on the
+ * server, so from the client a stalled stream and a healthy one look the same -- and the only
+ * observable either end otherwise has is the sidecar's RSS, which climbs for other reasons too.
+ * This seam turns that inference into a count: `outstanding` is exactly the number of messages
+ * grpc-js has taken and HTTP/2 has not (`outstandingWrites` in `runtimeServiceImpl.ts` says how that
+ * is read).
  *
- * A consumer CANNOT see this. The queue is on the server, so from the client's side a stalled
- * stream and a healthy one look the same until the sidecar dies. The only observable either end
- * has today is the sidecar's RSS, which is consistent with a growing write queue but does not
- * prove it is that queue -- RSS climbs for other reasons too. This seam turns that inference into
- * a count: `outstanding` is exactly the number of messages grpc-js has taken and not yet flushed.
- *
- * OFF unless the variable is set, and off is not "zero interval" -- no timer is created, no
- * listener is attached, and `broadcastFor` does not even read the write result. A diagnostic that
- * costs something when disabled is a diagnostic people disable for the wrong reasons.
+ * The queue is bounded whether or not this is set: a watcher whose backlog reaches the replay ring's
+ * capacity is ended with EVENT_GAP (PACKAGING.md section 6). The seam only reports. OFF unless the
+ * variable is set, and off is not "zero interval": no timer is created and no per-write bookkeeping
+ * is done. A diagnostic that costs something when disabled is a diagnostic people disable for the
+ * wrong reasons.
  */
 export type WriteQueueStats = {
   /** How often to print. */

@@ -359,6 +359,9 @@ function fakeStreamingCall(sessionId: string, start: ReplayStart, afterSequence?
       written.push(chunk);
       return true;
     },
+    // Every write above goes "straight to the socket", so nothing is ever held: the write-queue bound
+    // never fires here. `watchWriteQueueBound.test.ts` has the fake that holds messages.
+    writableLength: 0,
     // Final whole-branch review, Finding 4: onTerminal must gRPC-complete every open watcher's
     // stream, not just stop writing to it -- track whether that actually happened.
     end: () => {
@@ -386,61 +389,6 @@ function fakeStreamingCall(sessionId: string, start: ReplayStart, afterSequence?
     hasListener: (event: string) => listeners.has(event),
   };
 }
-
-/**
- * The write-queue diagnostic: the seam is wired, and wiring it costs nothing when it is off.
- *
- * `broadcastFor` discarded `call.write()`'s return value, and the local `call` type declared that
- * return as `void` -- so the only congestion signal this server gets was not merely ignored, it was
- * UNREACHABLE without editing the type first. That matters because the queue lives on the server:
- * from a client, a stalled subscriber and a healthy one look identical until the sidecar dies of it.
- *
- * What this test can honestly assert is the structural half -- that the handler subscribes to
- * 'drain' exactly when the seam is on. 'drain' is what makes the counter able to go DOWN; without
- * it the number could only climb, and a counter that reports a healthy stream as a growing queue is
- * worse than no counter, because it would be believed.
- *
- * The behavioural half -- that `outstanding` actually tracks a real backlog under a real stall --
- * is deliberately NOT asserted here. Driving genuine grpc-js buffering needs a real socket and a
- * real stalled consumer, which this fake cannot be; a fake that returns `false` on demand would
- * only re-assert the arithmetic this file already wrote. That measurement belongs to the consumer's
- * own stalled-subscriber harness, and its absence here is a scope statement, not an oversight.
- */
-test("the write-queue diagnostic subscribes to 'drain' when on, and touches nothing when off", async () => {
-  function watchWith(options: RuntimeServiceOptions) {
-    const registry = new SessionRegistry();
-    const impl = createRuntimeServiceImpl(
-      registry,
-      () => {
-        const made = makeFakeSession();
-        allCreatedFakeSessions.push(made.session);
-        return made.session;
-      },
-      { sdkDeclared: 'fake-sdk-cli-version', hostCli: 'fake-cli-version' },
-      options,
-    );
-    return { impl, registry };
-  }
-
-  const on = watchWith({ writeQueueStats: { intervalMs: 10 }, onDiagnostic: () => {} });
-  const created = await callResult<{ sessionId: string }>(on.impl.createSession.bind(on.impl), { cwd: '/tmp', policy: {} });
-  const onCall = fakeStreamingCall(created.sessionId, ReplayStart.REPLAY_START_FROM_NOW);
-  on.impl.watchSessionEvents(onCall.call);
-  assert.ok(
-    onCall.hasListener('drain'),
-    "with the seam on, the handler must subscribe to 'drain' -- without it the outstanding count can only ever climb",
-  );
-
-  const off = watchWith({});
-  const created2 = await callResult<{ sessionId: string }>(off.impl.createSession.bind(off.impl), { cwd: '/tmp', policy: {} });
-  const offCall = fakeStreamingCall(created2.sessionId, ReplayStart.REPLAY_START_FROM_NOW);
-  off.impl.watchSessionEvents(offCall.call);
-  assert.equal(
-    offCall.hasListener('drain'),
-    false,
-    'with the seam off there must be no drain listener at all: off means no timer, no listeners, and no reading of the write result',
-  );
-});
 
 test('watchSessionEvents against an unknown session_id destroys the stream with session_not_found', () => {
   const { impl } = setup();
@@ -632,7 +580,9 @@ test('the advertised capability list is exactly this, in this order', async () =
   const impl = createRuntimeServiceImpl(
     new SessionRegistry(),
     () => makeFakeSession().session,
-    { sdkDeclared: 'fake-sdk-cli-version', hostCli: 'fake-cli-version' },
+    // A host CLI version at or above STEER_MIN_CLI_VERSION, so the conditional `steer_turn` is in the
+    // list; the next test pins the other side.
+    { sdkDeclared: 'fake-sdk-cli-version', hostCli: '2.1.293' },
     { sdkBundledAvailable: true },
   );
   const res = await callResult<{ capabilities: string[] }>(impl.handshake.bind(impl), { clientProtocolMajor: 3 });
@@ -686,9 +636,46 @@ test('the advertised capability list is exactly this, in this order', async () =
     'cli_auto_mode',
     'permission_defer',
     'permission_denied_events',
+    // Added at protocol 3.15: the CLI's compatibility verdict in the handshake, and the statement that a
+    // gated session starts in the CLI's default mode. 33 -> 35 in a checkout, 32 -> 34 packaged; ahead of
+    // the executable pair.
+    'cli_compatibility_report',
+    'gated_cli_mode_default',
+    // Added at protocol 3.16: HandshakeResponse.effective_claude_config_dir. 35 -> 36 in a checkout, 34 -> 35
+    // packaged; ahead of the executable pair.
+    'effective_claude_config_dir',
+    // Added at protocol 3.17: the startup report file and ErrorDetail.reason. 36 -> 37 in a checkout, 35 -> 36
+    // packaged; ahead of the executable pair.
+    'startup_report_file',
+    // Added at protocol 3.18: the effective session report on SessionReady (37 -> 38 in a checkout, 36 -> 37
+    // packaged), likewise ahead of the executable pair.
+    'effective_session_report',
+    // Added at protocol 3.19: MCP servers from VERDANDI_CLAUDE_EXTRA_MCP_SERVERS (stdio, and http with
+    // headers from the environment). Advertised by the build whether or not the variable is set. 38 -> 40
+    // in a checkout, 37 -> 39 packaged; ahead of the executable pair.
+    'extra_mcp_servers',
+    'extra_mcp_servers_http',
+    // Added at protocol 3.20: SteerTurn with UserMessageDelivered/Dropped (only when the host CLI is at
+    // least STEER_MIN_CLI_VERSION) and the CommandsUpdated event. 40 -> 42 in a checkout, 39 -> 41
+    // packaged; ahead of the executable pair.
+    'steer_turn',
+    'list_commands',
     'executable_host_cli',
     'executable_sdk_bundled',
   ]);
+});
+
+test('steer_turn is advertised only for a host CLI version at or above STEER_MIN_CLI_VERSION', async () => {
+  const capabilitiesFor = async (hostCli: string) => {
+    const impl = createRuntimeServiceImpl(new SessionRegistry(), () => makeFakeSession().session, { sdkDeclared: '2.1.252', hostCli }, { sdkBundledAvailable: true });
+    return (await callResult<{ capabilities: string[] }>(impl.handshake.bind(impl), { clientProtocolMajor: 3 })).capabilities;
+  };
+  assert.ok((await capabilitiesFor('2.1.252')).includes('steer_turn'), 'the floor itself');
+  assert.ok((await capabilitiesFor('2.1.293 (Claude Code)')).includes('steer_turn'), 'the probe\'s text after the version is ignored');
+  assert.ok(!(await capabilitiesFor('2.1.251')).includes('steer_turn'), 'below the floor');
+  assert.ok(!(await capabilitiesFor('not a version')).includes('steer_turn'), 'an unreadable version promises nothing');
+  // `list_commands` is not conditional.
+  assert.ok((await capabilitiesFor('not a version')).includes('list_commands'));
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -854,6 +841,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     permissionModeSwitchable: false,
     providerPermissionPrompts: false,
     cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
+    acceptUnsupportedCli: false,
     ...extra,
   };
 }

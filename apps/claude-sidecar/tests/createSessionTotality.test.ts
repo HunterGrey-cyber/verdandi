@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSessionOptions } from '@verdandi/claude-runtime';
+import { buildSessionOptions, resolveExtraMcpServers } from '@verdandi/claude-runtime';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { buildKernelSessionConfig, type ClaudeSessionConfigLike } from '../src/runtimeServiceImpl.js';
-import { ClaudeHostPolicy, CreateSessionRequest, PermissionMode } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
+import { ClaudeHostPolicy, ConfigurationProfile, CreateSessionRequest, PermissionMode } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 /**
  * Every field on the wire `CreateSessionRequest` has an observable effect on the SDK `Options`.
@@ -108,4 +108,25 @@ test('every field on the wire CreateSessionRequest has an observable effect on t
         + `both requests produced ${JSON.stringify(seenA)}. The field is accepted on the wire and dropped.`,
     );
   }
+});
+
+/**
+ * The process's extra MCP servers (VERDANDI_CLAUDE_EXTRA_MCP_SERVERS) are a host default, not a wire
+ * field, so the table above cannot see them: this pins that the production mapping forwards them to
+ * every session, and adds nothing when there are none. Dropped here, a session would lose the servers
+ * AND the sidecar's check of them (its expected set would be empty) without either side noticing.
+ */
+test('buildKernelSessionConfig forwards the extra MCP servers to the session, and nothing when there are none', () => {
+  const servers = resolveExtraMcpServers({ VERDANDI_CLAUDE_EXTRA_MCP_SERVERS: JSON.stringify({ remote: { type: 'http', url: 'http://127.0.0.1:8930/mcp', alwaysLoad: true } }) });
+  const request: ClaudeSessionConfigLike = { ...BASE, policy: ClaudeHostPolicy.create({ configuration: ConfigurationProfile.CONFIGURATION_PROFILE_ISOLATED }) };
+  const config = buildKernelSessionConfig(request, { hostCliPath: '/usr/local/bin/claude', extraMcpServers: servers });
+  assert.equal(config.extraMcpServers, servers);
+  assert.deepEqual(buildSessionOptions(config).mcpServers, servers);
+  const plain = buildKernelSessionConfig(request, { hostCliPath: '/usr/local/bin/claude' });
+  assert.equal('extraMcpServers' in plain, false);
+  assert.deepEqual(buildSessionOptions(plain).mcpServers, {});
+  assert.equal(
+    JSON.stringify(buildSessionOptions(buildKernelSessionConfig(request, { hostCliPath: '/usr/local/bin/claude', extraMcpServers: undefined }))),
+    JSON.stringify(buildSessionOptions(plain)),
+  );
 });

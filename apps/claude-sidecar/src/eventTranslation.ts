@@ -1,16 +1,22 @@
+import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AccountIdentity as KernelAccountIdentity,
   ClaudeRuntimeEvent,
   PermissionOrigin as KernelPermissionOrigin,
+  SteerDropReason as KernelSteerDropReason,
   TurnUsage as KernelTurnUsage,
 } from '@verdandi/claude-runtime';
 import {
+  CliPermissionModeKind,
+  ConfigurationProfile,
   PermissionMode,
   PermissionOrigin,
   PermissionOutcome,
   TurnOutcome,
   SessionCloseReason,
   ResumeStatus,
+  SettingSource as SettingSourceProto,
+  UserMessageDropReason,
   type AccountIdentity,
   type SessionEvent,
   type TurnUsage,
@@ -100,6 +106,53 @@ const SESSION_CLOSE_REASON_MAP: Record<string, SessionCloseReason> = {
   tool_policy_violation: SessionCloseReason.SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION,
 };
 
+/** Total over the kernel's reasons, so a new one fails to compile here rather than reach the wire as
+ * UNSPECIFIED. */
+const USER_MESSAGE_DROP_REASON_MAP: Record<KernelSteerDropReason, UserMessageDropReason> = {
+  cancelled: UserMessageDropReason.USER_MESSAGE_DROP_REASON_CANCELLED,
+  discarded: UserMessageDropReason.USER_MESSAGE_DROP_REASON_DISCARDED,
+  refused: UserMessageDropReason.USER_MESSAGE_DROP_REASON_REFUSED,
+  session_closed: UserMessageDropReason.USER_MESSAGE_DROP_REASON_SESSION_CLOSED,
+};
+
+/** The tiers the kernel recorded, as the wire's enum. Total over the SDK's own `SettingSource` union. */
+const SETTING_SOURCE_TO_PROTO: Record<SettingSource, SettingSourceProto> = {
+  user: SettingSourceProto.SETTING_SOURCE_USER,
+  project: SettingSourceProto.SETTING_SOURCE_PROJECT,
+  local: SettingSourceProto.SETTING_SOURCE_LOCAL,
+};
+
+const CONFIGURATION_TO_PROTO = {
+  native: ConfigurationProfile.CONFIGURATION_PROFILE_NATIVE,
+  isolated: ConfigurationProfile.CONFIGURATION_PROFILE_ISOLATED,
+} as const;
+
+/** The SDK's `PermissionMode` spellings, keyed by the CLI's own string (a test reads them out of the
+ * SDK's type declaration, so a mode it gains cannot go unmapped unnoticed). */
+const CLI_MODE_KINDS: Record<string, CliPermissionModeKind> = {
+  default: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_DEFAULT,
+  acceptEdits: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_ACCEPT_EDITS,
+  plan: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_PLAN,
+  bypassPermissions: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_BYPASS_PERMISSIONS,
+  dontAsk: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_DONT_ASK,
+  auto: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_AUTO,
+};
+
+/**
+ * `SessionReady.permission_mode` normalised. Empty means system/init carried no mode, which is not a
+ * mode and is not called UNKNOWN; any other string this sidecar has no entry for is UNKNOWN. The
+ * lookup is an own-property one, so a mode string spelled like an Object.prototype member
+ * (`constructor`) is UNKNOWN too rather than a function.
+ */
+export function cliPermissionModeKind(mode: string | undefined): CliPermissionModeKind {
+  // `undefined` too: the kernel types the field as a string, but it copies whatever system/init carried,
+  // and an init without a mode leaves it undefined (the wire's own default turns that into the empty string).
+  if (mode === undefined || mode === '') {
+    return CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_UNSPECIFIED;
+  }
+  return Object.hasOwn(CLI_MODE_KINDS, mode) ? CLI_MODE_KINDS[mode]! : CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_UNKNOWN;
+}
+
 /**
  * Translates one kernel ClaudeRuntimeEvent into the oneof-member fields of a proto SessionEvent
  * (design spec §3.2/§5.2). Does NOT fill in session_id/sequence/occurred_at/turn_id -- PumpDriver
@@ -138,6 +191,16 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           // kernel session that recorded nothing; createSession always records it.
           effectiveDisallowedTools: [...(event.effectiveToolOptions?.disallowedTools ?? [])],
           effectiveTools: event.effectiveToolOptions?.tools === undefined ? undefined : { tools: [...event.effectiveToolOptions.tools] },
+          // The tiers and profile the session handed the SDK, recorded when it was created; empty and
+          // UNSPECIFIED for a kernel session that recorded nothing (createSession always records).
+          effectiveSettingSources: (event.effectiveSessionOptions?.settingSources ?? []).map((tier) => SETTING_SOURCE_TO_PROTO[tier]),
+          // A profile with no wire spelling reads as UNSPECIFIED too: an undefined int32 would make
+          // the whole event unserializable, and with it every watch that reaches it, replays included.
+          effectiveConfiguration:
+            (event.effectiveSessionOptions === undefined ? undefined : CONFIGURATION_TO_PROTO[event.effectiveSessionOptions.configuration])
+            ?? ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED,
+          // Next to the verbatim string above, never instead of it.
+          cliPermissionModeKind: cliPermissionModeKind(event.permissionMode),
         },
       };
     case 'turn_started':
@@ -267,6 +330,28 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           ...(typeof event.reason === 'string' ? { reason: event.reason } : {}),
         },
       };
+    case 'user_message_delivered':
+      return { userMessageDelivered: { clientMessageId: event.clientMessageId, turnId: event.turnId, intoRunningTurn: event.intoRunningTurn } };
+    case 'user_message_dropped':
+      return {
+        userMessageDropped: {
+          clientMessageId: event.clientMessageId,
+          reason: USER_MESSAGE_DROP_REASON_MAP[event.reason] ?? UserMessageDropReason.USER_MESSAGE_DROP_REASON_UNSPECIFIED,
+        },
+      };
+    case 'commands_updated':
+      // Copied field by field: the kernel's list is its own, and a missing string would make the event
+      // unencodable for every watcher that reaches it.
+      return {
+        commandsUpdated: {
+          commands: event.commands.map((command) => ({
+            name: command.name,
+            description: command.description,
+            argumentHint: command.argumentHint,
+            aliases: [...command.aliases],
+          })),
+        },
+      };
     case 'provider_notice':
       return { providerNotice: { kind: event.kind, subtype: event.subtype ?? undefined } };
     default:
@@ -290,6 +375,7 @@ export function extractTurnId(event: ClaudeRuntimeEvent): string | undefined {
     case 'tool_call_started':
     case 'tool_call_completed':
     case 'turn_completed':
+    case 'user_message_delivered':
       return event.turnId;
     default:
       // Includes `resume_outcome` deliberately: a resume verdict belongs to the session, not to any

@@ -1,4 +1,4 @@
-import type { AccountInfo, PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { AccountInfo, PermissionMode, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type { MinimalQuery } from '../src/queryTypes.js';
 
 /** What the fake's accountInfo() answers unless a test supplies its own. */
@@ -15,6 +15,12 @@ export type FakeQueryOptions = {
   /** Replaces the default setPermissionMode() (which records the mode and resolves) -- e.g. with one
    * that rejects the way the real CLI does for `bypass_not_launched`, or one that never settles. */
   setPermissionMode?: (mode: PermissionMode) => Promise<void>;
+  /** Replaces the default interrupt() answer (`undefined`, an older CLI's) -- e.g. with a receipt
+   * `{ still_queued: [...] }`. */
+  interrupt?: () => Promise<unknown>;
+  /** Replaces the default supportedCommands(), which never settles (a CLI that has not answered the
+   * SDK's initialize yet), so a test that does not ask about commands sees no `commands_updated`. */
+  supportedCommands?: () => Promise<SlashCommand[]>;
 };
 
 export type FakeQueryController = {
@@ -111,7 +117,7 @@ export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQ
     },
     async interrupt(): Promise<unknown> {
       interruptCalls += 1;
-      return undefined;
+      return options.interrupt !== undefined ? options.interrupt() : undefined;
     },
     close(): void {
       closed = true;
@@ -124,6 +130,9 @@ export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQ
     setPermissionMode(mode: PermissionMode): Promise<void> {
       setPermissionModeCalls.push(mode);
       return options.setPermissionMode !== undefined ? options.setPermissionMode(mode) : Promise.resolve();
+    },
+    supportedCommands(): Promise<SlashCommand[]> {
+      return options.supportedCommands !== undefined ? options.supportedCommands() : new Promise<SlashCommand[]>(() => {});
     },
   };
 

@@ -1,6 +1,6 @@
 {
   "//": "The one source for the protocol numbers, the capability strings and the permission-mode strings. Read by crates/claude-runtime-protocol/build.rs (Rust constants) and by apps/claude-sidecar/scripts/generateProtocolConstants.mjs (TypeScript constants); tests on both sides fail if either drifts from this file. Rules and the meaning of each field: COMPATIBILITY.md next to this file.",
-  "protocol": {"major": 3, "minor": 14},
+  "protocol": {"major": 3, "minor": 20},
   "capabilities": [
     {"name": "handshake", "since_minor": 0, "baseline": true},
     {"name": "create_session", "since_minor": 0, "baseline": true},
@@ -34,6 +34,15 @@
     {"name": "cli_auto_mode", "since_minor": 14},
     {"name": "permission_defer", "since_minor": 14},
     {"name": "permission_denied_events", "since_minor": 14},
+    {"name": "cli_compatibility_report", "since_minor": 15},
+    {"name": "gated_cli_mode_default", "since_minor": 15},
+    {"name": "effective_claude_config_dir", "since_minor": 16},
+    {"name": "startup_report_file", "since_minor": 17},
+    {"name": "effective_session_report", "since_minor": 18},
+    {"name": "extra_mcp_servers", "since_minor": 19},
+    {"name": "extra_mcp_servers_http", "since_minor": 19},
+    {"name": "steer_turn", "since_minor": 20, "when": "cli_message_lifecycle"},
+    {"name": "list_commands", "since_minor": 20},
     {"name": "executable_host_cli", "since_minor": 1},
     {"name": "executable_sdk_bundled", "since_minor": 1, "when": "sdk_bundled"}
   ],
@@ -71,6 +80,41 @@
       "new message verdandi.claude.runtime.v1.PermissionDenied",
       "verdandi.claude.runtime.v1.PermissionOutcome: new value PERMISSION_OUTCOME_DEFERRED = 7",
       "new enum verdandi.claude.runtime.v1.CliPermissionMode"
+    ]},
+    {"minor": 15, "date": "2026-10-02", "summary": "The CLI's compatibility verdict in the handshake, and an opt-in process mode in which the host decides per session whether to run on a CLI the sidecar refuses: HandshakeResponse.cli_compatibility and .bundled_cli_compatibility, ClaudeHostPolicy.accept_unsupported_cli (cli_compatibility_report). The capability gated_cli_mode_default states, and does not change, that a gated session starts in the CLI's `default` mode.", "wire_additions": [
+      "verdandi.claude.runtime.v1.HandshakeResponse: new field optional .verdandi.claude.runtime.v1.CliCompatibility cli_compatibility = 17",
+      "verdandi.claude.runtime.v1.HandshakeResponse: new field optional .verdandi.claude.runtime.v1.CliCompatibility bundled_cli_compatibility = 18",
+      "verdandi.claude.runtime.v1.ClaudeHostPolicy: new field optional bool accept_unsupported_cli = 10",
+      "new message verdandi.claude.runtime.v1.CliCompatibility",
+      "new enum verdandi.claude.runtime.v1.CliVerdict"
+    ]},
+    {"minor": 16, "date": "2026-10-02", "summary": "The configuration directory the CLI really uses, in the handshake: HandshakeResponse.effective_claude_config_dir (effective_claude_config_dir). The sidecar's account module now knows only explicit directories; the name-to-directory layout moved into a legacy module of the sidecar, with no change to what any input resolves to.", "wire_additions": [
+      "verdandi.claude.runtime.v1.HandshakeResponse: new field optional string effective_claude_config_dir = 19"
+    ]},
+    {"minor": 17, "date": "2026-10-02", "summary": "A machine-readable startup report: with VERDANDI_CLAUDE_SIDECAR_REPORT_FILE set the process writes one JSON line per startup outcome (ready after it listens, refused before it exits, diagnostic for an accepted but untested CLI) beside the unchanged stderr text, and ErrorDetail.reason names which rule refused a request (startup_report_file).", "wire_additions": [
+      "verdandi.claude.runtime.v1.ErrorDetail: new field optional string reason = 3"
+    ]},
+    {"minor": 18, "date": "2026-10-02", "summary": "What a session really loaded, reported once on SessionReady: the setting tiers and configuration profile it handed the SDK, and the CLI's permission mode as an enum next to the unchanged verbatim string (effective_session_report).", "wire_additions": [
+      "verdandi.claude.runtime.v1.SessionReady: new field repeated .verdandi.claude.runtime.v1.SettingSource effective_setting_sources = 10",
+      "verdandi.claude.runtime.v1.SessionReady: new field optional .verdandi.claude.runtime.v1.ConfigurationProfile effective_configuration = 11",
+      "verdandi.claude.runtime.v1.SessionReady: new field optional .verdandi.claude.runtime.v1.CliPermissionModeKind cli_permission_mode_kind = 12",
+      "new enum verdandi.claude.runtime.v1.CliPermissionModeKind"
+    ]},
+    {"minor": 19, "date": "2026-10-08", "summary": "MCP servers declared by the process that starts the sidecar: VERDANDI_CLAUDE_EXTRA_MCP_SERVERS merges stdio servers (extra_mcp_servers) and http servers whose headers come from the sidecar's environment (extra_mcp_servers_http) into every session's mcpServers; an ISOLATED session that has them also turns the claude.ai connectors off; a verified allow list permits the declared servers' tools and requires exactly those servers, connected. No wire change."},
+    {"minor": 20, "date": "2026-10-13", "summary": "Steering and the slash-command list: the SteerTurn RPC adds a user message to the running turn (priority next) and the UserMessageDelivered and UserMessageDropped events report its fate, read from the CLI's command_lifecycle frames, with error codes TURN_MISMATCH and STEER_UNAVAILABLE (steer_turn, advertised only when the host CLI is at least 2.1.252; each session still needs its CLI to list msg_lifecycle_v1); the CommandsUpdated event carries the session's slash commands after start and on every change (list_commands).", "wire_additions": [
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.UserMessageDelivered user_message_delivered = 24 (oneof event)",
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.UserMessageDropped user_message_dropped = 25 (oneof event)",
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.CommandsUpdated commands_updated = 26 (oneof event)",
+      "new message verdandi.claude.runtime.v1.SteerTurnRequest",
+      "new message verdandi.claude.runtime.v1.SteerTurnResponse",
+      "new message verdandi.claude.runtime.v1.UserMessageDelivered",
+      "new message verdandi.claude.runtime.v1.UserMessageDropped",
+      "new message verdandi.claude.runtime.v1.SlashCommand",
+      "new message verdandi.claude.runtime.v1.CommandsUpdated",
+      "verdandi.claude.runtime.v1.ErrorCode: new value ERROR_CODE_TURN_MISMATCH = 14",
+      "verdandi.claude.runtime.v1.ErrorCode: new value ERROR_CODE_STEER_UNAVAILABLE = 15",
+      "new enum verdandi.claude.runtime.v1.UserMessageDropReason",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc SteerTurn"
     ]}
   ]
 }

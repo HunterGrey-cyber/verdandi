@@ -1,4 +1,5 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -56,13 +57,37 @@ test('parsePsOutput (the non-Linux path) applies the same rule', () => {
   assert.deepEqual(parsePsOutput(out + '   15    10 R+\n', 10, 15), [11, 14]);
 });
 
-function nodeChild(script: string): ChildProcess {
-  return spawn(process.execPath, ['-e', script], { stdio: ['pipe', 'ignore', 'ignore'] });
+function nodeChild(t: TestContext, script: string): ChildProcess {
+  const child = spawn(process.execPath, ['-e', `${script}\nprocess.stdout.write('ready\\n');`], { stdio: ['pipe', 'pipe', 'ignore'] });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill('SIGKILL');
+      await closed;
+    }
+  });
+  return child;
 }
 
 /** Resolves once `child` is running its script (it has installed its handlers). */
 function started(child: ChildProcess): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 300));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      child.stdout!.off('data', onData);
+      child.off('close', onClose);
+      child.off('error', onError);
+    };
+    const onClose = () => { cleanup(); reject(new Error('child exited before installing its handlers')); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    let output = '';
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes('ready\n')) { cleanup(); resolve(); }
+    };
+    child.stdout!.on('data', onData);
+    child.once('close', onClose);
+    child.once('error', onError);
+  });
 }
 
 const SHORT = { naturalExitMs: 100, termGraceMs: 800, killGraceMs: 800, pollMs: 10 };
@@ -74,9 +99,9 @@ test('endChildProcesses: nothing to do with no children, and says nothing', asyn
   assert.deepEqual(lines, []);
 });
 
-test('endChildProcesses: a child that stops on SIGTERM gets SIGTERM, and is gone -- reaped -- before it resolves', async () => {
+test('endChildProcesses: a child that stops on SIGTERM gets SIGTERM, and is gone -- reaped -- before it resolves', async (t) => {
   // Ignores stdin EOF like a CLI mid-turn; takes 200 ms to stop after SIGTERM.
-  const child = nodeChild("process.stdin.resume(); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200)); setInterval(() => {}, 1000);");
+  const child = nodeChild(t, "process.stdin.resume(); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200)); setInterval(() => {}, 1000);");
   child.stdin!.end();
   await started(child);
   assert.ok(listChildPids(process.pid).includes(child.pid!), 'the real process table sees the child');
@@ -87,8 +112,8 @@ test('endChildProcesses: a child that stops on SIGTERM gets SIGTERM, and is gone
   assert.ok(!listChildPids(process.pid).includes(child.pid!), 'no longer a live child when the promise resolves');
 });
 
-test('endChildProcesses: a child that ignores SIGTERM is SIGKILLed after the grace, never waited on forever', async () => {
-  const child = nodeChild("process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);");
+test('endChildProcesses: a child that ignores SIGTERM is SIGKILLed after the grace, never waited on forever', async (t) => {
+  const child = nodeChild(t, "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);");
   await started(child);
   const lines: string[] = [];
   const t0 = Date.now();
@@ -104,10 +129,19 @@ test('endChildProcesses: a child that ignores SIGTERM is SIGKILLed after the gra
   assert.equal(signal, 'SIGKILL');
 });
 
-test('endChildProcesses: a child that exits on its own inside the natural grace is never signalled', async () => {
-  const child = nodeChild('setTimeout(() => process.exit(0), 50);');
+test('endChildProcesses: a child that exits on its own inside the natural grace is never signalled', async (t) => {
+  const child = nodeChild(t, "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));");
+  await started(child);
   const signals: string[] = [];
-  const report = await endChildProcesses({ ...SHORT, naturalExitMs: 2000 }, { kill: (_pid, sig) => signals.push(sig) });
+  const report = await endChildProcesses({ ...SHORT, naturalExitMs: 2000 }, {
+    listChildren: (parent) => {
+      const children = listChildPids(parent);
+      // Let the child exit only after the reaper has observed it, not during process startup.
+      child.stdin!.end();
+      return children;
+    },
+    kill: (_pid, sig) => signals.push(sig),
+  });
   assert.deepEqual(report.found, [child.pid]);
   assert.deepEqual(report.terminated, []);
   assert.deepEqual(signals, []);
@@ -134,8 +168,8 @@ test('the real sidecar, stdin closed while a session\'s CLI is running: the CLI 
     [
       '#!/bin/sh',
       'if [ "$1" = "--version" ]; then echo "2.1.263 (Claude Code)"; exit 0; fi',
-      `echo $$ > '${pidFile}'`,
       `trap 'sleep 0.3; date +%s%N > "${exitFile}"; exit 0' TERM`,
+      `echo $$ > '${pidFile}.tmp' && mv '${pidFile}.tmp' '${pidFile}'`,
       // Keeps running after stdin EOF; `cat` is not used so EOF cannot end it.
       'while true; do sleep 0.05; done',
       '',
@@ -166,9 +200,11 @@ test('the real sidecar, stdin closed while a session\'s CLI is running: the CLI 
     await new Promise<void>((resolve, reject) =>
       c!.createSession({ cwd: dir, policy: undefined } as never, (err) => (err ? reject(err) : resolve())),
     );
-    while (!existsSync(pidFile) && Date.now() < deadline) {
+    const cliDeadline = Date.now() + 10000;
+    while (!existsSync(pidFile) && Date.now() < cliDeadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
+    assert.ok(existsSync(pidFile), `session CLI never became ready; stderr:\n${stderr}`);
     stubPid = Number(readFileSync(pidFile, 'utf8').trim());
     assert.ok(alive(stubPid), 'the stub CLI is running');
 

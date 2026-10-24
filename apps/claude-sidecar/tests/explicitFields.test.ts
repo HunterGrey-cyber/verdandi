@@ -24,6 +24,8 @@ import {
   CreateSessionRequest,
   CreateSessionResponse,
   EgressProbe,
+  ErrorCode,
+  ErrorDetail,
   ExecutableSource,
   HandshakeResponse,
   InitCheck,
@@ -36,6 +38,7 @@ import {
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 import { FakeSdk, type FakeProvider } from './compat/fakeSdk.js';
 import { goldenRequests } from './compat/eitri.js';
+import { completionGoldenRequests } from './compat/completionClient.js';
 import { REPO_ROOT } from './compat/paths.js';
 import * as old from './compat/b3aa188/generated/runtime.js';
 
@@ -343,6 +346,35 @@ test('await_account_identity: a provider that exits while the call waits fails C
   assert.ok(Date.now() - started < 2_000, 'at once, not at the probe deadline');
 });
 
+for (const how of ['exits', 'fails'] as const) {
+  test(`await_account_identity: a CLI that ${how} before answering initialize fails CreateSession, though the probe settles before any tick`, async () => {
+    // What the SDK does when the CLI dies before initialize is answered: the stream ends (or its read
+    // rejects) and, in the same step, every pending control request, accountInfo() among them, is
+    // rejected. The probe therefore settles without any pump having seen the exit.
+    let rejectAccountInfo: (err: Error) => void = () => {};
+    const s = sidecar({
+      accountInfo: () =>
+        new Promise<AccountInfo>((_resolve, reject) => {
+          rejectAccountInfo = reject;
+        }),
+      accountInfoTimeoutMs: 10_000,
+    });
+    const waiting = rpc(s.impl.createSession as Handler, completionRequest([], { awaitAccountIdentity: true }));
+    await until('the session to be registered', () => s.registry.allSessionIds().length === 1);
+    if (how === 'exits') {
+      s.sdk.last.end();
+    } else {
+      s.sdk.last.fail(new Error('Claude Code process exited with code 1'));
+    }
+    rejectAccountInfo(new Error('Query closed before response received'));
+    await assert.rejects(waiting, (err: grpc.ServiceError) => {
+      assert.equal(err.code, grpc.status.UNAVAILABLE);
+      assert.match(err.message, how === 'exits' ? /the session ended \(provider_exited\)/ : /the session ended \(provider_failed\)/);
+      return true;
+    });
+  });
+}
+
 test('await_account_identity: a session closed while the call waits fails CreateSession with closed_by_host', async () => {
   const s = sidecar({ accountInfo: () => new Promise<AccountInfo>(() => {}), accountInfoTimeoutMs: 10_000 });
   const waiting = rpc(s.impl.createSession as Handler, completionRequest([], { awaitAccountIdentity: true }));
@@ -358,6 +390,22 @@ test('await_account_identity: a probe that answered just before the provider die
   made.controller.settleAccountIdentity({ status: 'answered', email: 'x@example.invalid', organization: null, subscriptionType: null, tokenSource: null });
   made.controller.endSession('provider_failed');
   await assert.rejects(waiting, (err: grpc.ServiceError) => err.code === grpc.status.UNAVAILABLE && /\(provider_failed\)/.test(err.message));
+});
+
+test('await_account_identity: a pump that throws after the probe answered fails CreateSession and closes the session, not OK with a dead id', async () => {
+  const { made, impl, registry } = await fakeSessionImpl();
+  const waiting = rpc(impl.createSession as Handler, { cwd: '/tmp/p', policy: undefined, awaitAccountIdentity: true });
+  // Both before the handler resumes: the identity is a good one, and the pump that follows it throws,
+  // which stops the session's driver and drops it from the registry without closing it.
+  made.controller.settleAccountIdentity({ status: 'answered', email: 'x@example.invalid', organization: null, subscriptionType: null, tokenSource: null });
+  made.controller.makeNextPumpThrow(new Error('an SDK message the translator could not read'));
+  await assert.rejects(waiting, (err: grpc.ServiceError) => {
+    assert.equal(err.code, grpc.status.UNAVAILABLE);
+    assert.match(err.message, /while CreateSession was waiting for its account identity/);
+    return true;
+  });
+  assert.equal(registry.allSessionIds().length, 0);
+  assert.equal(made.controller.closeCalls, 1, 'nobody holds the id, so the query behind it is closed');
 });
 
 test('await_account_identity: an identity that cannot be read closes the session before the error is answered', async () => {
@@ -571,4 +619,34 @@ test('the frozen client decodes the 3.13 handshake and SessionReady, dropping on
   });
   const oldEvent = old.SessionEvent.decode(SessionEvent.encode(event).finish());
   assert.equal(oldEvent.sessionReady?.permissionMode, 'default');
+});
+
+test('every frozen client\'s CreateSession is accepted as it is, and refused with <field>_unknown when one of the five older policy enums is set to a number the proto does not declare', async () => {
+  const creates = [...goldenRequests(), ...completionGoldenRequests()].filter(([name]) => name.includes('create'));
+  assert.ok(creates.length >= 5, `found only ${creates.length} golden CreateSession requests`);
+  const fields = ['configuration', 'permissions', 'persistence', 'executable', 'streaming'] as const;
+  for (const [name, bytes] of creates) {
+    const request = CreateSessionRequest.decode(bytes);
+    assert.ok(request.policy !== undefined, `${name} carries a policy`);
+    const s = sidecar();
+    const res = await rpc<{ sessionId: string }>(s.impl.createSession as Handler, request);
+    assert.ok(res.sessionId.length > 0, `${name} as sent`);
+    for (const field of fields) {
+      for (const undeclared of [99, -1]) {
+        // Re-encoded, then decoded, so the number reaches the handler exactly as the decoder would hand it over.
+        const mutated = CreateSessionRequest.decode(
+          CreateSessionRequest.encode({ ...request, policy: { ...request.policy!, [field]: undeclared } }).finish(),
+        );
+        assert.equal(mutated.policy![field], undeclared, `${name}: ${field} survives the wire as ${undeclared}`);
+        await assert.rejects(rpc(s.impl.createSession as Handler, mutated), (err: grpc.ServiceError) => {
+          assert.equal(err.code, grpc.status.INVALID_ARGUMENT, `${name} ${field}=${undeclared}`);
+          const detail = ErrorDetail.decode(err.metadata.get('grpc-status-details-bin')[0] as Buffer);
+          assert.equal(detail.code, ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, `${name} ${field}=${undeclared}`);
+          assert.equal(detail.reason, `${field}_unknown`, `${name} ${field}=${undeclared}`);
+          return true;
+        });
+      }
+    }
+    assert.equal(s.sessions.length, 1, `${name}: no refused request built a session`);
+  }
 });

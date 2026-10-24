@@ -1,4 +1,5 @@
 import type { ClaudeAccount } from './account.js';
+import type { ExtraMcpServers } from './extraMcpServers.js';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 
 /**
@@ -98,8 +99,10 @@ export type CliPermissionMode = 'default' | 'auto';
  * What a session does with an explicit allow list once system/init reports the tools the CLI built.
  *
  * - `verify` (and an absent `initCheck`, which means the same): any tool beyond the list (plus the
- *   structured-output carrier), any named tool missing, or no tools list at all closes the session
- *   with `tool_policy_violation` right after the session_ready that showed it.
+ *   structured-output carrier and the `mcp__<server>__` tools of the session's extra MCP servers), any
+ *   named tool missing, no tools list at all, or MCP servers other than exactly the extra ones (each
+ *   `connected` with a tool; none at all when there are none) closes the session with
+ *   `tool_policy_violation` right after the session_ready that showed it.
  * - `report_only`: the session_ready still carries `initFingerprint`, and nothing is closed; the
  *   caller compares it with what it asked for. `allow` still becomes `Options.tools` exactly as under
  *   `verify`.
@@ -117,11 +120,19 @@ export type EffectiveToolOptions = {
   tools?: string[];
 };
 
+/** What a session handed the SDK about its setting tiers, and the profile it ran under, recorded when
+ * the session was created: `settingSources` is `Options.settingSources` exactly as `queryFn` received
+ * it, `configuration` the policy's own value. */
+export type EffectiveSessionOptions = {
+  settingSources: SettingSource[];
+  configuration: ClaudeHostPolicy['configuration'];
+};
+
 export type ClaudeSessionConfig = {
   cwd: string;
   policy: ClaudeHostPolicy;
   /** Optional, host-level rather than per-request: which local Claude account the subprocess
-   * authenticates as. Resolved once at sidecar startup (see `resolveAccount`) and threaded through
+   * authenticates as. Resolved once at sidecar startup and threaded through
    * unchanged, so every session in a process agrees on it. `undefined` -- the shipped default --
    * means nothing is pinned and the subprocess inherits the host environment's own account. */
   account?: ClaudeAccount;
@@ -129,6 +140,11 @@ export type ClaudeSessionConfig = {
    * own Claude CLI, used only when the policy asks for `executable: 'host_cli'`. Resolved once at
    * sidecar startup so the binary the version gate measured is the binary sessions actually spawn. */
   hostCliPath?: string;
+  /** Optional, host-level like `account`: the MCP servers the process that started the sidecar
+   * declared (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`, see extraMcpServers.ts), merged into every
+   * session's `mcpServers`. Resolved once at sidecar startup. `undefined` leaves the options exactly
+   * as they were before the variable existed. */
+  extraMcpServers?: ExtraMcpServers;
   /** Present when resuming a prior provider session id. Mutually exclusive with starting fresh. */
   resume?: { providerSessionId: string };
   /** When set alongside `resume`, the resumed history is forked to a NEW session id rather than
@@ -287,8 +303,28 @@ export type SessionCloseReason = 'closed_by_host' | 'provider_exited' | 'provide
 export type InitFingerprint = {
   tools: string[];
   mcpServers: Array<{ name: string; status: string }>;
+  /** Set when system/init's `mcp_servers` was missing, not an array, or held an entry without a string
+   * name: `mcpServers` then lists only what could be read, and a verified session's server check
+   * fails rather than trusting it. Not on the wire; the sidecar's own check is where it counts. */
+  mcpServersUnreadable?: true;
   /** `apiKeySource`: 'none' for a claude.ai login, 'ANTHROPIC_API_KEY' when an API key is in use. */
   apiKeySource: string | null;
+};
+
+/** Why a steered message never reached the model. The first three are the CLI's own terminal
+ * `command_lifecycle` states; `session_closed` is the session ending while the message was still
+ * waiting. */
+export type SteerDropReason = 'cancelled' | 'discarded' | 'refused' | 'session_closed';
+
+/** One slash command the session's CLI offers, as the SDK's `Query.supportedCommands()` reports it. */
+export type SlashCommandInfo = {
+  /** Without the leading slash. */
+  name: string;
+  description: string;
+  /** e.g. `<file>`; empty when the command takes none. */
+  argumentHint: string;
+  /** Other names that resolve to this command. */
+  aliases: string[];
 };
 
 export type ClaudeRuntimeEvent =
@@ -311,6 +347,8 @@ export type ClaudeRuntimeEvent =
       /** Set by the session (not by `translateMessage`) on every session_ready of a session that
        * recorded the options it was created with -- every session `createSession` builds. */
       effectiveToolOptions?: EffectiveToolOptions;
+      /** Set by the session, like `effectiveToolOptions`, and on the same events. */
+      effectiveSessionOptions?: EffectiveSessionOptions;
     }
   | { type: 'turn_started'; turnId: string }
   /** `messageId` is the Claude API message id the text belongs to (see TextDelta.message_id in the
@@ -381,6 +419,20 @@ export type ClaudeRuntimeEvent =
    * any other session gets the `provider_notice` it always got for this message. Informational: the
    * CLI has already refused the call, and the model already has the refusal as the tool result. */
   | { type: 'permission_denied'; toolUseId: string; toolName: string; reasonType?: string; reason?: string }
+  /** A message sent with `steerTurn` reached the model. `intoRunningTurn` true: the CLI folded it into
+   * the turn it was steered into, after a tool batch, and that turn goes on with it. False: it runs as
+   * a turn of its own after the steered turn ended (no tool boundary came, or the turn was
+   * interrupted); `turnId` is then that new turn, which the session opened with a `turn_started`.
+   * Exactly one of this and `user_message_dropped` per steered message. */
+  | { type: 'user_message_delivered'; clientMessageId: string; turnId: string; intoRunningTurn: boolean }
+  /** A message sent with `steerTurn` will never reach the model: the CLI cancelled, discarded or
+   * refused it (its `command_lifecycle` states of those names), or the session ended first. */
+  | { type: 'user_message_dropped'; clientMessageId: string; reason: SteerDropReason }
+  /** The session's whole slash-command list, to replace any list the consumer holds. `initialize`:
+   * the CLI's answer to the SDK's initialize request, sent once shortly after the session starts and
+   * before any turn. `changed`: the CLI's `system/commands_changed` push (skills found as the agent
+   * works). An `initialize` answer that arrives after a `changed` push is not sent: it is older. */
+  | { type: 'commands_updated'; commands: SlashCommandInfo[]; source: 'initialize' | 'changed' }
   /** Design doc §9.3/§10.2: any real SDK message this package does not specifically translate
    * lands here -- diagnostic only, never thrown, never silently dropped. `kind`/`subtype` mirror
    * the raw message's own `type`/`subtype` fields (when present) so a human can correlate this

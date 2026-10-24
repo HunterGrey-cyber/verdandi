@@ -56,6 +56,22 @@ test('the hook callback returns a deny decision with the given reason', async ()
   assert.equal((output as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason, 'policy denies Bash');
 });
 
+test('an MCP tool call is a permission request under its mcp__<server>__<tool> name, and a deny reaches the CLI as deny', async () => {
+  const { broker, events } = makeBroker();
+  const callback = broker.buildHookMatcher().hooks[0];
+  const outputPromise = callback(
+    { hook_event_name: 'PreToolUse', tool_name: 'mcp__host_ab12cd__canvas_show', tool_input: { id: 1 }, tool_use_id: 'toolu_m', session_id: 's', transcript_path: '', cwd: '' } as never,
+    'toolu_m',
+    { signal: new AbortController().signal },
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'permission_requested');
+  assert.equal((events[0] as { toolName: string }).toolName, 'mcp__host_ab12cd__canvas_show');
+  broker.resolve((events[0] as { permissionId: string }).permissionId, { allow: false, reason: 'not on this canvas' });
+  const output = await outputPromise;
+  assert.equal((output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision, 'deny');
+});
+
 test('two concurrent permission requests are both retained and independently resolvable in either order', async () => {
   const { broker, events } = makeBroker();
   const callback = broker.buildHookMatcher().hooks[0];

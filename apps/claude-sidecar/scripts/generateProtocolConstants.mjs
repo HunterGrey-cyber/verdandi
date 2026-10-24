@@ -22,7 +22,7 @@ const sourcePath = join(workspaceRoot, '..', '..', 'crates', 'claude-runtime-pro
 
 /** The conditions a capability may carry in `when`: facts of THIS process or build that decide
  * whether it is advertised. Each is wired in src/capabilities.ts. */
-const KNOWN_CONDITIONS = ['egress_restricted', 'sdk_bundled'];
+const KNOWN_CONDITIONS = ['egress_restricted', 'sdk_bundled', 'cli_message_lifecycle'];
 const NAME = /^[a-z][a-z0-9_]*$/;
 
 const fail = (message) => {

@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "surfaces": [
+    "sdk",
+    "interactive",
+    "screen",
+    "transcript"
+  ],
+  "ranges": {
+    "sdk": {
+      "min": "2.1.252",
+      "max_exclusive": "3.0.0"
+    },
+    "interactive": {
+      "min": "2.1.267",
+      "max_exclusive": "2.2.0"
+    },
+    "screen": {
+      "min": "2.1.278",
+      "max_exclusive": "2.2.0"
+    },
+    "transcript": {
+      "min": "2.1.267",
+      "max_exclusive": "2.2.0"
+    }
+  },
+  "known_incompatible": [],
+  "tested": [
+    {
+      "version": "2.1.267",
+      "surfaces": [
+        "sdk",
+        "interactive"
+      ],
+      "evidence": "Original round of both real-CLI suites."
+    },
+    {
+      "version": "2.1.252",
+      "surfaces": [
+        "sdk"
+      ],
+      "evidence": "CLI bundled in agent SDK 0.3.252; real-SDK suite 4/4, 2026-09-14."
+    },
+    {
+      "version": "2.1.268",
+      "surfaces": [
+        "interactive"
+      ],
+      "evidence": "Interactive real-CLI suite re-run 2026-09-10; raw 0x03 interrupt unchanged."
+    },
+    {
+      "version": "2.1.270",
+      "surfaces": [
+        "sdk"
+      ],
+      "evidence": "Host CLI; real-SDK suite 4/4, 2026-09-14."
+    },
+    {
+      "version": "2.1.283",
+      "surfaces": [
+        "sdk"
+      ],
+      "evidence": "Host CLI from 2026-09-27; M1 recordings, provider-prompt and default-mode real-CLI tests."
+    },
+    {
+      "version": "2.1.293",
+      "surfaces": [
+        "screen"
+      ],
+      "evidence": "Screen: the upgrade selftest of an interactive session (version, start, socket, permission allow and deny, exit, resume) passed 7/7, 2026-10-09."
+    },
+    {
+      "version": "2.1.292",
+      "surfaces": [
+        "sdk",
+        "screen"
+      ],
+      "evidence": "Real-SDK suites 14/14 on the TEST profile (providerPrompt, defaultMode, session, permission, hookTimeout, extraMcp), 2026-10-08. Screen: State-classifier scenarios re-run on the TEST profile, 2026-10-08."
+    },
+    {
+      "version": "2.1.288",
+      "surfaces": [
+        "screen"
+      ],
+      "evidence": "Screen: the recorded corpus captures for 2.1.288 and a recorded state-classifier selftest."
+    }
+  ]
+}

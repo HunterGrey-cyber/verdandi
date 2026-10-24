@@ -40,6 +40,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     permissionModeSwitchable: false,
     providerPermissionPrompts: false,
     cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
+    acceptUnsupportedCli: false,
     ...extra,
   };
 }

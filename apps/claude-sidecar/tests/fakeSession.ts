@@ -6,6 +6,10 @@ export type FakeSessionController = {
   emit(event: ClaudeRuntimeEvent): void;
   /** Every text passed to sendTurn(), in call order. */
   readonly sentTurns: string[];
+  /** Every steerTurn() call the fake accepted, in call order. */
+  readonly steeredTurns: Array<{ expectedTurnId: string; clientMessageId: string; text: string }>;
+  /** Makes the NEXT steerTurn() throw this error (e.g. the kernel's SteerError). */
+  makeNextSteerTurnThrow(err: unknown): void;
   /** Every (permissionId, decision) pair passed to resolvePermission(), in call order. */
   readonly resolvePermissionCalls: Array<{ permissionId: string; decision: PermissionAnswer }>;
   readonly interruptCalls: number;
@@ -40,6 +44,9 @@ export type FakeSessionController = {
   endSession(reason: SessionCloseReason): void;
   /** Makes the NEXT accountIdentity() call return a rejected promise (the kernel's never rejects). */
   makeNextAccountIdentityReject(err: unknown): void;
+  /** Makes the NEXT pump() reject with this error, as a pump that met an SDK message it could not
+   * translate would. */
+  makeNextPumpThrow(err: unknown): void;
 };
 
 /**
@@ -52,6 +59,8 @@ export type FakeSessionController = {
 export function makeFakeSession(): { session: MinimalKernelSession; controller: FakeSessionController } {
   const pending: ClaudeRuntimeEvent[] = [];
   const sentTurns: string[] = [];
+  const steeredTurns: FakeSessionController['steeredTurns'] = [];
+  let nextSteerTurnError: { err: unknown } | undefined;
   const resolvePermissionCalls: FakeSessionController['resolvePermissionCalls'] = [];
   let interruptCalls = 0;
   let closeCalls = 0;
@@ -63,11 +72,17 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
   let accountIdentityCalls = 0;
   let closeReason: SessionCloseReason | undefined;
   let nextAccountIdentityError: { err: unknown } | undefined;
+  let nextPumpError: { err: unknown } | undefined;
   let settleIdentity!: (identity: AccountIdentity | undefined) => void;
   const identity = new Promise<AccountIdentity | undefined>((resolve) => (settleIdentity = resolve));
 
   const session: MinimalKernelSession = {
     async pump() {
+      if (nextPumpError !== undefined) {
+        const { err } = nextPumpError;
+        nextPumpError = undefined;
+        throw err;
+      }
       return pending.splice(0);
     },
     sendTurn(text: string) {
@@ -78,6 +93,15 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       }
       sentTurns.push(text);
       return { turnId: `fake-turn-${sentTurns.length}` };
+    },
+    steerTurn(expectedTurnId: string, clientMessageId: string, text: string) {
+      if (nextSteerTurnError !== undefined) {
+        const { err } = nextSteerTurnError;
+        nextSteerTurnError = undefined;
+        throw err;
+      }
+      steeredTurns.push({ expectedTurnId, clientMessageId, text });
+      return { turnId: expectedTurnId };
     },
     async interrupt() {
       if (nextInterruptError !== undefined) {
@@ -136,6 +160,10 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
     controller: {
       emit: (event) => pending.push(event),
       sentTurns,
+      steeredTurns,
+      makeNextSteerTurnThrow: (err: unknown) => {
+        nextSteerTurnError = { err };
+      },
       resolvePermissionCalls,
       get interruptCalls() {
         return interruptCalls;
@@ -163,6 +191,9 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       },
       makeNextAccountIdentityReject: (err) => {
         nextAccountIdentityError = { err };
+      },
+      makeNextPumpThrow: (err) => {
+        nextPumpError = { err };
       },
       holdNextSetPermissionMode: () => {
         let release!: () => void;

@@ -253,6 +253,15 @@ export class PermissionBroker {
    * its own `respond_permission`, and nothing changed on this side. A future reader arriving with
    * the same complaint should reach for that classifier, not for this matcher.
    *
+   * ### MCP tools go through it like built-ins, before they run
+   *
+   * A call to a tool of an MCP server (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`, or any other) reaches
+   * this callback as `tool_name` `mcp__<server>__<tool>` BEFORE the CLI sends it to the server, so the
+   * host's `permission_requested` comes first, an allow lets the call through, and a deny means the
+   * server never sees it. a host's card for such a tool rests on that order: it is tested against
+   * the real CLI in realSdk.extraMcp.integration.test.ts. When a deferred tool is first discovered,
+   * the `ToolSearch` call that finds it is gated here too.
+   *
    * `timeoutSeconds` is forwarded verbatim as the matcher's `timeout`, which the SDK puts in the
    * `initialize` control payload and the CLI honours per matcher. Omitted -- the production default
    * -- the CLI's own timeout applies, exactly as before. Supplying it is how the abort path below

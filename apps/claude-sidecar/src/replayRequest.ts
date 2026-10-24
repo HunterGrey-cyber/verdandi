@@ -36,6 +36,7 @@ export function replayRequestFromProto(request: {
         throw new SidecarError(
           ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
           'REPLAY_START_AFTER_SEQUENCE requires after_sequence; without it there is no cursor to replay from',
+          'replay_cursor_missing',
         );
       }
       return { mode: 'after_sequence', afterSequence: cursor };
@@ -46,6 +47,7 @@ export function replayRequestFromProto(request: {
         'WatchSessionEventsRequest.start is unset or unrecognized; it must be one of REPLAY_START_FROM_NOW, ' +
           'REPLAY_START_AFTER_SEQUENCE, or REPLAY_START_AVAILABLE_HISTORY. It is not defaulted: an unstated ' +
           'intent is exactly what the old after_sequence=0 encoding guessed at, and guessed wrong.',
+        'replay_start_unrecognized',
       );
   }
 }
@@ -56,6 +58,7 @@ function requireNoCursor(cursor: bigint | undefined, mode: string): void {
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       `${mode} does not take after_sequence, but one was supplied (${cursor}). Refused rather than ignored: ` +
         'a cursor the server silently discards leaves the caller believing it asked for a replay it will never get.',
+      'replay_cursor_unexpected',
     );
   }
 }

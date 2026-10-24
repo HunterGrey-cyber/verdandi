@@ -1,0 +1,8 @@
+{
+  "//": "The Node runtime the packaged artifact carries: scripts/buildBinary.mjs downloads exactly this tarball and refuses to build around one whose SHA-256 differs. Bumping it changes the shipped runtime, so every certification recorded against the old one is about a different program: take the new checksums from https://nodejs.org/dist/<version>/SHASUMS256.txt (the node-<version>-<platform>-<arch>.tar.xz lines) in the same edit.",
+  "version": "v22.23.2",
+  "tarball_sha256": {
+    "linux-x64": "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
+    "linux-arm64": "fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8"
+  }
+}

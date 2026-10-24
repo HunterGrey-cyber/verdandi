@@ -5,7 +5,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as grpc from '@grpc/grpc-js';
-import { RuntimeServiceClient, ReplayStart } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
+import {
+  RuntimeServiceClient, ReplayStart, ConfigurationProfile, PermissionMode, PersistenceMode,
+  ExecutableSource, StreamingMode, InitCheck, CliPermissionMode, type CreateSessionRequest,
+} from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 const REAL = process.env.RUN_REAL_CLAUDE_TESTS === '1';
 
@@ -74,10 +77,29 @@ test('real sidecar: a plain-text turn completes with outcome completed, observed
   await withSidecar(async (client) => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-sidecar-session-'));
     try {
-      const { sessionId } = await promisify<{ cwd: string; policy: unknown }, { sessionId: string }>(client.createSession.bind(client), {
+      const request: CreateSessionRequest = {
         cwd: dir,
-        policy: { configuration: 1, permissions: 3, persistence: 2, executable: 1 }, // native, bypass, ephemeral, host_cli
-      });
+        policy: {
+          // ISOLATED: with an explicit empty allow list under VERIFY, NATIVE would load the account's own plugins and MCP
+          // servers and the exact tool-set check would close the session before the turn.
+          configuration: ConfigurationProfile.CONFIGURATION_PROFILE_ISOLATED,
+          permissions: PermissionMode.PERMISSION_MODE_BYPASS,
+          persistence: PersistenceMode.PERSISTENCE_MODE_EPHEMERAL,
+          executable: ExecutableSource.EXECUTABLE_SOURCE_HOST_CLI,
+          streaming: StreamingMode.STREAMING_MODE_COMPLETE,
+          // This turn needs no tools.
+          toolPolicy: { deny: [], unrestricted: false, allow: { tools: [], initCheck: InitCheck.INIT_CHECK_VERIFY } },
+          settingSources: undefined,
+          permissionModeSwitchable: false,
+          providerPermissionPrompts: false,
+          cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
+          acceptUnsupportedCli: false,
+        },
+        fork: false,
+        outputFormat: undefined, // Plain text, without a structured-output schema.
+        awaitAccountIdentity: false,
+      };
+      const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 
       await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'write a very long story, at least 2000 words, about a journey' });
 
@@ -138,10 +160,27 @@ test('real sidecar: a denied real tool call is genuinely blocked, and CloseSessi
   await withSidecar(async (client) => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-sidecar-session-deny-'));
     try {
-      const { sessionId } = await promisify<{ cwd: string; policy: unknown }, { sessionId: string }>(client.createSession.bind(client), {
+      const request: CreateSessionRequest = {
         cwd: dir,
-        policy: { configuration: 1, permissions: 1, persistence: 2, executable: 1 }, // native, interactive, ephemeral, host_cli
-      });
+        policy: {
+          configuration: ConfigurationProfile.CONFIGURATION_PROFILE_NATIVE,
+          permissions: PermissionMode.PERMISSION_MODE_INTERACTIVE,
+          persistence: PersistenceMode.PERSISTENCE_MODE_EPHEMERAL,
+          executable: ExecutableSource.EXECUTABLE_SOURCE_HOST_CLI,
+          streaming: StreamingMode.STREAMING_MODE_COMPLETE,
+          // Keep tools available so the per-call permission gate can deny them.
+          toolPolicy: { deny: [], unrestricted: true, allow: undefined },
+          settingSources: undefined,
+          permissionModeSwitchable: false,
+          providerPermissionPrompts: false,
+          cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
+          acceptUnsupportedCli: false,
+        },
+        fork: false,
+        outputFormat: undefined, // Plain text, without a structured-output schema.
+        awaitAccountIdentity: false,
+      };
+      const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 
       await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'run: echo hello, and tell me the output' });
 

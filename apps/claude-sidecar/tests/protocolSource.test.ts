@@ -94,7 +94,7 @@ test('the generated module is the file (a stale src/generated copy fails here, n
     source.capabilities.map((c) => ({ name: c.name, since_minor: c.since_minor, baseline: c.baseline ?? false, when: c.when })),
   );
   assert.deepEqual([...PERMISSION_MODES], source.permission_modes);
-  assert.deepEqual(handshakeCapabilities({ egressRestricted: true, sdkBundledAvailable: true }), source.capabilities.map((c) => c.name));
+  assert.deepEqual(handshakeCapabilities({ egressRestricted: true, sdkBundledAvailable: true, cliMessageLifecycle: true }), source.capabilities.map((c) => c.name));
 });
 
 // ---- What the file must always be --------------------------------------------------------------------------------

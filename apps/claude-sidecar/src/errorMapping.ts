@@ -3,11 +3,17 @@ import { ErrorCode, ErrorDetail } from './generated/verdandi/claude/runtime/v1/r
 
 export class SidecarError extends Error {
   readonly code: ErrorCode;
+  /**
+   * The stable name of the rule that refused (`ErrorDetail.reason`; the list is in COMPATIBILITY.md),
+   * or empty when there is none. The message is for people and may be reworded; this is not.
+   */
+  readonly reason: string;
 
-  constructor(code: ErrorCode, message: string) {
+  constructor(code: ErrorCode, message: string, reason = '') {
     super(message);
     this.name = 'SidecarError';
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -25,6 +31,8 @@ const STATUS_CODE_MAP: Record<number, grpc.status> = {
   [ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE]: grpc.status.UNAVAILABLE,
   [ErrorCode.ERROR_CODE_PROVIDER_PROTOCOL_ERROR]: grpc.status.INTERNAL,
   [ErrorCode.ERROR_CODE_DEADLINE_EXCEEDED]: grpc.status.DEADLINE_EXCEEDED,
+  [ErrorCode.ERROR_CODE_TURN_MISMATCH]: grpc.status.FAILED_PRECONDITION,
+  [ErrorCode.ERROR_CODE_STEER_UNAVAILABLE]: grpc.status.FAILED_PRECONDITION,
   [ErrorCode.UNRECOGNIZED]: grpc.status.INTERNAL,
 };
 
@@ -34,7 +42,7 @@ export function toGrpcStatusCode(error: SidecarError): grpc.status {
 
 /** Encodes an ErrorDetail into the gRPC rich-error-model trailing metadata key (design spec §5.3). */
 export function toGrpcMetadata(error: SidecarError): grpc.Metadata {
-  const detail: ErrorDetail = { code: error.code, message: error.message };
+  const detail: ErrorDetail = { code: error.code, message: error.message, reason: error.reason };
   const bytes = ErrorDetail.encode(detail).finish();
   const metadata = new grpc.Metadata();
   metadata.set('grpc-status-details-bin', Buffer.from(bytes));

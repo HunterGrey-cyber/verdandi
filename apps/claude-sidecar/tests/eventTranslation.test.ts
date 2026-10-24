@@ -2,13 +2,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
 import { translateEvent, extractTurnId } from '../src/eventTranslation.js';
-import { PermissionOutcome, TurnOutcome, SessionCloseReason } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
+import { CliPermissionModeKind, ConfigurationProfile, PermissionOutcome, SessionEvent, TurnOutcome, SessionCloseReason } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 test('translateEvent: session_ready maps to a sessionReady oneof member', () => {
   const event: ClaudeRuntimeEvent = { type: 'session_ready', sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions' };
   assert.deepEqual(translateEvent(event), {
-    sessionReady: { sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined, effectiveDisallowedTools: [], effectiveTools: undefined },
+    sessionReady: { sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined, effectiveDisallowedTools: [], effectiveTools: undefined, effectiveSettingSources: [], effectiveConfiguration: ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED, cliPermissionModeKind: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_BYPASS_PERMISSIONS },
   });
+});
+
+test('translateEvent: a recorded configuration with no wire spelling reads as UNSPECIFIED, and the event still encodes', () => {
+  const event = {
+    type: 'session_ready',
+    sessionId: 's1',
+    providerSessionId: 'p1',
+    model: 'm',
+    cwd: '/tmp',
+    permissionMode: 'default',
+    effectiveSessionOptions: { configuration: undefined, settingSources: [] },
+  } as unknown as ClaudeRuntimeEvent;
+  const out = translateEvent(event) as { sessionReady: { effectiveConfiguration: ConfigurationProfile } };
+  assert.equal(out.sessionReady.effectiveConfiguration, ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED);
+  assert.doesNotThrow(() => SessionEvent.encode(SessionEvent.fromPartial({ sessionId: 's1', ...(out as object) })).finish());
 });
 
 /** Asserted on a mode that is NOT the one a bypass caller wanted, because the field's entire job is

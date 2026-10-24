@@ -5,32 +5,37 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import { startSidecar } from '../src/lifecycle.js';
-import { RuntimeServiceClient, ReplayStart } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
+import { RuntimeServiceClient, ReplayStart, ErrorCode, ErrorDetail, type SessionEvent } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 import { makeFakeSession } from './fakeSession.js';
 
 /**
- * Does grpc-js's per-subscriber write queue actually grow without bound when a watcher stops
- * reading the SOCKET?
+ * A watcher that stops reading the SOCKET: grpc-js queues its messages in the sidecar's heap, and the
+ * write-queue bound (PACKAGING.md section 6) ends it with EVENT_GAP when what it holds reaches the
+ * replay ring's capacity -- while the session, and a second watcher that keeps reading, carry on.
  *
- * ### Why this test had to exist on this side, and why a consumer could not produce it
+ * ### Why the stall has to be at the transport
  *
- * The downstream consumer instrumented a real stall and measured `outstanding=0` across 875 writes
- * and two real partial-streaming turns, including a 30-second window in which it never called
- * `pump()`. That zero is correct and proves nothing about this question, for a reason worth writing
- * down: **a `pump()` stall is not a socket stall.** That client's watch task reads the transport
- * continuously into its own buffer and `pump()` only drains that buffer, so a consumer that has
- * stopped pumping is still, at the transport layer, a perfectly attentive reader. The server-side
- * queue cannot grow no matter how long it stalls.
+ * A downstream consumer once instrumented a real stall and measured `outstanding=0` across 875 writes,
+ * including 30 seconds in which it never called `pump()`. That zero was correct and proved nothing
+ * here: **a `pump()` stall is not a socket stall.** That client reads the transport continuously into
+ * its own buffer, so the server-side queue cannot grow however long it stalls. Here the subscriber is
+ * a grpc-js client in this process, and `call.pause()` stops the transport read itself. (`SIGSTOP` on
+ * a separate client would also block the sidecar's stderr pipe, where the stats seam writes.)
  *
- * Reproducing it needs a subscriber that stops reading the socket itself. `SIGSTOP` on that client
- * would do it and would also block the sidecar's stderr pipe -- which is where the stats seam
- * writes -- so the instrument would jam the thing it measures. Here the subscriber is a grpc-js
- * client in this process, and `call.pause()` stops the transport read directly, with nothing in the
- * way of the diagnostic.
+ * Real UDS, real grpc-js server, real codec. The only fake is the event PRODUCER: it costs no model
+ * turn and lets the test decide what each pump tick carries. The events are `text_delta`s carrying a
+ * real payload; the first version emitted a `content_delta`, a type the sidecar does not translate,
+ * so every message on the wire was a few bytes of envelope and its 256-byte text never left.
  *
- * Real UDS, real grpc-js server, real codec. The only fake is the event PRODUCER, which is the one
- * part that must not be real: it makes this cost no model turn and lets the rate be whatever the
- * loop can manage.
+ * ### Why this is deterministic
+ *
+ * The first version slept -- 150 ms for the stream to establish, 1.5 s each to fill and to drain -- and
+ * under heavy machine load it failed on a clean checkout. Nothing here waits for a length of time:
+ * each step waits for the condition it needs (an event received, a diagnostic line printed, an error
+ * delivered), so a slow machine makes it slower and never makes it fail; the deadline only turns a
+ * real hang into a readable failure. And each pump tick carries exactly one event, so what the
+ * stalled watcher holds from earlier ticks climbs by at most one per tick and the bound is met at
+ * exactly the capacity, however much the transport happened to take before it backed up.
  */
 
 const SOCKET_DIRS: string[] = [];
@@ -43,8 +48,46 @@ function socketPath(): string {
 
 const VERSIONS = { sdkDeclared: '2.1.252', hostCli: '2.1.267' } as const;
 const CLASSIFY = () => ({ kind: 'tested' }) as never;
+const CAPACITY = 64;
+/** Large enough that HTTP/2's flow-control window and the socket buffer fill after a few dozen. */
+const PAYLOAD = 'x'.repeat(32 * 1024);
 
-test('a subscriber that stops reading the socket makes grpc-js queue without bound, and the seam sees it', async (t) => {
+async function waitFor(what: string, condition: () => boolean, deadlineMs = 25_000): Promise<void> {
+  const until = Date.now() + deadlineMs;
+  while (!condition()) {
+    if (Date.now() > until) {
+      throw new Error(`timed out waiting for ${what}`);
+    }
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+class Watch {
+  readonly events: SessionEvent[] = [];
+  error: grpc.ServiceError | undefined;
+  constructor(
+    readonly call: grpc.ClientReadableStream<SessionEvent>,
+    all: Watch[],
+  ) {
+    all.push(this);
+    call.on('data', (event: SessionEvent) => this.events.push(event));
+    call.on('error', (error: grpc.ServiceError) => {
+      this.error = error;
+    });
+  }
+  sequences(): bigint[] {
+    return this.events.map((e) => e.sequence);
+  }
+  last(): bigint {
+    return this.events.at(-1)!.sequence;
+  }
+  errorCode(): ErrorCode | undefined {
+    const bytes = this.error?.metadata?.get('grpc-status-details-bin')[0];
+    return bytes === undefined ? undefined : ErrorDetail.decode(bytes as Buffer).code;
+  }
+}
+
+test('a watcher that stops reading the socket is ended with EVENT_GAP at the ring capacity; the session and its other watcher carry on', async (t) => {
   const path = socketPath();
   let controller: ReturnType<typeof makeFakeSession>['controller'] | undefined;
   const lines: string[] = [];
@@ -59,13 +102,21 @@ test('a subscriber that stops reading the socket makes grpc-js queue without bou
     getClaudeCodeVersions: () => VERSIONS,
     classifyCliVersion: CLASSIFY,
     runtime: {
-      writeQueueStats: { intervalMs: 20 },
+      ringBufferCapacity: CAPACITY,
+      // Shorter than the PumpDriver's 20 ms tick, so the seam prints between any two ticks.
+      writeQueueStats: { intervalMs: 5 },
       onDiagnostic: (line) => lines.push(line),
     },
   });
 
   const client = new RuntimeServiceClient(`unix://${path}`, grpc.credentials.createInsecure());
+  const watches: Watch[] = [];
   t.after(async () => {
+    // Cancelled first: a graceful shutdown waits for every open call, and a call whose reader is
+    // still paused after a failed assertion would hold it -- and the failure -- forever.
+    for (const watch of watches) {
+      watch.call.cancel();
+    }
     client.close();
     await sidecar.close();
     for (const dir of SOCKET_DIRS) {
@@ -79,57 +130,88 @@ test('a subscriber that stops reading the socket makes grpc-js queue without bou
     );
   });
 
-  const call = client.watchSessionEvents({ sessionId, start: ReplayStart.REPLAY_START_FROM_NOW } as never);
-  let received = 0;
-  call.on('data', () => {
-    received += 1;
-  });
-  call.on('error', () => {});
-  // Let the stream establish before anything is produced, so the pause below is the only reason
-  // anything queues.
-  await new Promise((r) => setTimeout(r, 150));
+  // AVAILABLE_HISTORY rather than FROM_NOW: a watch is registered on the server some time after the
+  // client opens it, and an event emitted in between would be missed by FROM_NOW -- the race the
+  // first version covered with a 150 ms sleep. From history, an event emitted before the server
+  // registered the watcher is replayed to it, so there is nothing to race.
+  const stalled = new Watch(client.watchSessionEvents({ sessionId, start: ReplayStart.REPLAY_START_AVAILABLE_HISTORY } as never), watches);
+  const healthy = new Watch(client.watchSessionEvents({ sessionId, start: ReplayStart.REPLAY_START_AVAILABLE_HISTORY } as never), watches);
+  let produced = 0;
+  /** One event in its own pump tick: back once the healthy watcher has it. */
+  const produce = async (event: unknown = { type: 'text_delta', turnId: 'wq', text: `chunk-${produced}-${PAYLOAD}` }) => {
+    controller!.emit(event as never);
+    produced += 1;
+    await waitFor(`the healthy watcher to receive event ${produced}`, () => healthy.events.length === produced);
+  };
+
+  // Both streams are live: each has received an event. Only then does anything stall.
+  await produce();
+  await waitFor('the stalled watcher to receive the first event', () => stalled.events.length === 1);
 
   // THE STALL: stop reading the transport. Not "stop processing" -- stop reading.
-  call.pause();
+  stalled.call.pause();
 
-  // Produce hard. Each pump tick broadcasts everything queued since the last one.
-  const TOTAL = 20_000;
-  for (let i = 0; i < TOTAL; i += 1) {
-    controller!.emit({ type: 'content_delta', turnId: 'wq', text: `chunk-${i}-${'x'.repeat(256)}` } as never);
+  const endedLine = () => lines.find((l) => l.includes('ended a watcher'));
+  while (endedLine() === undefined) {
+    assert.ok(produced < 20 * CAPACITY, `produced ${produced} events into a stalled watcher and the bound never fired`);
+    await produce();
   }
-  await new Promise((r) => setTimeout(r, 1500));
 
-  const peak = lines
-    .map((l) => Number(/peak_outstanding=(\d+)/.exec(l)?.[1] ?? 0))
-    .reduce((a, b) => Math.max(a, b), 0);
-  const buffered = lines
-    .map((l) => Number(/buffered_writes=(\d+)/.exec(l)?.[1] ?? 0))
-    .reduce((a, b) => Math.max(a, b), 0);
+  // The bound fired at exactly the capacity, for the stalled watcher only.
+  assert.match(endedLine()!, new RegExp(`ended a watcher of session ${sessionId} with EVENT_GAP: outstanding=${CAPACITY} reached the replay ring capacity ${CAPACITY}`));
+  assert.equal(lines.filter((l) => l.includes('ended a watcher')).length, 1);
 
-  assert.ok(lines.length > 0, 'the stats seam printed nothing at all, so this test measured nothing');
-  assert.ok(
-    peak > 0,
-    `a subscriber that stopped reading the socket produced peak_outstanding=${peak}. Either grpc-js is applying backpressure somewhere this server cannot see, or the seam is not observing the right thing. Lines: ${JSON.stringify(lines.slice(-3))}`,
+  // The stats seam saw the queue grow, and never past the bound.
+  const stats = lines.filter((l) => l.includes('peak_outstanding='));
+  const peaks = stats.map((l) => Number(/peak_outstanding=(\d+)/.exec(l)![1]));
+  const buffered = Math.max(0, ...stats.map((l) => Number(/buffered_writes=(\d+)/.exec(l)![1])));
+  // Past what the healthy watcher can show (one event per tick, so at most a message or two in
+  // flight): the stalled watcher's queue is held for dozens of 20 ms ticks, and the seam prints every
+  // 5 ms.
+  assert.ok(Math.max(0, ...peaks) >= CAPACITY / 2, `the stats seam never saw the stalled watcher's queue. Last lines: ${JSON.stringify(stats.slice(-3))}`);
+  // The seam reports raw writableLength, which the bound does not cap in general (it leaves out the
+  // replay and the current tick). Here there is no unread replay and each tick carries one event, so
+  // raw and bounded agree, and nothing may pass the capacity.
+  assert.ok(Math.max(...peaks) <= CAPACITY, `a watcher held ${Math.max(...peaks)} messages, past the bound of ${CAPACITY}`);
+  assert.ok(buffered > 0, 'write() never answered false while the reader was paused: the congestion signal was never raised');
+
+  // A few more ticks: the healthy watcher keeps receiving, in order, with nothing missing.
+  for (let i = 0; i < 3; i += 1) {
+    await produce();
+  }
+
+  // The stalled client reads again: it gets everything that was queued for it, then EVENT_GAP.
+  stalled.call.resume();
+  await waitFor('the stalled watcher to receive its error', () => stalled.error !== undefined);
+  assert.equal(stalled.error!.code, grpc.status.OUT_OF_RANGE);
+  assert.equal(stalled.errorCode(), ErrorCode.ERROR_CODE_EVENT_GAP);
+  assert.match(stalled.error!.details, /reconnect with after_sequence/i);
+  assert.deepEqual(stalled.sequences(), healthy.sequences().slice(0, stalled.events.length), 'what was queued arrives whole and in order');
+
+  // It reconnects with its cursor and loses nothing: the ring still holds what it missed.
+  const cursor = stalled.last();
+  const again = new Watch(
+    client.watchSessionEvents({ sessionId, start: ReplayStart.REPLAY_START_AFTER_SEQUENCE, afterSequence: cursor } as never),
+    watches,
   );
-  assert.ok(
-    buffered > 0,
-    `write() never returned false while the reader was paused (buffered_writes=${buffered}) -- the congestion signal this seam exists to read was never raised`,
-  );
+  await waitFor('the reconnect to catch up', () => again.events.length > 0 && again.last() === healthy.last());
+  assert.equal(again.error, undefined);
+  assert.deepEqual([...stalled.sequences(), ...again.sequences()], healthy.sequences(), 'the two streams together are the whole history: no gap, no repeat');
 
-  // The other half: resuming must drain it, or "unbounded" would be the wrong diagnosis and the
-  // real finding would be a leak rather than a queue.
-  call.resume();
-  await new Promise((r) => setTimeout(r, 1500));
-  const last = lines.at(-1) ?? '';
-  const finalOutstanding = Number(/ outstanding=(\d+)/.exec(last)?.[1] ?? -1);
-  assert.equal(
-    finalOutstanding,
-    0,
-    `after the subscriber resumed, the queue did not drain (${last}). A queue that never empties is a leak, which is a different defect from the one under test`,
-  );
-  assert.ok(received > 0, 'the resumed subscriber received nothing, so the queued events were lost rather than delivered');
+  // The session was never touched: a turn still runs to completion, and both readers see it.
+  const turnId = await new Promise<string>((resolve, reject) => {
+    client.sendTurn({ sessionId, commandId: 'wq-turn', text: 'go on' } as never, (err, res) =>
+      err ? reject(err) : resolve((res as { turnId: string }).turnId),
+    );
+  });
+  await produce({ type: 'turn_completed', turnId, outcome: 'completed', resultText: 'done', isError: false, stopReason: 'end_turn' });
+  await waitFor('the reconnected watcher to see the turn complete', () => again.events.some((e) => e.turnCompleted !== undefined));
+  assert.ok(healthy.events.some((e) => e.turnCompleted !== undefined));
+  assert.equal(healthy.error, undefined);
 
-  // Reported, not asserted: the number is the point of the exercise and belongs in the log even
+  // Reported, not asserted: the numbers are the point of the exercise and belong in the log even
   // when the test passes.
-  console.log(`[write-queue] peak_outstanding=${peak} buffered_writes=${buffered} delivered_after_resume=${received} of ${TOTAL}`);
+  console.log(
+    `[write-queue] capacity=${CAPACITY} peak_outstanding=${Math.max(...peaks)} buffered_writes=${buffered} produced=${produced} delivered_before_gap=${stalled.events.length}`,
+  );
 });

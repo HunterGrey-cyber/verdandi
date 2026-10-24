@@ -2,14 +2,21 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 /**
- * Optional binding of every spawned Claude subprocess to one named local account.
+ * Optional binding of every spawned Claude subprocess to one local account, named by explicit
+ * directories.
  *
  * This is a **patch for hosts that run several Claude Code accounts side by side**, not part of
- * the normal contract: with `VERDANDI_CLAUDE_ACCOUNT` unset -- the shipped default -- nothing here
- * engages, `policyToBaseOptions` sets no `options.env` at all, the SDK's own `env: {...process.env}`
+ * the normal contract: with no account pinned -- the shipped default -- nothing here engages,
+ * `policyToBaseOptions` sets no `options.env` at all, the SDK's own `env: {...process.env}`
  * default stands, and the subprocess resolves its config and credentials exactly the way a plain
  * `claude` install does (`~/.claude`). Nothing in this module writes to disk or mutates the
  * sidecar's own environment; it only computes what to hand the child.
+ *
+ * What lives here is the mechanism and nothing about how a host lays its accounts out: an account is
+ * an explicit configuration directory (or the CLI's own default location, by keyword), plus the
+ * Anthropic configuration directory that goes with it. How a host arrives at those directories -- a
+ * name that expands to a directory pair, say -- is the host's business; the sidecar's
+ * `legacyAccountName` module does it for the hosts that still send a name.
  *
  * Why it exists: the SDK inherits the parent process's environment wholesale, so on a multi-account
  * host "which subscription does verdandi spend, and whose claude.ai connectors can it reach" was
@@ -17,7 +24,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
  * configuration.
  */
 export type ClaudeAccount = {
-  /** The account's short name, e.g. `work`. Also what `CLAUDE_PROFILE` is set to. */
+  /** The account's label, e.g. `work`: what the handshake reports and what `CLAUDE_PROFILE` is set to. */
   name: string;
   /** `CLAUDE_CONFIG_DIR`: holds `.claude.json`, `.credentials.json`, `settings.json`, projects. */
   configDir: string;
@@ -50,10 +57,6 @@ export const IDENTITY_SEED_ENV_VARS = ['CLAUDE_CODE_ACCOUNT_UUID', 'CLAUDE_CODE_
 /** The four variables that name an account, in the order `accountEnv` emits them. */
 export const ACCOUNT_ENV_VARS = ['CLAUDE_PROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR'] as const;
 
-/** Account names are interpolated into a filesystem path by the convention below, so they are
- * restricted to a single harmless path segment rather than sanitized after the fact. */
-const ACCOUNT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
 /**
  * The four environment variables that name an account, as one tuple.
  *
@@ -83,7 +86,7 @@ export function accountEnv(account: ClaudeAccount): Record<string, string> {
 
 /**
  * Returns a copy of `env` bound to `account`: every variable of the tuple is removed first, then
- * `accountEnv(account)` is written over it. For an account at a convention or explicit directory
+ * `accountEnv(account)` is written over it. For an account at an explicit directory
  * that is the same overlay `accountEnv` always was -- an inherited tuple from another account is
  * replaced, not merged with. For an account at the CLI's default location it leaves the tuple ABSENT,
  * which is the only way to make the CLI use `$HOME/.claude` and `$HOME/.claude.json` together; an
@@ -110,80 +113,94 @@ function requireAbsolute(value: string, variable: string): string {
   return value;
 }
 
-function requireHome(env: NodeJS.ProcessEnv, forVariable: string): string {
+/** The user's home as an absolute path, or `undefined` when HOME is unset, empty or relative. Untrimmed:
+ * the directory detected from it must be the directory used. */
+function absoluteHome(env: NodeJS.ProcessEnv): string | undefined {
   const home = env.HOME;
-  if (home === undefined || home === '') {
-    throw new Error(`VERDANDI_CLAUDE_ACCOUNT is set but HOME is not, so ${forVariable} cannot be derived; set it explicitly`);
-  }
-  return requireAbsolute(home, 'HOME');
+  return home !== undefined && home !== '' && isAbsolute(home) ? home : undefined;
 }
 
 /**
- * Pure half: turns the environment into an account spec, touching no filesystem. Returns
- * `undefined` when no account is pinned. Throws only on input that is set but unusable -- a
- * malformed name or a relative override -- never on "the account does not exist", which is
- * `assertAccountUsable`'s job.
- *
- * `VERDANDI_CLAUDE_ACCOUNT=<name>` expands by the host's multi-account convention
- * (`$HOME/.claude-<name>` and `$HOME/.config/anthropic-<name>`). `VERDANDI_CLAUDE_CONFIG_DIR` and
- * `VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR` override either half for a host that lays its accounts
- * out differently; the name is then only a label.
- *
- * The CLI's own default location (`$HOME/.claude`, identity in `$HOME/.claude.json`) is an account
- * location in its own right (`defaultLocation`), named either way:
- * - `VERDANDI_CLAUDE_ACCOUNT=default` -- the reserved name `default` means exactly that location, and
- *   refuses any directory override that says otherwise;
- * - `VERDANDI_CLAUDE_CONFIG_DIR=default` (or the literal path `$HOME/.claude`, which means the same
- *   thing and would otherwise hit the null-identity trap described on `defaultLocation`) -- for an
- *   account with its own name, e.g. a host whose only login, `work`, sits at the default location.
- * Such an account is used exactly as a plain `claude` finds it, default Anthropic config directory
- * included, so combining it with `VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR` is refused rather than
- * half-honoured.
+ * Whether `configDir` names the CLI's own default location: the keyword `default`, or the literal path
+ * `$HOME/.claude` (which means the same thing and would otherwise hit the null-identity trap described
+ * on `ClaudeAccount.defaultLocation`). Only the exact directory counts; a neighbour such as
+ * `$HOME/.claude-x` is an ordinary explicit directory. A relative path is never the default location
+ * (it is refused later, as relative), and with no usable HOME only the keyword can be.
  */
-export function resolveAccountSpec(env: NodeJS.ProcessEnv = process.env): ClaudeAccount | undefined {
-  const raw = env.VERDANDI_CLAUDE_ACCOUNT?.trim();
-  if (raw === undefined || raw === '') {
-    return undefined;
+export function isDefaultConfigDir(configDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (configDir === DEFAULT_ACCOUNT_NAME) {
+    return true;
   }
-  if (!ACCOUNT_NAME_PATTERN.test(raw)) {
-    throw new Error(
-      `VERDANDI_CLAUDE_ACCOUNT must be a single path-safe segment matching ${ACCOUNT_NAME_PATTERN.source}, got ${JSON.stringify(raw)}`,
-    );
+  const home = absoluteHome(env);
+  return home !== undefined && isAbsolute(configDir) && resolve(configDir) === resolve(home, '.claude');
+}
+
+/**
+ * An account as a caller states it: directories, not a name.
+ * - `label` is what the handshake reports as the account's name and what `CLAUDE_PROFILE` is set to.
+ *   It is a label only; nothing is derived from it.
+ * - `configDir` is an absolute directory, or `DEFAULT_ACCOUNT_NAME` (`default`) for the CLI's own
+ *   default location (`$HOME/.claude`, identity in `$HOME/.claude.json`). The literal path
+ *   `$HOME/.claude` is treated as that location too.
+ * - `anthropicConfigDir` is the absolute `ANTHROPIC_CONFIG_DIR` that goes with the directory. It is
+ *   required for an account at an explicit directory (the tuple is set whole or not at all, so there
+ *   is no "leave it to the default"), and refused for the default location, where the account is used
+ *   exactly as a plain `claude` finds it, default Anthropic config directory included.
+ */
+export type ExplicitAccountSpec = {
+  label: string;
+  configDir: string;
+  anthropicConfigDir?: string;
+};
+
+/**
+ * Pure half: turns explicit directories into an account, touching no filesystem. Throws on a spec
+ * that is unusable as written -- a blank or multi-line label, a relative directory, a missing or
+ * contradictory Anthropic directory, the default location without a HOME -- never on "the account
+ * does not exist", which is `assertAccountUsable`'s job.
+ */
+export function explicitAccount(spec: ExplicitAccountSpec, env: NodeJS.ProcessEnv = process.env): ClaudeAccount {
+  if (spec.label.trim() === '' || /[\u0000-\u001f\u007f]/.test(spec.label)) {
+    throw new Error(`an account label must be a non-empty single line, got ${JSON.stringify(spec.label)}`);
   }
-
-  const configOverride = env.VERDANDI_CLAUDE_CONFIG_DIR?.trim() || undefined;
-  const anthropicOverride = env.VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR?.trim() || undefined;
-
-  // Untrimmed, like requireHome below: the directory detected here must be the directory used.
-  const home = env.HOME;
-  const defaultDir = home !== undefined && home !== '' && isAbsolute(home) ? resolve(home, '.claude') : undefined;
-  const overrideIsDefault =
-    configOverride === DEFAULT_ACCOUNT_NAME ||
-    (configOverride !== undefined && defaultDir !== undefined && isAbsolute(configOverride) && resolve(configOverride) === defaultDir);
-  if (raw === DEFAULT_ACCOUNT_NAME || overrideIsDefault) {
-    if (configOverride !== undefined && !overrideIsDefault) {
-      throw new Error(
-        `VERDANDI_CLAUDE_ACCOUNT=${DEFAULT_ACCOUNT_NAME} names the CLI's default location, but VERDANDI_CLAUDE_CONFIG_DIR=${JSON.stringify(configOverride)} names another; give the account its own name to use that directory`,
-      );
-    }
-    if (anthropicOverride !== undefined) {
+  if (isDefaultConfigDir(spec.configDir, env)) {
+    if (spec.anthropicConfigDir !== undefined) {
       throw new Error(
         `VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR cannot be combined with an account at the CLI's default location: such an account is used exactly as a plain \`claude\` finds it`,
       );
     }
-    return { name: raw, configDir: resolve(requireHome(env, 'the default location'), '.claude'), anthropicConfigDir: '', defaultLocation: true };
+    const home = absoluteHome(env);
+    if (home === undefined) {
+      throw new Error('HOME is not set to an absolute path, so the CLI default location cannot be derived');
+    }
+    return { name: spec.label, configDir: resolve(home, '.claude'), anthropicConfigDir: '', defaultLocation: true };
   }
+  const configDir = requireAbsolute(spec.configDir, 'VERDANDI_CLAUDE_CONFIG_DIR');
+  if (spec.anthropicConfigDir === undefined) {
+    throw new Error(`an account at an explicit directory needs its Anthropic config directory too (${JSON.stringify(configDir)} given alone)`);
+  }
+  return { name: spec.label, configDir, anthropicConfigDir: requireAbsolute(spec.anthropicConfigDir, 'VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR') };
+}
 
-  const configDir =
-    configOverride !== undefined
-      ? requireAbsolute(configOverride, 'VERDANDI_CLAUDE_CONFIG_DIR')
-      : join(requireHome(env, 'VERDANDI_CLAUDE_CONFIG_DIR'), `.claude-${raw}`);
-  const anthropicConfigDir =
-    anthropicOverride !== undefined
-      ? requireAbsolute(anthropicOverride, 'VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR')
-      : join(requireHome(env, 'VERDANDI_CLAUDE_ANTHROPIC_CONFIG_DIR'), '.config', `anthropic-${raw}`);
-
-  return { name: raw, configDir, anthropicConfigDir };
+/**
+ * The configuration directory the CLI will really use for sessions this process creates, as the
+ * handshake reports it. A pinned account's directory (at the default location, `$HOME/.claude`, with
+ * no variable set on the child). Unpinned: the inherited `CLAUDE_CONFIG_DIR` when absolute, else
+ * `$HOME/.claude`, else empty -- an unknown, which a host must not read as "nowhere". Only paths are
+ * computed here; nothing under the directory is read.
+ */
+export function effectiveClaudeConfigDir(account: Pick<ClaudeAccount, 'configDir'> | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  if (account !== undefined) {
+    return account.configDir;
+  }
+  const inherited = env.CLAUDE_CONFIG_DIR;
+  if (inherited !== undefined && inherited !== '') {
+    // A relative value is resolved by the CLI against a directory this process does not know, so
+    // it is reported as unknown rather than as a directory the CLI may not be using.
+    return isAbsolute(inherited) ? inherited : '';
+  }
+  const home = absoluteHome(env);
+  return home === undefined ? '' : resolve(home, '.claude');
 }
 
 /**
@@ -219,7 +236,7 @@ export function assertAccountUsable(account: ClaudeAccount, env: NodeJS.ProcessE
  * ($HOME/.claude.json's `oauthAccount`) live in two different places, so something that moves one
  * without the other -- `ln -sfn ~/.claude-personal ~/.claude`, the usual way to switch accounts --
  * leaves a session billing one login while reporting another's email, and the email proof passes.
- * Under the convention both files sit in one directory and move together. So here all three paths
+ * Under an explicit config directory both files sit in one place and move together. So here all three paths
  * must be real (no symlinks), and the identity must actually be recorded.
  */
 function assertDefaultLocationIntact(account: ClaudeAccount): void {
@@ -246,22 +263,15 @@ function assertDefaultLocationIntact(account: ClaudeAccount): void {
   try {
     email = (JSON.parse(readFileSync(identityPath, 'utf8')) as { oauthAccount?: { emailAddress?: unknown } }).oauthAccount?.emailAddress;
   } catch (error) {
-    throw new Error(`claude account ${JSON.stringify(account.name)}: ${identityPath} is not readable JSON (${error instanceof Error ? error.message : String(error)})`);
+    // The parser's error rides along as the cause, so a caller that must not repeat the file's contents
+    // (JSON.parse quotes the text around the fault) can tell its words from this sentence.
+    throw new Error(`claude account ${JSON.stringify(account.name)}: ${identityPath} is not readable JSON (${error instanceof Error ? error.message : String(error)})`, {
+      cause: error,
+    });
   }
   if (typeof email !== 'string' || email.trim() === '') {
     throw new Error(
       `claude account ${JSON.stringify(account.name)} is at the CLI default location but ${identityPath} records no oauthAccount.emailAddress, so the login has no recorded identity`,
     );
   }
-}
-
-/** Both halves, in order. `undefined` means nothing is pinned -- and in that case no filesystem
- * check runs at all, so an unconfigured host never pays for a feature it did not turn on. */
-export function resolveAccount(env: NodeJS.ProcessEnv = process.env): ClaudeAccount | undefined {
-  const spec = resolveAccountSpec(env);
-  if (spec === undefined) {
-    return undefined;
-  }
-  assertAccountUsable(spec, env);
-  return spec;
 }

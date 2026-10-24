@@ -152,7 +152,8 @@ function encoded(event: ClaudeRuntimeEvent): Uint8Array {
 // ---- The handshake ---------------------------------------------------------------------------------
 
 test('protocol 3.14 advertises cli_auto_mode, permission_defer and permission_denied_events, before the executable pair', async () => {
-  assert.equal(PROTOCOL_MINOR, 14);
+  // At least: later minors add their own fields on top, and this test is about what 14 recorded.
+  assert.ok(PROTOCOL_MINOR >= 14, `protocol minor ${PROTOCOL_MINOR}`);
   const { capabilities } = await rpc<{ capabilities: string[] }>(sidecar().impl.handshake as Handler, { clientProtocolMajor: 3 });
   const firstExecutable = capabilities.indexOf('executable_host_cli');
   for (const name of ['cli_auto_mode', 'permission_defer', 'permission_denied_events']) {
