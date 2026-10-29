@@ -95,6 +95,7 @@ test('gateDecision: ask in gated modes; abstain in bypass; deny only the floor t
 test('interactive -> bypass: the CLI is told bypassPermissions, the gate stops asking, and the change is announced', async () => {
   const { query, controller } = makeFakeQuery();
   const { session, options } = start(query, INTERACTIVE_UNRESTRICTED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
 
   const result = await session.setPermissionMode('bypass');
@@ -116,6 +117,7 @@ test('bypass -> interactive on a session created gated: the gate asks again, and
     setPermissionMode: (mode) => (mode === 'default' ? new Promise<void>((r) => (releaseCli = r)) : Promise.resolve()),
   });
   const { session, options } = start(query, INTERACTIVE_UNRESTRICTED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
   await session.setPermissionMode('bypass');
   await session.pump();
@@ -143,6 +145,7 @@ test('interactive -> bypass: the gate keeps asking until the CLI acknowledged', 
   let releaseCli: (() => void) | undefined;
   const { query } = makeFakeQuery({ setPermissionMode: () => new Promise<void>((r) => (releaseCli = r)) });
   const { session, options } = start(query, INTERACTIVE_UNRESTRICTED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
 
   const switching = session.setPermissionMode('bypass');
@@ -162,6 +165,7 @@ test('interactive -> bypass: the gate keeps asking until the CLI acknowledged', 
 test('entering bypass with no stated tool restriction applies the conservative floor through the gate, and says so', async () => {
   const { query } = makeFakeQuery();
   const { session, options } = start(query, INTERACTIVE);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
 
   const result = await session.setPermissionMode('bypass');
@@ -189,6 +193,7 @@ test('entering bypass with no stated tool restriction applies the conservative f
 test('a session created under bypass cannot be switched to a gated mode: refused, and the CLI is never asked', async () => {
   const { query, controller } = makeFakeQuery();
   const { session } = start(query, BYPASS);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   await assert.rejects(session.setPermissionMode('interactive'), (err: unknown) => err instanceof PermissionModeError && err.kind === 'refused');
   assert.deepEqual(controller.setPermissionModeCalls, []);
   assert.deepEqual(await session.pump(), [], 'nothing is announced for a refused switch');
@@ -203,6 +208,7 @@ test('a CLI refusal fails the switch with the CLI\'s own words and leaves the ga
     setPermissionMode: () => Promise.reject(new Error('Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration')),
   });
   const { session, options } = start(query, INTERACTIVE_UNRESTRICTED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
 
   await assert.rejects(
@@ -218,6 +224,7 @@ test('a CLI refusal fails the switch with the CLI\'s own words and leaves the ga
 test('a switch on a closed session is refused as closed', async () => {
   const { query } = makeFakeQuery();
   const { session } = start(query, INTERACTIVE);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   session.close();
   await assert.rejects(session.setPermissionMode('bypass'), (err: unknown) => err instanceof PermissionModeError && err.kind === 'closed');
 });
@@ -226,6 +233,7 @@ test('overlapping switches apply in call order, so the gate ends where the CLI e
   const releases: Array<() => void> = [];
   const { query, controller } = makeFakeQuery({ setPermissionMode: () => new Promise<void>((r) => releases.push(r)) });
   const { session, options } = start(query, INTERACTIVE_UNRESTRICTED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   const hook = hookOf(options);
 
   const first = session.setPermissionMode('bypass');
@@ -248,6 +256,7 @@ test('overlapping switches apply in call order, so the gate ends where the CLI e
 test('a gated session that did not opt in cannot enter bypass: refused before the CLI is asked, gate unchanged', async () => {
   const { query, controller } = makeFakeQuery();
   const { session, options } = start(query, INTERACTIVE_FIXED);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
   await assert.rejects(
     session.setPermissionMode('bypass'),
     (err: unknown) => err instanceof PermissionModeError && err.kind === 'refused' && /permission_mode_switchable/.test(err.message),

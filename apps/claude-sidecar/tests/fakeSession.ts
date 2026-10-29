@@ -1,4 +1,4 @@
-import type { AccountIdentity, ClaudeRuntimeEvent, PermissionAnswer, SessionCloseReason } from '@verdandi/claude-runtime';
+import { createInteractionPort, TaskNotFoundError, type AccountIdentity, type ClaudeRuntimeEvent, type InteractionPort, type PermissionAnswer, type SendTurnOptions, type SessionCloseReason, type SteerTurnOptions, type TaskOutputResult } from '@verdandi/claude-runtime';
 import type { MinimalKernelSession } from '../src/sessionRegistry.js';
 
 export type FakeSessionController = {
@@ -6,8 +6,12 @@ export type FakeSessionController = {
   emit(event: ClaudeRuntimeEvent): void;
   /** Every text passed to sendTurn(), in call order. */
   readonly sentTurns: string[];
+  /** The options passed with each of those texts, in the same order (`undefined` when none were). */
+  readonly sentTurnOptions: Array<SendTurnOptions | undefined>;
   /** Every steerTurn() call the fake accepted, in call order. */
   readonly steeredTurns: Array<{ expectedTurnId: string; clientMessageId: string; text: string }>;
+  /** The options passed with each of those calls, in the same order (`undefined` when none were). */
+  readonly steeredTurnOptions: Array<SteerTurnOptions | undefined>;
   /** Makes the NEXT steerTurn() throw this error (e.g. the kernel's SteerError). */
   makeNextSteerTurnThrow(err: unknown): void;
   /** Every (permissionId, decision) pair passed to resolvePermission(), in call order. */
@@ -47,6 +51,19 @@ export type FakeSessionController = {
   /** Makes the NEXT pump() reject with this error, as a pump that met an SDK message it could not
    * translate would. */
   makeNextPumpThrow(err: unknown): void;
+  /** The session's interaction port: the kernel's own, for a fake made with `questions: true`, whose
+   * events come out of this fake's pump(); `undefined` otherwise. A test asks it questions with
+   * `route('AskUserQuestion', input, options)`, as the kernel's `canUseTool` does. */
+  readonly interactions: InteractionPort | undefined;
+  /** Every task id passed to stopTask(), in call order, refused ones included. */
+  readonly stopTaskCalls: string[];
+  /** Replaces what stopTask() answers (by default it resolves), e.g. with the kernel's
+   * TaskNotFoundError or a promise the test settles later. */
+  answerStopTask(answer: (taskId: string) => Promise<void>): void;
+  /** Every task id passed to taskOutput(), in call order. */
+  readonly taskOutputCalls: string[];
+  /** Replaces what taskOutput() answers (by default the kernel's TaskNotFoundError). */
+  answerTaskOutput(answer: (taskId: string) => Promise<TaskOutputResult>): void;
 };
 
 /**
@@ -56,10 +73,22 @@ export type FakeSessionController = {
  * since the last call, synchronously available, no waiting-for-more-input behavior — PumpDriver
  * (Task 5) is the one polling in a loop, so the fake doesn't need to simulate blocking.
  */
-export function makeFakeSession(): { session: MinimalKernelSession; controller: FakeSessionController } {
+export function makeFakeSession(options: { questions?: boolean } = {}): { session: MinimalKernelSession; controller: FakeSessionController } {
   const pending: ClaudeRuntimeEvent[] = [];
+  const interactions =
+    options.questions === true
+      ? createInteractionPort(
+          {
+            policy: { configuration: 'native', permissions: 'interactive', persistence: 'host_cli', executable: 'host_cli', providerPermissionPrompts: true },
+            clientInteractions: { questions: true },
+          },
+          (event) => pending.push(event),
+        )
+      : undefined;
   const sentTurns: string[] = [];
+  const sentTurnOptions: FakeSessionController['sentTurnOptions'] = [];
   const steeredTurns: FakeSessionController['steeredTurns'] = [];
+  const steeredTurnOptions: FakeSessionController['steeredTurnOptions'] = [];
   let nextSteerTurnError: { err: unknown } | undefined;
   const resolvePermissionCalls: FakeSessionController['resolvePermissionCalls'] = [];
   let interruptCalls = 0;
@@ -75,6 +104,10 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
   let nextPumpError: { err: unknown } | undefined;
   let settleIdentity!: (identity: AccountIdentity | undefined) => void;
   const identity = new Promise<AccountIdentity | undefined>((resolve) => (settleIdentity = resolve));
+  const stopTaskCalls: string[] = [];
+  let stopTaskAnswer = (_taskId: string): Promise<void> => Promise.resolve();
+  const taskOutputCalls: string[] = [];
+  let taskOutputAnswer = (taskId: string): Promise<TaskOutputResult> => Promise.reject(new TaskNotFoundError(taskId));
 
   const session: MinimalKernelSession = {
     async pump() {
@@ -85,22 +118,24 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       }
       return pending.splice(0);
     },
-    sendTurn(text: string) {
+    sendTurn(text: string, options?: SendTurnOptions) {
       if (nextSendTurnError !== undefined) {
         const message = nextSendTurnError;
         nextSendTurnError = undefined;
         throw new Error(message);
       }
       sentTurns.push(text);
+      sentTurnOptions.push(options);
       return { turnId: `fake-turn-${sentTurns.length}` };
     },
-    steerTurn(expectedTurnId: string, clientMessageId: string, text: string) {
+    steerTurn(expectedTurnId: string, clientMessageId: string, text: string, options?: SteerTurnOptions) {
       if (nextSteerTurnError !== undefined) {
         const { err } = nextSteerTurnError;
         nextSteerTurnError = undefined;
         throw err;
       }
       steeredTurns.push({ expectedTurnId, clientMessageId, text });
+      steeredTurnOptions.push(options);
       return { turnId: expectedTurnId };
     },
     async interrupt() {
@@ -153,6 +188,17 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
     closeReason() {
       return closeReason;
     },
+    stopTask(taskId: string) {
+      stopTaskCalls.push(taskId);
+      return stopTaskAnswer(taskId);
+    },
+    taskOutput(taskId: string) {
+      taskOutputCalls.push(taskId);
+      return taskOutputAnswer(taskId);
+    },
+    interactions() {
+      return interactions;
+    },
   };
 
   return {
@@ -160,7 +206,9 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
     controller: {
       emit: (event) => pending.push(event),
       sentTurns,
+      sentTurnOptions,
       steeredTurns,
+      steeredTurnOptions,
       makeNextSteerTurnThrow: (err: unknown) => {
         nextSteerTurnError = { err };
       },
@@ -194,6 +242,15 @@ export function makeFakeSession(): { session: MinimalKernelSession; controller: 
       },
       makeNextPumpThrow: (err) => {
         nextPumpError = { err };
+      },
+      interactions,
+      stopTaskCalls,
+      answerStopTask: (answer) => {
+        stopTaskAnswer = answer;
+      },
+      taskOutputCalls,
+      answerTaskOutput: (answer) => {
+        taskOutputAnswer = answer;
       },
       holdNextSetPermissionMode: () => {
         let release!: () => void;

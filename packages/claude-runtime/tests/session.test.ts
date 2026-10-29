@@ -82,12 +82,12 @@ test('policyToBaseOptions: native leaves the MCP and auto-memory knobs alone', (
   assert.equal(options.settings, undefined);
 });
 
-/** The shipped default: nothing pinned, no `env` override at all, so the SDK's own
- * `env: {...process.env}` default stands and the subprocess uses whatever account the host
- * environment already names (a plain install: `~/.claude`). */
-test('policyToBaseOptions: native with no account sets no env override whatsoever', () => {
+/** The shipped default: nothing pinned, so the subprocess uses whatever account the host environment
+ * already names (a plain install: `~/.claude`). The environment is the SDK's own default copy plus the
+ * one variable that makes the CLI report its session state, which the turn rules read. */
+test('policyToBaseOptions: native with no account changes nothing in the environment but the session-state switch', () => {
   const options = policyToBaseOptions(NATIVE_INTERACTIVE_POLICY, '/tmp/project', { baseEnv: { PATH: '/usr/bin' } });
-  assert.equal(options.env, undefined);
+  assert.deepEqual(options.env, { PATH: '/usr/bin', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' });
 });
 
 test('policyToBaseOptions: an account overlays the four-variable tuple onto the inherited env', () => {
@@ -225,6 +225,7 @@ test('createSession + pump: a system init message becomes session_ready', async 
   const events = await session.pump();
 
   assert.deepEqual(events, [
+    { type: 'background_tasks_changed', tasks: [] },
     {
       type: 'session_ready',
       sessionId: 'sess-1',
@@ -256,10 +257,10 @@ test('pump: a message that arrives while a prior pump() call left its rawQuery.n
   const session = createSession({ cwd: '/tmp/project', policy: NATIVE_INTERACTIVE_POLICY }, () => query);
   await session.accountIdentity();
 
-  // Nothing queued yet -- pump() must return empty without blocking, leaving its internal
+  // Only the startup roster is queued; polling leaves the internal
   // rawQuery.next() call outstanding.
   const firstDrain = await session.pump();
-  assert.deepEqual(firstDrain, []);
+  assert.deepEqual(firstDrain, [{ type: 'background_tasks_changed', tasks: [] }]);
 
   controller.emit({ type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-5', cwd: '/tmp/project', permissionMode: 'default' } as never);
 
@@ -300,12 +301,12 @@ test('sendTurn: turn_started comes back from pump(), not only from eventLog()', 
   const { turnId } = session.sendTurn('hello');
   const drained = await session.pump();
 
-  assert.deepEqual(drained, [{ type: 'turn_started', turnId }], 'pump() must return turn_started');
-  assert.deepEqual(session.eventLog(), [{ type: 'turn_started', turnId }], 'and it must still be logged exactly once');
+  assert.deepEqual(drained, [{ type: 'background_tasks_changed', tasks: [] }, { type: 'turn_started', turnId, origin: 'client' }], 'pump() must return turn_started');
+  assert.deepEqual(session.eventLog(), [{ type: 'background_tasks_changed', tasks: [] }, { type: 'turn_started', turnId, origin: 'client' }], 'and it must still be logged exactly once');
 
   // Drained, not duplicated: a second pump with nothing new must not re-emit it.
   assert.deepEqual(await session.pump(), []);
-  assert.deepEqual(session.eventLog(), [{ type: 'turn_started', turnId }]);
+  assert.deepEqual(session.eventLog(), [{ type: 'background_tasks_changed', tasks: [] }, { type: 'turn_started', turnId, origin: 'client' }]);
 });
 
 test('sendTurn: turn_started is emitted before any message from the provider arrives', async () => {
@@ -314,6 +315,7 @@ test('sendTurn: turn_started is emitted before any message from the provider arr
 
   const { turnId } = session.sendTurn('hello');
   const drained = await session.pump();
+  assert.deepEqual(drained.shift(), { type: 'background_tasks_changed', tasks: [] });
   assert.equal(drained.length, 1, 'nothing from the provider should have arrived yet');
   assert.equal(drained[0]?.type, 'turn_started');
   assert.equal((drained[0] as { turnId: string }).turnId, turnId);
@@ -339,7 +341,8 @@ test('pump: a result message clears turn-in-progress and emits turn_completed wi
   // turn_started never reached pump() at all (fixed 2026-09-11). Pinning the pair also pins the
   // ordering a consumer depends on: a turn must be announced before it is reported finished.
   assert.deepEqual(events, [
-    { type: 'turn_started', turnId },
+    { type: 'background_tasks_changed', tasks: [] },
+    { type: 'turn_started', turnId, origin: 'client' },
     { type: 'turn_completed', turnId, outcome: 'completed', resultText: 'hi there', isError: false, stopReason: null, resultSubtype: 'success' },
   ]);
 
@@ -398,6 +401,7 @@ test('pump: an unrecognized message type produces a provider_notice, never a thr
 
   controller.emit({ type: 'some_future_type' } as never);
   const events = await session.pump();
+  assert.deepEqual(events.shift(), { type: 'background_tasks_changed', tasks: [] });
 
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'provider_notice');
@@ -438,6 +442,7 @@ test('createSession + pump: a permission_requested event from the installed hook
   // would return [] forever, since the event only ever reached eventLog(), never pump()'s own
   // return value.
   const events = await session.pump();
+  assert.deepEqual(events.shift(), { type: 'background_tasks_changed', tasks: [] });
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'permission_requested');
   const permissionId = (events[0] as { permissionId: string }).permissionId;
@@ -525,6 +530,7 @@ test('pump: a rejected rawQuery.next() fails closed pending permissions, marks t
   controller.rejectNext(new Error('provider crashed'));
 
   const events = await session.pump();
+  assert.deepEqual(events.shift(), { type: 'background_tasks_changed', tasks: [] });
   // Third whole-branch review round, Important #3: `terminate()` now drains
   // `pendingPermissionEvents` into `drained` (the array THIS pump() call returns), not into
   // `this.events` directly -- a pump()-only consumer must be able to see the resolution in the
@@ -634,6 +640,7 @@ test('Critical finding: a clean provider exit (next() resolving {done: true}) fa
   controller.end(); // clean exit, no rejection and no explicit close()
 
   const events = await session.pump();
+  assert.deepEqual(events.shift(), { type: 'background_tasks_changed', tasks: [] });
   assert.equal(events.length, 3);
   assert.equal(events[0].type, 'permission_requested');
   assert.equal(events[1].type, 'permission_resolved');
@@ -719,7 +726,8 @@ test('pump: overlapping calls do not duplicate events (Important #4) -- one retu
 
   assert.equal(nonEmpty.length, 1, 'exactly one of the two overlapping pump() calls should have drained the message');
   assert.equal(empty.length, 1, 'the other overlapping call should have returned [] via the reentrancy guard, not duplicated the same event');
-  assert.equal(session.eventLog().length, 1, 'the event must appear exactly once in eventLog(), not twice');
+  assert.deepEqual(session.eventLog()[0], { type: 'background_tasks_changed', tasks: [] });
+  assert.equal(session.eventLog().length, 2, 'the event must appear exactly once in eventLog(), not twice');
 });
 
 // --- Fourth whole-branch review round: close()'s terminal events must reach a pump()-only host ---
@@ -785,6 +793,7 @@ test('close() with a pending permission request delivers permission_resolved, th
 
   // Drain the permission_requested first so this test isolates what close() itself delivers.
   const requested = await session.pump();
+  assert.deepEqual(requested.shift(), { type: 'background_tasks_changed', tasks: [] });
   assert.equal(requested.length, 1);
   assert.equal(requested[0].type, 'permission_requested');
 
@@ -1149,7 +1158,7 @@ test('createSession: a bypass session that states unrestricted emits no provider
     { cwd: '/tmp/project', policy: { ...BYPASS_POLICY, toolPolicy: { unrestricted: true } } },
     () => query,
   );
-  assert.deepEqual(await session.pump(), []);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
 });
 
 /** T9 -- the bypass default must not leak into any other permission mode. Every existing
@@ -1187,6 +1196,7 @@ test('createSession: a bypass session with no tool policy emits exactly one prov
       subtype: 'bypass_default_deny_applied',
       raw: { disallowedTools: ['Bash', 'Write', 'Edit', 'NotebookEdit'] },
     },
+    { type: 'background_tasks_changed', tasks: [] },
   ]);
   // Exactly once, not once per poll.
   assert.deepEqual(await session.pump(), []);
@@ -1226,6 +1236,7 @@ test('createSession: every "stated nothing" shape of toolPolicy under bypass is 
           subtype: 'bypass_default_deny_applied',
           raw: { disallowedTools: ['Bash', 'Write', 'Edit', 'NotebookEdit'] },
         },
+        { type: 'background_tasks_changed', tasks: [] },
       ],
       `${label}: the conservative default was applied without announcing it`,
     );
@@ -1240,13 +1251,13 @@ test('createSession: a bypass session that STATES a deny list emits no provider_
     { cwd: '/tmp/project', policy: { ...BYPASS_POLICY, toolPolicy: { deny: ['Bash'] } } },
     () => query,
   );
-  assert.deepEqual(await session.pump(), []);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
 });
 
 test('createSession: a non-bypass session never emits the bypass notice', async () => {
   const { query } = makeFakeQuery();
   const session = createSession({ cwd: '/tmp/project', policy: NATIVE_INTERACTIVE_POLICY }, () => query);
-  assert.deepEqual(await session.pump(), []);
+  assert.deepEqual(await session.pump(), [{ type: 'background_tasks_changed', tasks: [] }]);
 });
 
 /**
@@ -1322,9 +1333,10 @@ test('partial streaming: a CLI that honours includePartialMessages streams once,
   session.sendTurn('hello');
   await session.pump();
 
+  controller.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_streamed' } } } as never);
   controller.emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello ' } } } as never);
   controller.emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'there' } } } as never);
-  controller.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello there' }] } } as never);
+  controller.emit({ type: 'assistant', message: { id: 'msg_streamed', content: [{ type: 'text', text: 'Hello there' }] } } as never);
 
   assert.deepEqual(await textFrom(session), ['Hello ', 'there'], 'the complete message must not repeat what streamed');
   session.close();
@@ -1351,8 +1363,9 @@ test('partial streaming: the suppression is judged per assistant message, not pe
   session.sendTurn('hello');
   await session.pump();
 
+  controller.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_streamed' } } } as never);
   controller.emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'first' } } } as never);
-  controller.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'first' }] } } as never);
+  controller.emit({ type: 'assistant', message: { id: 'msg_streamed', content: [{ type: 'text', text: 'first' }] } } as never);
   controller.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'second' }] } } as never);
 
   assert.deepEqual(await textFrom(session), ['first', 'second']);

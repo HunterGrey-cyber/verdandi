@@ -93,6 +93,9 @@ message HandshakeResponse {
   // account_config_dir keeps its meaning (empty unless PINNED). Absent from a sidecar older than the
   // capability 'effective_claude_config_dir'.
   string effective_claude_config_dir = 19;
+
+  // Held for a later minor's attachment limits, so that no other field can take the number first.
+  reserved 20;
 }
 
 // One CLI binary's compatibility with this sidecar. The version and range are the facts; the verdict
@@ -488,8 +491,10 @@ message ClaudeHostPolicy {
   //   - allow: the call runs with its input unchanged. The sidecar never applies the CLI's own
   //     suggestions (one of them switches the CLI session to acceptEdits) or any permission update;
   //     each such ask is asked again next time.
-  //   - deny: the call fails with `reason` as its message (or "denied by the host" when blank); the
-  //     turn continues.
+  //   - deny: the call fails with `reason` as its message (or
+  //     "This tool call was denied without a reason; no denial source was provided." when blank);
+  //     the turn continues. Interrupt, close, provider death and SDK aborts carry explanatory
+  //     lifecycle messages, without implying a human refusal or a timeout.
   //   - interrupt, close, the CLI cancelling the prompt, or provider death: denied, with exactly one
   //     PermissionResolved -- CANCELLED_BY_* / EXPIRED / PROVIDER_FAILED, as for the gate's own.
   //     Measured on CLI 2.1.283: InterruptTurn with a provider prompt pending returned in ms, the CLI
@@ -530,6 +535,13 @@ message ClaudeHostPolicy {
   // Setting it changes nothing else about the session: tools, permissions and settings are exactly
   // what the rest of the policy says.
   bool accept_unsupported_cli = 10;
+
+  // Opt-in: the host can stop one background task at a time (StopTask), so the CLI is told it may
+  // offer that per task. Capability 'task_control'; a host sends it only when the handshake lists
+  // that capability. A sidecar that does not list it refuses true with INVALID_CONFIGURATION, reason
+  // `per_task_stop_unsupported`, rather than ignore it. false (the default, and what every client
+  // that predates the field sends) changes nothing.
+  bool per_task_stop = 12;
 }
 
 // ---- CreateSession ----
@@ -575,18 +587,13 @@ message CreateSessionRequest {
   // should discover in production.
   optional string effort = 6;
 
-  // The system prompt, as a FULL REPLACEMENT of Claude Code's own (SDK Options.systemPrompt as a
-  // plain string). There is deliberately no append form: nothing needs one yet, and a oneof can be
-  // introduced later without breaking this field.
-  //
-  // `optional` for presence, like `model`: absent keeps Claude Code's default prompt, which is what
-  // every session got before this field existed. Present but blank (empty or whitespace only) is
-  // refused as INVALID_CONFIGURATION rather than sent -- "replace the prompt with nothing" is not a
-  // request any caller means.
-  //
-  // A sidecar that serves this advertises the capability 'system_prompt'. An older sidecar ignores
-  // the field (proto3 unknown-field rule) and runs Claude Code's default prompt, so a client whose
-  // correctness depends on the replacement must check the capability before relying on it.
+  // A full replacement prompt (SDK Options.systemPrompt as a plain string).
+  // With neither prompt field present the Agent SDK uses its minimal prompt. To request Claude
+  // Code's system prompt, use system_prompt_preset instead. A present blank replacement is refused
+  // as INVALID_CONFIGURATION / system_prompt_blank. Both prompt fields present are refused as
+  // INVALID_CONFIGURATION / system_prompt_conflict before checking either value for blanks.
+  // Capability 'system_prompt': a client relying on replacement must check it, because an older
+  // sidecar ignores this field and leaves the SDK's minimal prompt in use.
   optional string system_prompt = 7;
 
   // Schema-validated structured output: SDK Options.outputFormat = {type: 'json_schema', schema}.
@@ -620,6 +627,40 @@ message CreateSessionRequest {
   // while it waits never learns the session id, so the sidecar closes that session.
   // Capability 'await_account_identity'.
   bool await_account_identity = 9;
+
+  // Explicitly request Claude Code's system prompt, optionally with an appended note.
+  // Presence matters: {} requests the preset without append; absent leaves the SDK's minimal
+  // prompt when system_prompt is also absent. Both fields remain outside a oneof so conflicting
+  // requests can be refused. A present blank append is INVALID_CONFIGURATION /
+  // system_prompt_append_blank. Capability 'system_prompt_preset'; check it before sending, since
+  // an older sidecar ignores this field and leaves the SDK's minimal prompt in use.
+  SystemPromptPreset system_prompt_preset = 10;
+
+  // Interactions the host can show and answer itself. Capability 'structured_questions_v1'; a host
+  // sends it only when the handshake lists that capability (an older sidecar does not know the field
+  // and ignores it). Absent, or present with every member false, changes nothing. `questions = true`
+  // needs PERMISSION_MODE_INTERACTIVE with provider_permission_prompts (INVALID_CONFIGURATION, reason
+  // `client_interactions_needs_provider_prompts`, otherwise), and a sidecar that does not list the
+  // capability refuses it with reason `client_interactions_unsupported`.
+  ClientInteractions client_interactions = 11;
+
+  // Held for a later minor's attachment switch, so that no other field can take the number first.
+  reserved 12;
+}
+
+// The interactions a host opts into on CreateSession.
+message ClientInteractions {
+  // The model may ask the user structured questions (the CLI's AskUserQuestion tool), which arrive as
+  // InteractionRequested and are answered with ResolveInteraction.
+  bool questions = 1;
+  // Held for plan approval.
+  reserved 2;
+}
+
+// SDK Options.systemPrompt = {type: 'preset', preset: 'claude_code', append?}.
+// Omit append for the unmodified preset. A present nonblank append is preserved verbatim.
+message SystemPromptPreset {
+  optional string append = 1;
 }
 
 // A JSON Schema carried as JSON text rather than google.protobuf.Struct -- the same "v1 simplicity"
@@ -643,6 +684,17 @@ message SendTurnRequest {
   string session_id = 1;
   string command_id = 2;
   string text = 3;
+  // The client's own id for this message, echoed on UserMessageDelivered / UserMessageDropped when
+  // the CLI holds it behind a turn it started by itself. Any non-empty string, unique within the
+  // session. Capability 'cli_turns'; absent means the sidecar names nothing back.
+  optional string client_message_id = 4;
+  // A person typed this text, as opposed to text the host or a plugin composed. The sidecar cannot
+  // know who wrote a message, so the host says it: true makes the message the CLI receives carry
+  // the SDK's human origin, which the CLI's checks for typed input read. Capability 'human_origin'.
+  // A sidecar that does not list the capability refuses true with INVALID_CONFIGURATION, reason
+  // `human_origin_unsupported`. false (the default, and what every client that predates the field
+  // sends) is exactly the behaviour before it existed.
+  bool typed_by_person = 5;
 }
 
 message SendTurnResponse {
@@ -757,6 +809,8 @@ message SteerTurnRequest {
   // non-empty string, unique within the session. Required.
   string client_message_id = 4;
   string text = 5;
+  // As SendTurnRequest.typed_by_person. Capability 'human_origin'.
+  bool typed_by_person = 6;
 }
 
 message SteerTurnResponse {
@@ -1066,6 +1120,260 @@ message AccountIdentity {
 
 message TurnStarted {
   string turn_id = 1;
+  // Who started the turn. Capability 'cli_turns'; UNSPECIFIED from a sidecar without it.
+  TurnOrigin origin = 2;
+  // Why the CLI started it, as far as the frames it sent say. Only on an origin CLI turn, and then
+  // possibly refined by a TurnCauseUpdated before the turn's TurnCompleted. Capability 'cli_turns'.
+  TurnCause cause = 3;
+}
+
+enum TurnOrigin {
+  TURN_ORIGIN_UNSPECIFIED = 0;
+  // A SendTurn.
+  TURN_ORIGIN_CLIENT = 1;
+  // The turn the sidecar opens for steered messages still held when the running turn ended (see
+  // SteerTurn).
+  TURN_ORIGIN_FOLLOW_UP = 2;
+  // The CLI started it by itself: a background task finished, a scheduled prompt fired, a peer sent
+  // a message.
+  TURN_ORIGIN_CLI = 3;
+}
+
+// Why the CLI started a turn. Facts read from the CLI's frames, never text composed for a person.
+// Which fields are set depends on `kind`: task_* and description/summary for TASK; wakeup_source,
+// scheduled_for_ms, schedule_reason, cron_id and prompt for SCHEDULED; peer_name and text for PEER.
+message TurnCause {
+  TurnCauseKind kind = 1;
+  optional string task_id = 2;
+  optional TaskKind task_kind = 3;
+  optional TaskStatus task_status = 4;
+  optional string description = 5;
+  optional string summary = 6;
+  optional string peer_name = 7;
+  // A peer's message body.
+  optional string text = 8;
+  optional string wakeup_source = 9;
+  // When the scheduled prompt was due, milliseconds since the Unix epoch.
+  optional int64 scheduled_for_ms = 10;
+  optional string schedule_reason = 11;
+  optional string cron_id = 12;
+  // The scheduled prompt itself.
+  optional string prompt = 13;
+}
+
+enum TurnCauseKind {
+  TURN_CAUSE_KIND_UNSPECIFIED = 0;
+  // A background task's notification.
+  TURN_CAUSE_KIND_TASK = 1;
+  TURN_CAUSE_KIND_SCHEDULED = 2;
+  TURN_CAUSE_KIND_PEER = 3;
+  // A cause the CLI named that is none of the above.
+  TURN_CAUSE_KIND_OTHER = 4;
+  // The frames said nothing about why.
+  TURN_CAUSE_KIND_UNKNOWN = 5;
+}
+
+// A more specific cause for a turn already announced, read from a frame that arrived later (the
+// closing result's origin). Sent before that turn's TurnCompleted. Capability 'cli_turns'.
+message TurnCauseUpdated {
+  string turn_id = 1;
+  TurnCause cause = 2;
+}
+
+// The CLI ran a cycle of its own (for the reason in `cause`) after accepting a SendTurn but before
+// taking that turn's message in. The cycle's frames carry turn_id, the open turn, whose id does not
+// change; the message's own fate follows as UserMessageDelivered or UserMessageDropped. Sent only for
+// a CLI that reports message lifecycles. Capability 'cli_turns'.
+message CliCycleStarted {
+  string turn_id = 1;
+  TurnCause cause = 2;
+}
+
+// What a background task is.
+enum TaskKind {
+  TASK_KIND_UNSPECIFIED = 0;
+  // A shell command run in the background.
+  TASK_KIND_SHELL = 1;
+  TASK_KIND_MONITOR = 2;
+  // A subagent.
+  TASK_KIND_LOCAL_AGENT = 3;
+  TASK_KIND_WORKFLOW = 4;
+  // A kind the CLI named that is none of the above; BackgroundTask.task_type has its word.
+  TASK_KIND_OTHER = 5;
+}
+
+// A task's status, the CLI's own words one to one.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_RUNNING = 2;
+  TASK_STATUS_PAUSED = 3;
+  TASK_STATUS_COMPLETED = 4;
+  TASK_STATUS_FAILED = 5;
+  TASK_STATUS_STOPPED = 6;
+  TASK_STATUS_KILLED = 7;
+}
+
+// Which CLI frame a TaskEvent reports.
+enum TaskEdge {
+  TASK_EDGE_UNSPECIFIED = 0;
+  TASK_EDGE_STARTED = 1;
+  TASK_EDGE_PROGRESS = 2;
+  TASK_EDGE_UPDATED = 3;
+  // The task's notification: it ended, and the model is told.
+  TASK_EDGE_NOTIFIED = 4;
+}
+
+// One background task as the CLI's roster lists it.
+message BackgroundTask {
+  string task_id = 1;
+  optional string run_id = 2;
+  TaskKind kind = 3;
+  // The CLI's own type word, verbatim.
+  string task_type = 4;
+  string description = 5;
+  optional string subagent_type = 6;
+  optional string parent_task_id = 7;
+  // The tool call that started it.
+  optional string tool_use_id = 8;
+  // The CLI keeps it running on its own account rather than for a call the model is waiting on.
+  bool ambient = 9;
+  optional string workflow_name = 10;
+}
+
+// The session's whole background-task roster; replace any roster held for the session. Capability
+// 'background_tasks'.
+message BackgroundTasksChanged {
+  repeated BackgroundTask tasks = 1;
+}
+
+// Token and time spent by a background task so far.
+message TaskUsage {
+  uint64 total_tokens = 1;
+  uint32 tool_uses = 2;
+  uint64 duration_ms = 3;
+}
+
+// One CLI frame about one background task. Capability 'background_tasks' (workflow_progress:
+// capability 'workflow_progress'). A task's own prompt and transcripts are never carried.
+message TaskEvent {
+  TaskEdge edge = 1;
+  string task_id = 2;
+  optional string run_id = 3;
+  BackgroundTask task = 4;
+  optional TaskStatus status = 5;
+  optional string summary = 6;
+  optional string last_tool_name = 7;
+  TaskUsage usage = 8;
+  // When the task ended, milliseconds since the Unix epoch.
+  optional int64 end_time_ms = 9;
+  optional string error = 10;
+  optional bool is_backgrounded = 11;
+  optional string reason = 12;
+  // The path of the file the CLI writes the task's output to.
+  optional string output_file = 13;
+  // On PROGRESS edges of WORKFLOW tasks only.
+  WorkflowProgress workflow_progress = 14;
+}
+
+// A workflow's phases and agents as its progress frame lists them.
+message WorkflowProgress {
+  repeated WorkflowPhase phases = 1;
+  repeated WorkflowAgent agents = 2;
+}
+
+message WorkflowPhase {
+  uint32 index = 1;
+  string title = 2;
+  string kind = 3;
+}
+
+message WorkflowAgent {
+  uint32 index = 1;
+  string label = 2;
+  uint32 phase_index = 3;
+  string state = 4;
+  optional string model = 5;
+  optional string agent_type = 6;
+  optional uint64 tokens = 7;
+  optional uint32 tool_calls = 8;
+  optional uint64 duration_ms = 9;
+  optional string error = 10;
+}
+
+// A notice the CLI's own terminal shows (retrying, rate limits, a model fallback, compaction, a
+// peer's message held). `content` is the CLI's own text; the rest are typed facts. Capability
+// 'session_notices'.
+message SessionNotice {
+  SessionNoticeKind kind = 1;
+  NoticeLevel level = 2;
+  optional string content = 3;
+  optional uint32 attempt = 4;
+  optional uint32 max_retries = 5;
+  optional uint64 retry_delay_ms = 6;
+  optional int32 error_status = 7;
+  optional string from_model = 8;
+  optional string to_model = 9;
+  optional uint64 pre_tokens = 10;
+  optional uint64 post_tokens = 11;
+  optional RateLimitStatus rate_status = 12;
+  // When the rate limit resets, milliseconds since the Unix epoch.
+  optional int64 resets_at_ms = 13;
+  optional double utilization = 14;
+  optional string trigger = 15;
+  optional string peer_name = 16;
+  optional PeerHoldState hold_state = 17;
+  // The CLI's word for why an API call is being retried, as its terminal prints it.
+  optional string error_kind = 18;
+  // A model refusal's fallback scope, `session` or `local`; absent means `session`.
+  optional string fallback_scope = 19;
+}
+
+enum SessionNoticeKind {
+  SESSION_NOTICE_KIND_UNSPECIFIED = 0;
+  SESSION_NOTICE_KIND_API_RETRY = 1;
+  SESSION_NOTICE_KIND_RATE_LIMIT = 2;
+  SESSION_NOTICE_KIND_MODEL_FALLBACK = 3;
+  SESSION_NOTICE_KIND_MODEL_REFUSAL = 4;
+  // Compaction is running.
+  SESSION_NOTICE_KIND_COMPACTING = 5;
+  // Compaction finished: the conversation before this point was summarised.
+  SESSION_NOTICE_KIND_COMPACT_BOUNDARY = 6;
+  SESSION_NOTICE_KIND_INFORMATIONAL = 7;
+  SESSION_NOTICE_KIND_NOTIFICATION = 8;
+  SESSION_NOTICE_KIND_PEER_HOLD = 9;
+}
+
+enum NoticeLevel {
+  NOTICE_LEVEL_UNSPECIFIED = 0;
+  NOTICE_LEVEL_INFO = 1;
+  NOTICE_LEVEL_NOTICE = 2;
+  NOTICE_LEVEL_SUGGESTION = 3;
+  NOTICE_LEVEL_WARNING = 4;
+}
+
+enum RateLimitStatus {
+  RATE_LIMIT_STATUS_UNSPECIFIED = 0;
+  RATE_LIMIT_STATUS_ALLOWED = 1;
+  RATE_LIMIT_STATUS_ALLOWED_WARNING = 2;
+  RATE_LIMIT_STATUS_REJECTED = 3;
+}
+
+enum PeerHoldState {
+  PEER_HOLD_STATE_UNSPECIFIED = 0;
+  PEER_HOLD_STATE_HELD = 1;
+  PEER_HOLD_STATE_RELEASED = 2;
+  PEER_HOLD_STATE_DROPPED = 3;
+}
+
+// The conversation was cleared (`/clear`), and the session goes on. The provider session id it goes
+// on under, the one a resume or a history lookup needs, is the one in the SessionReady that follows
+// (from the CLI's next system/init); it can differ from `new_conversation_id`, which is only the id
+// the CLI's reset frame names. Capability 'conversation_reset'.
+message ConversationReset {
+  string new_conversation_id = 1;
+  // What cleared it, when the CLI says (`clear` for the /clear command).
+  optional string trigger = 2;
 }
 
 message TextDelta {
@@ -1080,6 +1388,9 @@ message TextDelta {
   //
   // Absent when the provider did not report one. Capability 'text_delta_message_id'.
   optional string message_id = 3;
+  // The Agent tool call this text belongs under, when a subagent produced it; absent for the main
+  // thread. Capability 'subagent_frames'.
+  optional string parent_tool_use_id = 4;
 }
 
 message ThinkingDelta {
@@ -1087,6 +1398,8 @@ message ThinkingDelta {
   string text = 2;
   // As TextDelta.message_id.
   optional string message_id = 3;
+  // As TextDelta.parent_tool_use_id.
+  optional string parent_tool_use_id = 4;
 }
 
 // input/content carried as a JSON string, not google.protobuf.Struct — v1 simplicity; revisit if a
@@ -1096,6 +1409,8 @@ message ToolCallStarted {
   string tool_use_id = 2;
   string name = 3;
   string input_json = 4;
+  // As TextDelta.parent_tool_use_id.
+  optional string parent_tool_use_id = 5;
 }
 
 message ToolCallCompleted {
@@ -1103,6 +1418,8 @@ message ToolCallCompleted {
   string tool_use_id = 2;
   string content_json = 3;
   bool is_error = 4;
+  // As TextDelta.parent_tool_use_id.
+  optional string parent_tool_use_id = 5;
 }
 
 // What raised a PermissionRequested. Capability 'provider_permission_prompts'.
@@ -1228,6 +1545,12 @@ message TurnCompleted {
   //
   // Capability 'turn_usage'.
   TurnUsage usage = 11;
+
+  // The closing result's `origin.kind` verbatim (e.g. `task-notification`, `peer`), when it had one.
+  // Capability 'cli_turns'.
+  optional string origin_kind = 12;
+  // The result message's `num_turns`, when it reported one. Capability 'cli_turns'.
+  optional uint32 num_turns = 13;
 }
 
 message TurnUsage {
@@ -1406,6 +1729,165 @@ message ProviderNotice {
   optional string subtype = 2;
 }
 
+// ---- Interactions (capability 'structured_questions_v1') ----
+//
+// A question the model asks the user (the CLI's AskUserQuestion), offered only on a session created
+// with CreateSessionRequest.client_interactions.questions. Only the user answers it: no rule, mode or
+// automatic answer resolves one.
+
+// The model asked; the host shows it and answers with ResolveInteraction.
+message InteractionRequested {
+  // Random, unique per question, single-use.
+  string interaction_id = 1;
+  // The tool call the question came from; empty when the SDK gave none.
+  string tool_use_id = 2;
+  // QUESTION only in this minor.
+  InteractionKind kind = 3;
+  oneof payload {
+    QuestionSet questions = 10;
+  }
+  // Set when the question could not be offered (the payload is then absent); an InteractionResolved
+  // with HOST_REFUSED follows at once.
+  optional string unsupported_reason = 4;
+}
+
+enum InteractionKind {
+  INTERACTION_KIND_UNSPECIFIED = 0;
+  INTERACTION_KIND_QUESTION = 1;
+  // Held for plan approval.
+  reserved 2;
+}
+
+message QuestionSet {
+  repeated Question questions = 1;
+}
+
+message Question {
+  string question = 1;
+  string header = 2;
+  bool multi_select = 3;
+  repeated QuestionOption options = 4;
+}
+
+message QuestionOption {
+  string label = 1;
+  string description = 2;
+  optional string preview = 3;
+}
+
+// How an interaction ended. Sent exactly once per InteractionRequested.
+message InteractionResolved {
+  string interaction_id = 1;
+  InteractionOutcome outcome = 2;
+  // ANSWERED and CHAT_REQUESTED: exactly what was sent to the model, per answered question.
+  repeated ShownAnswer answers = 3;
+  // HOST_REFUSED and PROVIDER_FAILED: why, plain text, bounded.
+  optional string reason = 4;
+}
+
+message ShownAnswer {
+  uint32 question_index = 1;
+  string answer = 2;
+  optional string notes = 3;
+}
+
+enum InteractionOutcome {
+  INTERACTION_OUTCOME_UNSPECIFIED = 0;
+  INTERACTION_OUTCOME_ANSWERED = 1;
+  INTERACTION_OUTCOME_DECLINED = 2;
+  // The user declined to answer in the form and wants to reply in the chat instead.
+  INTERACTION_OUTCOME_CHAT_REQUESTED = 3;
+  INTERACTION_OUTCOME_INTERRUPTED = 4;
+  INTERACTION_OUTCOME_EXPIRED = 5;
+  INTERACTION_OUTCOME_SESSION_CLOSED = 6;
+  INTERACTION_OUTCOME_PROVIDER_FAILED = 7;
+  INTERACTION_OUTCOME_HOST_REFUSED = 8;
+}
+
+// The host's answer to one InteractionRequested. Idempotent per (session_id, command_id): the same
+// request returns the original outcome, a different payload under the same id is IDEMPOTENCY_CONFLICT.
+// INTERACTION_NOT_FOUND for an unknown, spent or other-session id; INTERACTION_ANSWER_REFUSED when the
+// answer breaks a rule (ErrorDetail.reason names it), which leaves the interaction pending and records
+// nothing under the command_id.
+message ResolveInteractionRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string interaction_id = 3;
+  oneof result {
+    QuestionAnswers answers = 10;
+    QuestionDecline decline = 11;
+  }
+  // Held for plan-approval results.
+  reserved 12 to 19;
+}
+
+message QuestionAnswers {
+  repeated QuestionAnswer answers = 1;
+}
+
+message QuestionAnswer {
+  uint32 question_index = 1;
+  repeated uint32 option_indexes = 2;
+  optional string other_text = 3;
+  optional string notes = 4;
+}
+
+message QuestionDecline {
+  QuestionDeclineKind kind = 1;
+  // What the user had answered so far; CHAT only.
+  QuestionAnswers so_far = 2;
+}
+
+enum QuestionDeclineKind {
+  QUESTION_DECLINE_KIND_UNSPECIFIED = 0;
+  QUESTION_DECLINE_KIND_CANCEL = 1;
+  QUESTION_DECLINE_KIND_CHAT = 2;
+}
+
+message ResolveInteractionResponse {
+  InteractionOutcome outcome = 1;
+}
+
+// The questions still waiting for an answer, for a host that reconnects.
+message GetInteractionStateRequest {
+  string session_id = 1;
+}
+
+message GetInteractionStateResponse {
+  // The event sequence the snapshot is consistent with.
+  uint64 through_sequence = 1;
+  // Live, unsettled.
+  repeated InteractionRequested pending = 2;
+}
+
+// ---- Background task control (capabilities 'task_control', 'task_output') ----
+
+// Stops one background task (a workflow included). Idempotent per command_id. TASK_NOT_FOUND for a
+// task the session does not know; a task that has already ended stops successfully.
+message StopTaskRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string task_id = 3;
+}
+
+message StopTaskResponse {}
+
+// The tail of a background task's output. A read, so it carries no command_id.
+// TASK_OUTPUT_UNAVAILABLE when there is none to read (always for WORKFLOW and LOCAL_AGENT tasks).
+message GetTaskOutputRequest {
+  string session_id = 1;
+  string task_id = 2;
+}
+
+message GetTaskOutputResponse {
+  // Bytes, not a string: the tail may start inside a UTF-8 sequence. Decode it lossily.
+  bytes output = 1;
+  // The whole output's size.
+  uint64 total_bytes = 2;
+  // `output` is only the tail of it.
+  bool truncated = 3;
+}
+
 message SessionEvent {
   string session_id = 1;
   uint64 sequence = 2;
@@ -1434,7 +1916,24 @@ message SessionEvent {
     UserMessageDropped user_message_dropped = 25;
     // Capability 'list_commands'.
     CommandsUpdated commands_updated = 26;
+    // Capability 'cli_turns'.
+    TurnCauseUpdated turn_cause_updated = 30;
+    CliCycleStarted cli_cycle_started = 31;
+    // Capability 'background_tasks'.
+    BackgroundTasksChanged background_tasks_changed = 32;
+    TaskEvent task_event = 33;
+    // Capability 'session_notices'.
+    SessionNotice session_notice = 34;
+    // Capability 'conversation_reset'.
+    ConversationReset conversation_reset = 35;
+    // Capability 'structured_questions_v1'.
+    InteractionRequested interaction_requested = 40;
+    InteractionResolved interaction_resolved = 41;
   }
+
+  // 27-28 are not used; 29 is held for a later minor's planning-state event. 36-39 are free for
+  // later turn events and 42-49 for later interactions.
+  reserved 27 to 29;
 }
 
 // ---- Error model: source design doc §9.7's subset this round actually triggers (design spec §5.3) ----
@@ -1466,6 +1965,16 @@ enum ErrorCode {
   // SteerTurn: this session cannot steer now (ErrorDetail.reason says why); hold the message for
   // SendTurn when the turn ends.
   ERROR_CODE_STEER_UNAVAILABLE = 15;
+  // StopTask, GetTaskOutput: the session has no task of that id.
+  ERROR_CODE_TASK_NOT_FOUND = 16;
+  // GetTaskOutput: the task has no output this sidecar can read.
+  ERROR_CODE_TASK_OUTPUT_UNAVAILABLE = 17;
+  // 18-29 are left for later task and turn errors.
+  // ResolveInteraction: an unknown, spent or other-session interaction_id.
+  ERROR_CODE_INTERACTION_NOT_FOUND = 30;
+  // ResolveInteraction: the answer breaks a rule (ErrorDetail.reason names it); the interaction stays
+  // pending.
+  ERROR_CODE_INTERACTION_ANSWER_REFUSED = 31;
 }
 
 message ErrorDetail {
@@ -1495,4 +2004,11 @@ service RuntimeService {
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
   rpc SetPermissionMode(SetPermissionModeRequest) returns (SetPermissionModeResponse);
   rpc SteerTurn(SteerTurnRequest) returns (SteerTurnResponse);
+  // Capability 'task_control'. A sidecar without it answers UNIMPLEMENTED.
+  rpc StopTask(StopTaskRequest) returns (StopTaskResponse);
+  // Capability 'task_output'. A sidecar without it answers UNIMPLEMENTED.
+  rpc GetTaskOutput(GetTaskOutputRequest) returns (GetTaskOutputResponse);
+  // Capability 'structured_questions_v1'. A sidecar without it answers UNIMPLEMENTED.
+  rpc ResolveInteraction(ResolveInteractionRequest) returns (ResolveInteractionResponse);
+  rpc GetInteractionState(GetInteractionStateRequest) returns (GetInteractionStateResponse);
 }

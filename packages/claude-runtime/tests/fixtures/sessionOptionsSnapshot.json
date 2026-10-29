@@ -1,0 +1,1186 @@
+[
+  {
+    "name": "interactive native",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "interactive isolated",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "isolated",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "env",
+      "includePartialMessages",
+      "mcpServers",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "settings",
+      "strictMcpConfig"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "strictMcpConfig": true,
+      "mcpServers": {},
+      "settings": {
+        "autoMemoryEnabled": false
+      },
+      "env": {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+      }
+    }
+  },
+  {
+    "name": "verdandi_rules",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "verdandi_rules",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "bypass default deny",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "bypass",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "disallowedTools",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "bypassPermissions",
+      "pathToClaudeCodeExecutable": "claude",
+      "disallowedTools": [
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit"
+      ]
+    }
+  },
+  {
+    "name": "bypass unrestricted",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "bypass",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "toolPolicy": {
+          "unrestricted": true
+        }
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "bypassPermissions",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "bypass explicit allow list",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "bypass",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "toolPolicy": {
+          "allow": [
+            "Read",
+            "Grep"
+          ],
+          "deny": [
+            "Bash"
+          ],
+          "initCheck": "report_only"
+        }
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "disallowedTools",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "tools"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "bypassPermissions",
+      "pathToClaudeCodeExecutable": "claude",
+      "disallowedTools": [
+        "Bash"
+      ],
+      "tools": [
+        "Read",
+        "Grep"
+      ]
+    }
+  },
+  {
+    "name": "completion lane",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "isolated",
+        "permissions": "bypass",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "settingSources": [],
+        "toolPolicy": {
+          "allow": []
+        }
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "env",
+      "includePartialMessages",
+      "mcpServers",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "settings",
+      "strictMcpConfig",
+      "tools"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [],
+      "includePartialMessages": false,
+      "permissionMode": "bypassPermissions",
+      "pathToClaudeCodeExecutable": "claude",
+      "tools": [],
+      "strictMcpConfig": true,
+      "mcpServers": {},
+      "settings": {
+        "autoMemoryEnabled": false
+      },
+      "env": {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+      }
+    }
+  },
+  {
+    "name": "setting sources named",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "settingSources": [
+          "user",
+          "project"
+        ]
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "provider permission prompts",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "providerPermissionPrompts": true
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "disallowedTools",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "disallowedTools": [
+        "AskUserQuestion",
+        "EnterPlanMode",
+        "ExitPlanMode"
+      ]
+    }
+  },
+  {
+    "name": "cli permission mode auto",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "cliPermissionMode": "auto"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "auto",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "cli permission mode default",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "cliPermissionMode": "default"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "switchable",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "permissionModeSwitchable": true
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "allowDangerouslySkipPermissions",
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "allowDangerouslySkipPermissions": true,
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "per task stop",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli",
+        "perTaskStop": true
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "sdk bundled executable",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "sdk_bundled"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default"
+    }
+  },
+  {
+    "name": "host cli path",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        },
+        "hostCliPath": "/opt/claude"
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "/opt/claude"
+    }
+  },
+  {
+    "name": "pinned account",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        },
+        "account": {
+          "name": "work",
+          "configDir": "/acc/claude",
+          "anthropicConfigDir": "/acc/anthropic"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "env",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "env": {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CLAUDE_PROFILE": "work",
+        "CLAUDE_CONFIG_DIR": "/acc/claude",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/acc/claude",
+        "ANTHROPIC_CONFIG_DIR": "/acc/anthropic"
+      }
+    }
+  },
+  {
+    "name": "default-location account",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        },
+        "account": {
+          "name": "default",
+          "configDir": "/home/u/.claude",
+          "anthropicConfigDir": "",
+          "defaultLocation": true
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "env",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "env": {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u"
+      }
+    }
+  },
+  {
+    "name": "extra mcp servers",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        },
+        "extraMcpServers": {
+          "docs": {
+            "type": "stdio",
+            "command": "docs-mcp",
+            "args": [
+              "--stdio"
+            ]
+          }
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "mcpServers",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "mcpServers": {
+        "docs": {
+          "type": "stdio",
+          "command": "docs-mcp",
+          "args": [
+            "--stdio"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "ephemeral persistence",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "ephemeral",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": {
+        "baseEnv": {
+          "PATH": "/usr/bin",
+          "HOME": "/home/u"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": false,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "no overrides",
+    "kind": "base",
+    "input": {
+      "policy": {
+        "configuration": "native",
+        "permissions": "interactive",
+        "persistence": "host_cli",
+        "executable": "host_cli"
+      },
+      "cwd": "/p",
+      "overrides": null
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "plain",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "interactive",
+          "persistence": "host_cli",
+          "executable": "host_cli"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude"
+    }
+  },
+  {
+    "name": "model effort resume fork",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "interactive",
+          "persistence": "host_cli",
+          "executable": "host_cli"
+        },
+        "model": "sonnet",
+        "effort": "high",
+        "resume": {
+          "providerSessionId": "sess-1"
+        },
+        "fork": true
+      }
+    },
+    "keys": [
+      "cwd",
+      "effort",
+      "forkSession",
+      "includePartialMessages",
+      "model",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "resume",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "resume": "sess-1",
+      "forkSession": true,
+      "model": "sonnet",
+      "effort": "high"
+    }
+  },
+  {
+    "name": "system prompt",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "interactive",
+          "persistence": "host_cli",
+          "executable": "host_cli"
+        },
+        "systemPrompt": "You are the editor."
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "systemPrompt"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "systemPrompt": "You are the editor."
+    }
+  },
+  {
+    "name": "preset prompt",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "interactive",
+          "persistence": "host_cli",
+          "executable": "host_cli"
+        },
+        "systemPromptPreset": {
+          "append": "panel note"
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "systemPrompt"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "claude",
+      "systemPrompt": {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "panel note"
+      }
+    }
+  },
+  {
+    "name": "output format",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "bypass",
+          "persistence": "host_cli",
+          "executable": "host_cli",
+          "toolPolicy": {
+            "allow": []
+          }
+        },
+        "outputFormat": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "keys": [
+      "cwd",
+      "includePartialMessages",
+      "outputFormat",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources",
+      "tools"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "bypassPermissions",
+      "pathToClaudeCodeExecutable": "claude",
+      "tools": [],
+      "outputFormat": {
+        "type": "json_schema",
+        "schema": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  {
+    "name": "pinned account and extra mcp",
+    "kind": "session",
+    "input": {
+      "config": {
+        "cwd": "/p",
+        "policy": {
+          "configuration": "native",
+          "permissions": "interactive",
+          "persistence": "host_cli",
+          "executable": "host_cli",
+          "providerPermissionPrompts": true
+        },
+        "account": {
+          "name": "work",
+          "configDir": "/acc/claude",
+          "anthropicConfigDir": "/acc/anthropic"
+        },
+        "extraMcpServers": {
+          "docs": {
+            "type": "stdio",
+            "command": "docs-mcp",
+            "args": [
+              "--stdio"
+            ]
+          }
+        },
+        "hostCliPath": "/opt/claude"
+      }
+    },
+    "keys": [
+      "cwd",
+      "disallowedTools",
+      "env",
+      "includePartialMessages",
+      "mcpServers",
+      "pathToClaudeCodeExecutable",
+      "permissionMode",
+      "persistSession",
+      "settingSources"
+    ],
+    "options": {
+      "cwd": "/p",
+      "persistSession": true,
+      "settingSources": [
+        "user",
+        "project",
+        "local"
+      ],
+      "includePartialMessages": false,
+      "permissionMode": "default",
+      "pathToClaudeCodeExecutable": "/opt/claude",
+      "disallowedTools": [
+        "AskUserQuestion",
+        "EnterPlanMode",
+        "ExitPlanMode"
+      ],
+      "mcpServers": {
+        "docs": {
+          "type": "stdio",
+          "command": "docs-mcp",
+          "args": [
+            "--stdio"
+          ]
+        }
+      },
+      "env": {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CLAUDE_PROFILE": "work",
+        "CLAUDE_CONFIG_DIR": "/acc/claude",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/acc/claude",
+        "ANTHROPIC_CONFIG_DIR": "/acc/anthropic"
+      }
+    }
+  }
+]

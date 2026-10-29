@@ -1,4 +1,4 @@
-import type { AccountInfo, PermissionMode, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { AccountInfo, PermissionMode, SDKMessage, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type { MinimalQuery } from '../src/queryTypes.js';
 
 /** What the fake's accountInfo() answers unless a test supplies its own. */
@@ -21,9 +21,14 @@ export type FakeQueryOptions = {
   /** Replaces the default supportedCommands(), which never settles (a CLI that has not answered the
    * SDK's initialize yet), so a test that does not ask about commands sees no `commands_updated`. */
   supportedCommands?: () => Promise<SlashCommand[]>;
+  /** Replaces the default stopTask() answer (resolves) -- e.g. with one that rejects the way the CLI
+   * does for a task it no longer runs. The call is recorded either way. */
+  stopTask?: (taskId: string) => Promise<void>;
 };
 
 export type FakeQueryController = {
+  readonly pushed: SDKUserMessage[];
+  captureInput(input: AsyncIterable<SDKUserMessage>): void;
   /** Makes the fake's async-generator side yield this message on the next pull. */
   emit(message: SDKMessage): void;
   /** Ends the fake generator's stream (as if the real CLI process exited). */
@@ -41,6 +46,8 @@ export type FakeQueryController = {
   readonly accountInfoCalls: number;
   /** Every mode passed to setPermissionMode(), in call order. */
   readonly setPermissionModeCalls: PermissionMode[];
+  /** Every task id passed to stopTask(), in call order. */
+  readonly stopTaskCalls: string[];
 };
 
 type PendingCall = {
@@ -53,12 +60,14 @@ type PendingCall = {
  */
 export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQuery; controller: FakeQueryController } {
   const pending: SDKMessage[] = [];
+  const pushed: SDKUserMessage[] = [];
   const waiters: PendingCall[] = [];
   let ended = false;
   let closed = false;
   let interruptCalls = 0;
   let accountInfoCalls = 0;
   const setPermissionModeCalls: PermissionMode[] = [];
+  const stopTaskCalls: string[] = [];
   /** Set when `rejectNext()` is called with no `next()` call currently waiting -- consumed by the
    * very next `next()` call instead of queuing a message. */
   let pendingRejection: { err: unknown } | undefined;
@@ -134,11 +143,21 @@ export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQ
     supportedCommands(): Promise<SlashCommand[]> {
       return options.supportedCommands !== undefined ? options.supportedCommands() : new Promise<SlashCommand[]>(() => {});
     },
+    stopTask(taskId: string): Promise<void> {
+      stopTaskCalls.push(taskId);
+      return options.stopTask !== undefined ? options.stopTask(taskId) : Promise.resolve();
+    },
   };
 
   return {
     query,
     controller: {
+      pushed,
+      captureInput(input) {
+        void (async () => {
+          for await (const message of input) pushed.push(message);
+        })();
+      },
       emit: deliver,
       end: finish,
       rejectNext,
@@ -152,6 +171,7 @@ export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQ
         return accountInfoCalls;
       },
       setPermissionModeCalls,
+      stopTaskCalls,
     },
   };
 }

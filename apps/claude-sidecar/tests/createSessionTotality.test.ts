@@ -31,6 +31,11 @@ type Row = {
   observe: (options: Options) => unknown;
 };
 
+const QUESTION_POLICY = ClaudeHostPolicy.create({
+  permissions: PermissionMode.PERMISSION_MODE_INTERACTIVE,
+  providerPermissionPrompts: true,
+});
+
 const TABLE: Record<string, Row> = {
   cwd: { a: { cwd: '/tmp/a' }, b: { cwd: '/tmp/b' }, observe: (o) => o.cwd },
   policy: {
@@ -54,6 +59,18 @@ const TABLE: Record<string, Row> = {
     a: { systemPrompt: undefined },
     b: { systemPrompt: 'You are a test prompt.' },
     observe: (o) => o.systemPrompt,
+  },
+  systemPromptPreset: {
+    a: { systemPromptPreset: undefined },
+    b: { systemPromptPreset: {} },
+    observe: (o) => o.systemPrompt,
+  },
+  // The offer to the model and the CLI's question schema, which only an opted-in session changes. The policy
+  // is the kind that can be opted in, and the same in both requests.
+  clientInteractions: {
+    a: { policy: QUESTION_POLICY, clientInteractions: { questions: false } },
+    b: { policy: QUESTION_POLICY, clientInteractions: { questions: true } },
+    observe: (o) => ({ disallowedTools: o.disallowedTools, toolConfig: o.toolConfig }),
   },
   outputFormat: {
     a: { outputFormat: undefined },

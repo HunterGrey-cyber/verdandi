@@ -34,3 +34,10 @@ test('Go embedded copies match both JSON masters byte for byte', (t) => {
     assert.deepEqual(readFileSync(new URL(`clicompat/${name}`, te)), readFileSync(new URL(name, master)), name);
   }
 });
+
+test('CLI 2.1.311 recording evidence admits only the SDK surface', () => {
+  assert.equal(classifyCliVersion('2.1.311', { surface: 'sdk', wording: { strictSwitch: 'STRICT', dataFile: 'cli-compatibility.json' } }).kind, 'supported');
+  for (const surface of ['interactive', 'screen', 'transcript'] as const) {
+    assert.equal(classifyCliVersion('2.1.311', { surface, wording: { strictSwitch: 'STRICT', dataFile: 'cli-compatibility.json' } }).kind, 'untested');
+  }
+});

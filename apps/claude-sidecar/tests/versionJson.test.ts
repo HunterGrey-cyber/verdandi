@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { taskOutputReadable } from '@verdandi/claude-runtime';
 import { sortedByVersion, versionReport, versionReportJson } from '../src/versionReport.js';
 import { TESTED_CLI_VERSIONS } from '../src/cliCompatibility.js';
 import { REPO_ROOT, SIDECAR_DIR } from './compat/paths.js';
@@ -65,13 +66,16 @@ test('--version --json: the capabilities are the ones the protocol source lists,
   assert.deepEqual(packaged.protocol, source.protocol);
   // `egress_restricted` is a fact about a running process (it is proven at startup), and so is
   // `cli_message_lifecycle` (the host CLI's version, probed at startup), so a static report claims
-  // neither; `sdk_bundled` is a fact about the build, so it follows the build.
+  // neither; `sdk_bundled` is a fact about the build, so it follows the build; `task_output_read` is a
+  // fact about the runtime the artifact carries, asked the way a started process asks it.
+  const runtimeFact = (c: { when?: string }) => c.when === 'task_output_read' && taskOutputReadable();
   assert.deepEqual(
     checkout.capabilities,
-    source.capabilities.filter((c) => c.when !== 'egress_restricted' && c.when !== 'cli_message_lifecycle').map((c) => c.name),
+    source.capabilities.filter((c) => c.when !== 'egress_restricted' && c.when !== 'cli_message_lifecycle' && (c.when !== 'task_output_read' || runtimeFact(c))).map((c) => c.name),
   );
   assert.ok(!checkout.capabilities.includes('steer_turn'));
-  assert.deepEqual(packaged.capabilities, source.capabilities.filter((c) => c.when === undefined).map((c) => c.name));
+  assert.deepEqual(packaged.capabilities, source.capabilities.filter((c) => c.when === undefined || runtimeFact(c)).map((c) => c.name));
+  assert.equal(packaged.capabilities.includes('task_output'), taskOutputReadable(), 'a static report states task_output as the running process would');
   assert.ok(!checkout.capabilities.includes('egress_restricted'));
   // The wire-order rule the handshake keeps: the executable_* pair stays last.
   assert.match(packaged.capabilities.at(-1) ?? '', /^executable_/);

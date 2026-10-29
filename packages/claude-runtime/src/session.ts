@@ -1,8 +1,11 @@
+import { ScheduleLedger } from './scheduleLedger.js';
 import { query as realQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallbackMatcher, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
-import { translateMessage, type TranslationContext } from './eventTranslation.js';
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, EffectiveSessionOptions, EffectiveToolOptions, PermissionOutcome, SessionCloseReason, SlashCommandInfo, SteerDropReason, TurnOutcome } from './types.js';
+import { hasParent, translateMessage, turnFrameOf, type TranslationContext } from './eventTranslation.js';
+import { TurnTracker, type ResultFacts, type TrackerStep } from './turnTracker.js';
+import { BackgroundTasks } from './backgroundTasks.js';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, ClientInteractions, EffectiveSessionOptions, EffectiveToolOptions, PermissionOutcome, SendTurnOptions, SessionCloseReason, SlashCommandInfo, SteerDropReason, SteerTurnOptions, TaskOutputResult, TurnOutcome } from './types.js';
 import type { PermissionMode as SdkPermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { applyAccountEnv, type ClaudeAccount } from './account.js';
 import type { MinimalQuery } from './queryTypes.js';
@@ -12,6 +15,9 @@ import { DEFAULT_ACCOUNT_INFO_TIMEOUT_MS, probeAccountIdentity, type AccountProb
 import { expectedInitMcpServers, initCheckProblem, initToolViolation, permittedInitTools, requiredInitTools, verifiesInitTools } from './toolInvariant.js';
 import { CONNECTOR_SWITCH_ENV, copyExtraMcpServers, type ExtraMcpServers } from './extraMcpServers.js';
 import { webFetchDenyFor } from './webFetchDeny.js';
+import { createInteractionPort, type InteractionFailCause, type InteractionPort } from './interactionPort.js';
+import { applyQuestionOptIn, gateAbstains } from './questionOptions.js';
+import { readOutputTail, TaskNotFoundError, TaskOutputUnavailableError } from './taskOutput.js';
 
 /**
  * The real SDK's `query()` signature (sdk.d.ts:2839): `(params: { prompt: string |
@@ -87,9 +93,11 @@ export function usesDefaultBypassDeny(policy: ClaudeHostPolicy): boolean {
  * callback (t1) and 27 with it (t2), the extra three being exactly these.
  *
  * Disallowed on every session that gets the callback, so opting into provider prompts changes who
- * answers the CLI's own asks and nothing about what the model can call. None of the three belongs in
- * a host-gated session anyway: plan mode is a CLI-side permission posture of its own, and
- * AskUserQuestion is an interactive dialog this protocol has no event for.
+ * answers the CLI's own asks and nothing about what the model can call. Plan mode is a CLI-side
+ * permission posture of its own and stays denied on all of them. AskUserQuestion is an interactive
+ * dialog: it stays denied unless the session also opts into structured questions
+ * (`clientInteractions.questions`, applied by `applyQuestionOptIn`), which takes it off the applied
+ * list and routes its call to the host's question card; a caller's own `toolPolicy.deny` of it still wins.
  *
  * Frozen for the reason CONSERVATIVE_BYPASS_DENY is: exported, so an unfrozen one is shared mutable
  * state that decides what a session's model can see.
@@ -152,6 +160,9 @@ export function permissionDeniedEventsFor(policy: ClaudeHostPolicy): boolean {
   return policy.cliPermissionMode !== undefined;
 }
 
+/** Makes the CLI report its session state (`system/session_state_changed`); see `policyToBaseOptions`. */
+export const SESSION_STATE_EVENTS_ENV = 'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS';
+
 /**
  * Maps `ClaudeHostPolicy` (design doc §5.3) to the real SDK's `Options` fields this task's scope
  * covers. `permissions`/hook installation is Task 4's job -- this function must NOT set
@@ -197,7 +208,7 @@ export function permissionDeniedEventsFor(policy: ClaudeHostPolicy): boolean {
 export function policyToBaseOptions(
   policy: ClaudeHostPolicy,
   cwd: string,
-  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string; extraMcpServers?: ExtraMcpServers } = {},
+  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string; extraMcpServers?: ExtraMcpServers; clientInteractions?: ClientInteractions } = {},
 ): Options {
   const options: Options = {
     cwd,
@@ -322,19 +333,31 @@ export function policyToBaseOptions(
     }
   }
 
+  // Every session: the CLI reports `session_state_changed` (idle, running, requires_action) only when
+  // this is set, and the turn rules read `idle` to end a turn that never got a result (see
+  // `TurnTracker.sessionState`). The kernel consumes those frames and forwards none of them. A value
+  // the host environment already has is overwritten, so the session's turn rules do not depend on it.
+  envOverlay[SESSION_STATE_EVENTS_ENV] = '1';
+
   // Overlay, never replacement: the subprocess still needs PATH, HOME, proxy variables and the rest
-  // of the host environment to function. Only the keys above are decided here. Setting `env` at all
-  // is itself conditional, so a host that pins nothing and uses `native` keeps the SDK's untouched
-  // default rather than an identical-but-explicitly-rebuilt copy of `process.env`.
+  // of the host environment to function. Bash timeout values belong to the host too: neither
+  // BASH_MAX_TIMEOUT_MS nor BASH_DEFAULT_TIMEOUT_MS is decided here. Only the keys above are.
+  // Since the overlay is never empty, `env` is always set: the SDK's own default is the same copy of `process.env`
+  // (`env: {...process.env}`), so the CLI's environment differs from the default only by the overlay.
   //
-  // A pinned account always gets an explicit `env`, even when it adds nothing: an account at the
-  // CLI's default location is bound by the tuple being ABSENT (see `applyAccountEnv`), and leaving
-  // the SDK's `{...process.env}` default in place would let an inherited CLAUDE_CONFIG_DIR decide.
-  if (overrides.account !== undefined) {
-    options.env = applyAccountEnv({ ...(overrides.baseEnv ?? process.env), ...envOverlay }, overrides.account);
-  } else if (Object.keys(envOverlay).length > 0) {
-    options.env = { ...(overrides.baseEnv ?? process.env), ...envOverlay };
+  // A pinned account is bound on top: an account at the CLI's default location is bound by the tuple
+  // being ABSENT (see `applyAccountEnv`), so an inherited CLAUDE_CONFIG_DIR cannot decide.
+  const env = { ...(overrides.baseEnv ?? process.env), ...envOverlay };
+  options.env = overrides.account !== undefined ? applyAccountEnv(env, overrides.account) : env;
+  // The host stops background tasks one at a time, so an interrupt may leave agents and workflows
+  // running, as the CLI's own terminal does. Without it the CLI kills them on an interrupt, since this
+  // host would otherwise have no way to stop one it spared. Only true is stated; false or absent
+  // leaves the option unset, and the options exactly as before the field existed.
+  if (policy.perTaskStop === true) {
+    options.perTaskStopAffordance = true;
   }
+  // Last, so whatever it adds sees the environment and the account binding as they are built above.
+  applyQuestionOptIn(options, { policy, clientInteractions: overrides.clientInteractions, baseEnv: overrides.baseEnv });
   return options;
 }
 
@@ -568,6 +591,16 @@ export type SessionGuards = {
   /** Translate `system/permission_denied` into `permission_denied` events (see
    * `permissionDeniedEventsFor`). Absent or false: the `provider_notice` it always was. */
   permissionDeniedEvents?: boolean;
+  /** The route this session's structured questions take to the host, when it offers any. */
+  interactionPort?: InteractionPort;
+  /** Where the session's log lines go (each says once that the CLI did not report something the turn
+   * rules use). Absent: standard error. */
+  onDiagnostic?: (line: string) => void;
+  /** The CLI was told this host stops background tasks one at a time (`perTaskStopAffordance`), so
+   * an interrupt leaves them running and must leave their pending permissions and questions open too
+   * (see `interrupt`). Absent or false: an interrupt settles everything pending, as the CLI kills
+   * those tasks. */
+  interruptSparesBackgroundTasks?: boolean;
 };
 
 /**
@@ -584,8 +617,18 @@ export function holdsFirstTurnForAccount(config: Pick<ClaudeSessionConfig, 'poli
 }
 
 export class ClaudeRuntimeSession {
-  private turnInProgress = false;
-  private currentTurnId: string | undefined;
+  private readonly backgroundTasks = new BackgroundTasks();
+  /** Which turn is open and whose it is: one the client sent, a follow-up for steered messages, or one
+   * the CLI started by itself. See `TurnTracker`. */
+  private readonly turns = new TurnTracker(() => randomUUID(), this.backgroundTasks);
+  /** True while any turn is open, a turn the CLI started by itself included, so a `sendTurn` then is
+   * refused rather than labelling the CLI's remaining output with a turn of its own. */
+  private get turnInProgress(): boolean {
+    return this.turns.open !== undefined;
+  }
+  private get currentTurnId(): string | undefined {
+    return this.turns.open?.id;
+  }
   private readonly events: ClaudeRuntimeEvent[];
   private readonly inputQueue: ReturnType<typeof makeInputQueue>;
   private readonly permissionBroker: PermissionBroker;
@@ -637,6 +680,8 @@ export class ClaudeRuntimeSession {
   /** Whether a stream_event has produced a text/thinking delta since the last assistant message.
    *  See TranslationContext.streamedSinceLastAssistant for why the suppression needs it. */
   private streamedSinceLastAssistant = false;
+  /** The turn that saw the main stream start; an id from an earlier turn cannot replace text. */
+  private mainStreamTurnId: string | undefined;
   /** The one `rawQuery.next()` call currently in flight, if any -- reused across `pump()` calls
    * rather than issuing a fresh `.next()` call every time one is outstanding. Empirically required
    * against the real SDK (Task 3 Step 4/6's real-CLI run): the real `Query`'s `next()` does not
@@ -686,6 +731,12 @@ export class ClaudeRuntimeSession {
     this.effectiveToolOptions = guards.effectiveToolOptions;
     this.effectiveSessionOptions = guards.effectiveSessionOptions;
     this.permissionDeniedEvents = guards.permissionDeniedEvents === true;
+    this.interactionPort = guards.interactionPort;
+    this.interruptSparesBackgroundTasks = guards.interruptSparesBackgroundTasks === true;
+    this.onDiagnostic = guards.onDiagnostic ?? ((line) => console.warn(`claude-runtime: ${line}`));
+    // The CLI reports membership changes only. Each new query begins with an explicit empty
+    // roster, including a query created to resume a session after its earlier process ended.
+    this.pushEarly({ type: 'background_tasks_changed', tasks: [] });
     // Asked at once: the answer needs only the SDK's initialize exchange, which every session makes
     // before its first turn, so a consumer has the list before it has typed anything. A failure says
     // so once and leaves the list to a later `system/commands_changed`. A query object without the
@@ -717,6 +768,8 @@ export class ClaudeRuntimeSession {
   private commandsChangedSeen = false;
   /** Whether the latest `system/init` listed `CLI_MESSAGE_LIFECYCLE_CAPABILITY`. False until one has. */
   private lifecycleReported = false;
+  /** Recent sends whose lifecycle frames need no separate event; insertion order bounds the history. */
+  private readonly sentUuids = new Set<string>();
   /** Every message sent with `steerTurn`, by the uuid it went to the CLI with. */
   private readonly steered = new Map<string, SteeredMessage>();
   /** The client ids `steerTurn` has accepted on this session, so one cannot be used twice. */
@@ -725,6 +778,10 @@ export class ClaudeRuntimeSession {
   private followUp: FollowUpTurn | undefined;
 
   private readonly permissionDeniedEvents: boolean;
+  private readonly interactionPort: InteractionPort | undefined;
+  /** See `SessionGuards.interruptSparesBackgroundTasks`. */
+  private readonly interruptSparesBackgroundTasks: boolean;
+  private readonly onDiagnostic: (line: string) => void;
 
   private readonly effectiveToolOptions: EffectiveToolOptions | undefined;
 
@@ -737,6 +794,13 @@ export class ClaudeRuntimeSession {
   /** The API message id of the partial-streaming message in flight, per `parent_tool_use_id` (''
    * for the main thread), from each stream's `message_start`. See TranslationContext.streamMessageId. */
   private readonly streamMessageIds = new Map<string, string>();
+  /** The child streams (by `streamMessageIds` key) that produced a text or thinking delta since their
+   * own last complete message, bounded like `parentTurns`. */
+  private readonly childStreamed = new Set<string>();
+  private resetConversationId: string | undefined;
+  /** Parent calls outlive their turns when agents run in the background. Keep their original turn
+   * until session end, bounded in insertion order so long sessions cannot grow this history forever. */
+  private readonly parentTurns = new Map<string, string>();
 
   private readonly accountProbe: AccountProbe | undefined;
   private readonly permittedInitTools: readonly string[] | undefined;
@@ -958,7 +1022,10 @@ export class ClaudeRuntimeSession {
     this.terminal = true;
     this.terminalReason = reason;
     this.pendingNext = undefined;
+    this.parentTurns.clear();
+    this.childStreamed.clear();
     this.permissionBroker.failAllPending(permissionOutcome);
+    this.interactionPort?.failAll(INTERACTION_FAIL_CAUSE[permissionOutcome]);
     this.drainPendingPermissionEvents(sink);
     // A first turn still held for the account probe is never delivered now; the turnInProgress
     // branch below reports it failed like any other turn this termination cut short. The probe
@@ -980,11 +1047,9 @@ export class ClaudeRuntimeSession {
       }
     }
     this.followUp = undefined;
-    if (this.turnInProgress) {
-      const turnId = this.currentTurnId ?? 'unknown-turn';
-      this.turnInProgress = false;
-      this.currentTurnId = undefined;
-      sink.push({ type: 'turn_completed', turnId, outcome: 'failed', resultText: '', isError: true, stopReason: null });
+    const open = this.turns.close();
+    if (open !== undefined) {
+      sink.push({ type: 'turn_completed', turnId: open, outcome: 'failed', resultText: '', isError: true, stopReason: null });
     }
     sink.push({ type: 'session_closed', reason });
   }
@@ -1024,11 +1089,46 @@ export class ClaudeRuntimeSession {
   }
 
   private translateOne(message: SDKMessage): ClaudeRuntimeEvent[] {
-    if (message.type === 'result') {
-      this.turnInProgress = false;
-      const turnId = this.currentTurnId ?? 'unknown-turn';
-      this.currentTurnId = undefined;
+    const events = this.translateFrame(message);
+    // Whatever ended the follow-up turn (a result, an idle, a drop), its bookkeeping ends with it.
+    if (this.followUp !== undefined && this.followUp.turnId !== this.currentTurnId) {
       this.followUp = undefined;
+    }
+    // A turn that ended without a result (an idle owed nothing, its own message dropped with nothing
+    // running) leaves its steered messages as held as a result would: the CLI still runs or drops each.
+    // Their turn is reserved now, as at a result, so a SendTurn is refused meanwhile; otherwise the
+    // steered message's answer would end the SendTurn's turn.
+    if (!this.turnInProgress && this.pendingSteers().length > 0 && events.some((event) => event.type === 'turn_completed')) {
+      events.push(this.openFollowUpTurn());
+    }
+    return events;
+  }
+
+  private log(step: TrackerStep): void {
+    for (const line of step.log) {
+      this.onDiagnostic(line);
+    }
+  }
+
+  /**
+   * A result: the turn tracker decides which turn, if any, it ends (see `TurnTracker.result`); that turn
+   * is completed with what the result says.
+   */
+  private translateResult(message: Extract<SDKMessage, { type: 'result' }>, facts: ResultFacts): ClaudeRuntimeEvent[] {
+    // A result that names a steered message whose start was never reported read it all the same: it was
+    // delivered into the turn this result ends, and no follow-up turn waits for it.
+    const events: ClaudeRuntimeEvent[] = [];
+    for (const uuid of facts.names) {
+      const steer = this.steered.get(uuid);
+      if (steer?.state === 'pending' && this.turnInProgress) {
+        events.push(...this.deliver(steer));
+        this.turns.lifecycle(uuid, 'started');
+      }
+    }
+    const step = this.turns.result(facts, { lifecycleReported: this.lifecycleReported });
+    this.log(step);
+    events.push(...step.before);
+    if (step.closes !== undefined) {
       const outcome = mapTerminalReason(message);
       // `result` (the final assistant text) only exists on the SDK's `SDKResultSuccess` variant --
       // `SDKResultError` has no such field, so an error-subtype result surfaces as empty text
@@ -1036,7 +1136,17 @@ export class ClaudeRuntimeSession {
       const resultText = message.subtype === 'success' ? message.result : '';
       // Everything else the result message says about how the turn ended (subtype, terminal reason,
       // API error status, errors, structured output) rides along unmapped -- see resultDetail().
-      const events: ClaudeRuntimeEvent[] = [{ type: 'turn_completed', turnId, outcome, resultText, isError: message.is_error, stopReason: message.stop_reason, ...resultDetail(message) }];
+      events.push({
+        type: 'turn_completed',
+        turnId: step.closes,
+        outcome,
+        resultText,
+        isError: message.is_error,
+        stopReason: message.stop_reason,
+        ...resultDetail(message),
+        ...(facts.originKind === undefined ? {} : { originKind: facts.originKind }),
+        ...(facts.numTurns === undefined ? {} : { numTurns: facts.numTurns }),
+      });
       // A steered message whose fate is still open when its turn's result arrives was not folded into
       // that turn (a folded one reports `started` before the result), so the CLI holds it and will
       // either run it as a turn of its own or report it cancelled, discarded or refused -- and a
@@ -1046,12 +1156,42 @@ export class ClaudeRuntimeSession {
       // SendTurn's turn would end with the steered message's answer. The result's
       // `queued_turn_count` is not consulted: a steer that reached the CLI just after it built the
       // result is not counted there, and an interrupted turn's result may not count at all.
-      if (this.pendingSteers().length > 0) {
+      if (!this.turnInProgress && this.pendingSteers().length > 0) {
         events.push(this.openFollowUpTurn());
       }
-      return events;
     }
-    const lifecycle = this.lifecycleFrame(message);
+    events.push(...step.after);
+    return events;
+  }
+
+  private readonly scheduleLedger = new ScheduleLedger();
+
+  private translateFrame(message: SDKMessage): ClaudeRuntimeEvent[] {
+    let frame = turnFrameOf(message);
+    const raw = message as unknown as Record<string, unknown>;
+    const child = hasParent(raw);
+    // A child's control frames describe its own execution. They cannot settle sent messages or
+    // change the main thread's lifecycle, schedule facts or idle accounting.
+    if (child && message.type !== 'assistant' && message.type !== 'user' && message.type !== 'stream_event') return [];
+    let dropped = this.scheduleLedger.observe(raw);
+    if ((raw.wakeup_source !== undefined && typeof raw.wakeup_source !== 'string') ||
+        (raw.scheduled_for !== undefined && (typeof raw.scheduled_for !== 'number' || !Number.isFinite(raw.scheduled_for)))) dropped++;
+    if (!child && ((raw.type === 'command_lifecycle' && raw.state === 'started' && typeof raw.wakeup_source === 'string') ||
+        raw.type === 'scheduled_task_fire' || raw.subtype === 'scheduled_task_fire')) {
+      frame = { kind: 'scheduled', cause: this.scheduleLedger.fire(raw) };
+    }
+    if (frame.kind === 'result' && raw.origin !== null && typeof raw.origin === 'object') {
+      const origin = raw.origin as Record<string, unknown>;
+      if (typeof origin.name === 'string') frame.peerName = origin.name;
+      if (typeof origin.body === 'string') frame.peerBody = origin.body;
+      if (origin.kind === 'peer' && ((origin.name !== undefined && typeof origin.name !== 'string') ||
+          (origin.body !== undefined && typeof origin.body !== 'string'))) dropped++;
+    }
+    if (dropped > 0) this.onDiagnostic(`dropped ${dropped} malformed cause entries`);
+    if (message.type === 'result' && frame.kind === 'result') {
+      return this.translateResult(message, frame);
+    }
+    const lifecycle = child ? undefined : this.lifecycleFrame(message);
     if (lifecycle !== undefined) {
       return lifecycle;
     }
@@ -1060,19 +1200,36 @@ export class ClaudeRuntimeSession {
       const capabilities = (message as { capabilities?: unknown }).capabilities;
       this.lifecycleReported = Array.isArray(capabilities) && capabilities.includes(CLI_MESSAGE_LIFECYCLE_CAPABILITY);
     }
+    if (frame.kind === 'session_state') {
+      // Read for the turn rules only. The CLI sends these because this session asked it to
+      // (`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), and nothing about them is forwarded.
+      const step = this.turns.sessionState(frame.state);
+      this.log(step);
+      return [...step.before, ...step.after];
+    }
+    // A turn the CLI starts by itself opens here, ahead of the frame that showed it (and a cycle the CLI
+    // runs ahead of a client turn's message is announced here), so the frame's own events land on it.
+    const step = this.turns.frame(frame, { lifecycleReported: this.lifecycleReported });
+    this.log(step);
     if (message.type === 'system' && (message as { subtype?: unknown }).subtype === 'commands_changed') {
       const commands = slashCommandsOf((message as { commands?: unknown }).commands);
       if (commands !== undefined) {
         this.commandsChangedSeen = true;
-        return [{ type: 'commands_updated', commands, source: 'changed' }];
+        return [...step.before, { type: 'commands_updated', commands, source: 'changed' }, ...step.after];
       }
     }
-    let streamKey: string | undefined;
+    // Each stream (the main thread's, and each parent call's) has its own message id and its own
+    // record of having streamed, so one stream's id can never suppress or label another's text.
+    const streamKey = child ? `child:${raw.parent_tool_use_id}` : '';
     if (message.type === 'stream_event') {
-      const raw = message as { parent_tool_use_id?: unknown; event?: { type?: unknown; message?: { id?: unknown } } };
-      streamKey = typeof raw.parent_tool_use_id === 'string' ? raw.parent_tool_use_id : '';
-      if (raw.event?.type === 'message_start') {
-        const id = raw.event.message?.id;
+      const stream = message as { event?: { type?: unknown; message?: { id?: unknown } } };
+      if (stream.event?.type === 'message_start') {
+        if (streamKey === '') this.mainStreamTurnId = this.currentTurnId;
+        // A new message has streamed nothing yet. Text an earlier, abandoned message streamed must
+        // not suppress this one's complete text when it arrives without deltas of its own.
+        if (child) this.childStreamed.delete(streamKey);
+        else this.streamedSinceLastAssistant = false;
+        const id = stream.event.message?.id;
         if (typeof id === 'string' && id !== '') {
           this.streamMessageIds.set(streamKey, id);
         } else {
@@ -1083,25 +1240,48 @@ export class ClaudeRuntimeSession {
       }
     }
     const ctx: TranslationContext = {
-      currentTurnId: this.currentTurnId,
+      backgroundTasks: this.backgroundTasks,
+      onDiagnostic: this.onDiagnostic,
+      currentTurnId: child ? this.parentTurns.get(raw.parent_tool_use_id as string) ?? this.currentTurnId ?? '' : this.currentTurnId,
       partialStreaming: this.partialStreaming,
-      streamedSinceLastAssistant: this.streamedSinceLastAssistant,
-      streamMessageId: streamKey === undefined ? undefined : this.streamMessageIds.get(streamKey),
+      streamedSinceLastAssistant: child ? this.childStreamed.has(streamKey) : this.mainStreamTurnId === this.currentTurnId && this.streamedSinceLastAssistant,
+      streamMessageId: this.streamMessageIds.get(streamKey),
       // Only when true, so a session that did not opt in builds exactly the context it always did.
       ...(this.permissionDeniedEvents ? { permissionDeniedEvents: true } : {}),
     };
     const events = translateMessage(message, ctx);
-    // Maintained here rather than inside translateMessage, which stays a pure function of one
-    // message: this loop already sees every event it returns. A stream_event that produced a
-    // text/thinking delta ARMS the suppression; the assistant message that follows consumes it and
-    // resets, so the next message in the same turn is judged on its own deltas rather than on an
-    // earlier message's.
-    if (message.type === 'stream_event') {
-      if (events.some((event) => event.type === 'text_delta' || event.type === 'thinking_delta')) {
-        this.streamedSinceLastAssistant = true;
+    for (const event of events) {
+      if (event.type === 'conversation_reset') this.resetConversationId = event.newConversationId;
+      if (event.type === 'session_ready' && this.resetConversationId !== undefined) {
+        if (event.providerSessionId !== this.resetConversationId) this.onDiagnostic('conversation reset id differs from the next init session id');
+        this.resetConversationId = undefined;
       }
-    } else if (message.type === 'assistant') {
-      this.streamedSinceLastAssistant = false;
+      if (event.type === 'tool_call_started' && (event.name === 'Agent' || event.name === 'Task') && !this.parentTurns.has(event.toolUseId)) {
+        this.parentTurns.set(event.toolUseId, event.turnId);
+        if (this.parentTurns.size > 1024) this.parentTurns.delete(this.parentTurns.keys().next().value!);
+      }
+    }
+    // Each stream arms and consumes only its own suppression flag. Child messages can interleave
+    // between the main stream's deltas and its complete message without changing whether that text
+    // was delivered, and the other way round.
+    if (child) {
+      if (message.type === 'stream_event') {
+        if (events.some((event) => event.type === 'text_delta' || event.type === 'thinking_delta')) {
+          this.childStreamed.delete(streamKey);
+          this.childStreamed.add(streamKey);
+          if (this.childStreamed.size > 1024) this.childStreamed.delete(this.childStreamed.values().next().value!);
+        }
+      } else if (message.type === 'assistant') {
+        this.childStreamed.delete(streamKey);
+      }
+    } else {
+      if (message.type === 'stream_event') {
+        if (events.some((event) => event.type === 'text_delta' || event.type === 'thinking_delta')) {
+          this.streamedSinceLastAssistant = true;
+        }
+      } else if (message.type === 'assistant') {
+        this.streamedSinceLastAssistant = false;
+      }
     }
     // `session_ready` is the ONLY place a provider session id ever enters this stream, so it is the
     // only place an attachment can be confirmed. It arrives at the start of a turn rather than at
@@ -1136,9 +1316,9 @@ export class ClaudeRuntimeSession {
       this.emitResumeOutcome(attached, 'attached', { attachedProviderSessionId: ready.providerSessionId });
       // Ahead of session_ready, so a consumer folding these in order knows what it is looking at
       // before it is handed the id.
-      return [...attached, ...events];
+      return [...step.before, ...attached, ...events, ...step.after];
     }
-    return events;
+    return [...step.before, ...events, ...step.after];
   }
 
   /** Global Constraint: one active turn per session -- rejects rather than queuing or silently
@@ -1148,20 +1328,31 @@ export class ClaudeRuntimeSession {
    * (nothing terminated will ever produce the `result` message that normally clears it), so a
    * *second* `sendTurn()` call would then throw the "already in progress" error -- true, but
    * misleading about why. */
-  sendTurn(text: string): { turnId: string } {
+  sendTurn(text: string, options?: SendTurnOptions): { turnId: string } {
+    // `clientMessageId` is named back by `user_message_delivered` / `user_message_dropped` when the CLI
+    // ran a cycle of its own before taking this message in.
     if (this.terminal) {
       throw new Error('session is closed');
     }
+    // A turn the CLI started by itself counts: the message would otherwise wait in the CLI's queue
+    // while this session labelled the CLI's own output with the new turn.
     if (this.turnInProgress) {
       throw new Error('a turn is already in progress on this session');
     }
-    const turnId = randomUUID();
-    this.turnInProgress = true;
-    this.currentTurnId = turnId;
+    const uuid = randomUUID();
+    this.sentUuids.add(uuid);
+    if (this.sentUuids.size > 256) {
+      this.sentUuids.delete(this.sentUuids.values().next().value!);
+    }
+    this.turns.pushed(uuid);
+    const started = this.turns.openClient(uuid, options?.clientMessageId);
+    const turnId = started.turnId;
     const userMessage: SDKUserMessage = {
       type: 'user',
+      uuid,
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
+      ...(options?.typedByPerson === true ? { origin: { kind: 'human' as const } } : {}),
     };
     if (this.holdFirstTurnForAccount && this.accountProbe !== undefined && this.settledAccountIdentity === undefined) {
       // Held, not sent: the provider sees no input -- and so spends nothing -- until the session
@@ -1184,7 +1375,7 @@ export class ClaudeRuntimeSession {
     // event") stopped being true. `pump()` drains this buffer into its own return value, and into
     // `this.events` from there, so `turn_started` now reaches every consumer rather than only
     // whoever called `sendTurn`.
-    this.pushEarly({ type: 'turn_started', turnId });
+    this.pushEarly(started);
     return { turnId };
   }
 
@@ -1207,7 +1398,7 @@ export class ClaudeRuntimeSession {
    * `turn_mismatch` rather than a message in a turn it did not choose. Returns the turn it was steered
    * into. Synchronous like `sendTurn`, and never changes `turnInProgress` itself.
    */
-  steerTurn(expectedTurnId: string, clientMessageId: string, text: string): { turnId: string } {
+  steerTurn(expectedTurnId: string, clientMessageId: string, text: string, options?: SteerTurnOptions): { turnId: string } {
     if (this.terminal) {
       throw new SteerError('closed', 'session is closed');
     }
@@ -1245,12 +1436,16 @@ export class ClaudeRuntimeSession {
     const uuid = randomUUID();
     this.steeredClientIds.add(clientMessageId);
     this.steered.set(uuid, { clientMessageId, steeredInto: turnId, state: 'pending' });
+    this.turns.pushed(uuid);
+    // Into a follow-up turn the CLI has not begun, the message is one of the ones that turn waits for.
+    this.turns.addOwn(uuid);
     this.inputQueue.push({
       type: 'user',
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
       uuid,
       priority: 'next',
+      ...(options?.typedByPerson === true ? { origin: { kind: 'human' as const } } : {}),
     });
     return { turnId };
   }
@@ -1261,15 +1456,14 @@ export class ClaudeRuntimeSession {
 
   /** Opens the turn steered messages will run in once the turn they were steered into has ended. */
   private openFollowUpTurn(): ClaudeRuntimeEvent {
-    const turnId = randomUUID();
-    this.turnInProgress = true;
-    this.currentTurnId = turnId;
-    this.followUp = { turnId, delivered: 0 };
-    return { type: 'turn_started', turnId };
+    const pending = [...this.steered.entries()].filter(([, steer]) => steer.state === 'pending').map(([uuid]) => uuid);
+    const started = this.turns.openFollowUp(pending);
+    this.followUp = { turnId: started.turnId, delivered: 0 };
+    return started;
   }
 
   /**
-   * The events for one `command_lifecycle` frame naming a steered message, or `undefined` when the
+   * The events for one `command_lifecycle` frame naming a sent or steered message, or `undefined` when the
    * message is not such a frame (it then goes through the normal translation, which reports any other
    * lifecycle frame as the notice it always was).
    *
@@ -1283,18 +1477,27 @@ export class ClaudeRuntimeSession {
     if (raw.type !== 'command_lifecycle' || typeof raw.command_uuid !== 'string') {
       return undefined;
     }
-    const steer = this.steered.get(raw.command_uuid);
+    const uuid = raw.command_uuid;
+    const state = typeof raw.state === 'string' ? raw.state : '';
+    if (this.sentUuids.has(uuid)) {
+      // A sent message's fate decides its turn (see `TurnTracker.lifecycle`); the frame itself is not
+      // forwarded.
+      const step = this.turns.lifecycle(uuid, state);
+      return [...step.before, ...step.after];
+    }
+    const steer = this.steered.get(uuid);
     if (steer === undefined) {
       return undefined;
     }
-    if (steer.state !== 'pending') {
-      return [];
+    if (steer.state === 'pending' && (state === 'started' || state === 'completed')) {
+      // First, so a follow-up turn this opens counts the message as its own before it is marked started.
+      const events = this.deliver(steer);
+      this.turns.lifecycle(uuid, state);
+      return events;
     }
-    if (raw.state === 'started' || raw.state === 'completed') {
-      return this.deliver(steer);
-    }
-    if (typeof raw.state === 'string' && DROP_STATES.has(raw.state)) {
-      return this.drop(steer, raw.state as SteerDropReason);
+    this.turns.lifecycle(uuid, state);
+    if (steer.state === 'pending' && DROP_STATES.has(state)) {
+      return this.drop(steer, state as SteerDropReason);
     }
     return [];
   }
@@ -1325,11 +1528,17 @@ export class ClaudeRuntimeSession {
     // A turn opened only for messages that will now never run would never get a result from the CLI
     // and would refuse every later sendTurn. When nothing it was opened for is left, it ends here, in
     // the shape of a turn that was stopped before it produced anything.
+    // While the CLI is running a cycle of its own inside the turn, that cycle's result ends it instead.
     const followUp = this.followUp;
-    if (followUp !== undefined && followUp.turnId === this.currentTurnId && followUp.delivered === 0 && this.pendingSteers().length === 0) {
+    if (
+      followUp !== undefined &&
+      followUp.turnId === this.currentTurnId &&
+      followUp.delivered === 0 &&
+      this.pendingSteers().length === 0 &&
+      this.turns.open?.cycleRunning !== true
+    ) {
       this.followUp = undefined;
-      this.turnInProgress = false;
-      this.currentTurnId = undefined;
+      this.turns.close();
       events.push({ type: 'turn_completed', turnId: followUp.turnId, outcome: 'interrupted', resultText: '', isError: false, stopReason: null });
     }
     return events;
@@ -1455,7 +1664,8 @@ export class ClaudeRuntimeSession {
   }
 
   /** Global Constraint: fail closed -- an interrupted turn must never leave a pending permission
-   * request unresolved, matching the neovibe Rust sibling's own identical
+   * request of its own unresolved (a background task the interrupt leaves running keeps its own; see
+   * the body), matching the neovibe Rust sibling's own identical
    * `AgentSession::interrupt()` behavior. `finally` (rather than a plain sequential `await` then
    * call) guarantees `failAllPending` runs even if `rawQuery.interrupt()` itself rejects --
    * otherwise a rejection there would skip the fail-close entirely, leaving pending permissions
@@ -1471,17 +1681,27 @@ export class ClaudeRuntimeSession {
       // so there is nothing there to interrupt. Drop the message and end the turn here, in the
       // shape a real interrupted turn ends in, so a caller waiting for turn_completed gets one.
       this.heldFirstTurn = undefined;
-      this.turnInProgress = false;
-      this.currentTurnId = undefined;
+      this.turns.close();
       this.pushEarly({ type: 'turn_completed', turnId: held.turnId, outcome: 'interrupted', resultText: '', isError: false, stopReason: null });
       return;
     }
+    // When the CLI was told this host stops tasks one at a time, its interrupt leaves background
+    // agents and workflows running, and a call one of them is waiting on is still that task's: it
+    // stays open for the host, and ends when the host answers it, the CLI withdraws it (the task is
+    // stopped) or the session closes. A request from a subagent this session cannot place in a
+    // running background task, and every main-thread request, is settled as before.
+    const spares = this.interruptSparesBackgroundTasks ? (agentId: string) => this.backgroundTasks.runsInBackground(agentId) : undefined;
+    // An open question ends as interrupted before the CLI hears of the interrupt: the CLI cancels a
+    // callback it is waiting on as part of interrupting, which would otherwise report the question as
+    // withdrawn by the CLI rather than interrupted by the person.
+    this.interactionPort?.failAll('interrupted', spares);
     // The CLI's receipt (`still_queued`) is not needed: a steered message it still holds is pending
     // here, and the interrupted turn's result opens the turn it will run in (see translateOne).
     try {
       await this.rawQuery.interrupt();
     } finally {
-      this.permissionBroker.failAllPending('cancelled_by_interrupt');
+      this.permissionBroker.failAllPending('cancelled_by_interrupt', spares);
+      this.interactionPort?.failAll('interrupted', spares);
     }
   }
 
@@ -1517,7 +1737,59 @@ export class ClaudeRuntimeSession {
   eventLog(): readonly ClaudeRuntimeEvent[] {
     return this.events;
   }
+
+  /** The route this session's structured questions take to the host; `undefined` when it offers none. */
+  interactions(): InteractionPort | undefined {
+    return this.interactionPort;
+  }
+
+  /**
+   * Stops one background task, a workflow included (its whole run: the CLI has no per-agent stop).
+   * The CLI reports the end itself, as a `task_notification` with status `stopped`. A task this
+   * session never saw rejects with `TaskNotFoundError`; one that has already ended, or whose session
+   * has ended with its process, resolves at once without asking the CLI. A CLI that refuses because
+   * the task ended while the request was on its way resolves too; any other refusal is passed on.
+   */
+  async stopTask(taskId: string): Promise<void> {
+    const task = this.backgroundTasks.control(taskId);
+    if (task === undefined) throw new TaskNotFoundError(taskId);
+    if (task.ended || this.terminal) return;
+    try {
+      await this.rawQuery.stopTask(taskId);
+    } catch (error) {
+      if (this.backgroundTasks.control(taskId)?.ended === true || this.terminal) return;
+      throw error;
+    }
+  }
+
+  /**
+   * The last `TASK_OUTPUT_TAIL_BYTES` of a shell's or a Monitor's output, read from the file the CLI
+   * named for that task in this session's own frames (see `BackgroundTasks.toolResult` and the path
+   * rules in taskOutput.ts); the caller never supplies a path. A workflow or local agent has none and
+   * is refused without looking for one. Refusals reject with `TaskOutputUnavailableError` and are
+   * logged by rule name; file content never reaches the log.
+   */
+  async taskOutput(taskId: string): Promise<TaskOutputResult> {
+    const task = this.backgroundTasks.control(taskId);
+    if (task === undefined) throw new TaskNotFoundError(taskId);
+    if (task.kind === 'workflow' || task.kind === 'local_agent') throw new TaskOutputUnavailableError(taskId, 'task_kind_has_no_output');
+    const path = this.backgroundTasks.outputPath(taskId);
+    if (path === undefined) throw new TaskOutputUnavailableError(taskId, 'no_output_path');
+    const read = await readOutputTail(path);
+    if ('refused' in read) {
+      this.onDiagnostic(`background task ${taskId}: output not read (${read.refused})`);
+      throw new TaskOutputUnavailableError(taskId, read.refused);
+    }
+    return read;
+  }
 }
+
+/** How each way a session's pending permissions end reads for the interactions that end with them. */
+const INTERACTION_FAIL_CAUSE: Record<'cancelled_by_interrupt' | 'cancelled_by_session_close' | 'provider_failed', InteractionFailCause> = {
+  cancelled_by_interrupt: 'interrupted',
+  cancelled_by_session_close: 'session_closed',
+  provider_failed: 'provider_failed',
+};
 
 const TIMEOUT = Symbol('pump-timeout');
 /** `pump()` must be non-blocking (mirrors the Rust sibling's own documented deadlock history --
@@ -1589,7 +1861,15 @@ function classifyResumeFailure(err: unknown): 'rejected' | 'initialization_faile
  * from the real ones. `createSession` calls this and nothing else to build its options.
  */
 export function buildSessionOptions(config: ClaudeSessionConfig): Options {
-  const options = policyToBaseOptions(config.policy, config.cwd, { account: config.account, hostCliPath: config.hostCliPath, extraMcpServers: config.extraMcpServers });
+  if (config.systemPrompt !== undefined && config.systemPromptPreset !== undefined) {
+    throw new Error('systemPrompt and systemPromptPreset cannot both be set');
+  }
+  const options = policyToBaseOptions(config.policy, config.cwd, {
+    account: config.account,
+    hostCliPath: config.hostCliPath,
+    extraMcpServers: config.extraMcpServers,
+    clientInteractions: config.clientInteractions,
+  });
   if (config.resume) {
     options.resume = config.resume.providerSessionId;
     if (config.fork) {
@@ -1604,11 +1884,16 @@ export function buildSessionOptions(config: ClaudeSessionConfig): Options {
   if (config.effort) {
     options.effort = config.effort;
   }
-  // Presence, not truthiness, for the same reason as `settingSources`: the question is whether the
-  // caller stated a prompt. A plain string is the SDK's "use a custom system prompt" form, i.e. a
-  // full replacement of Claude Code's default; the preset/append form is deliberately not reachable.
+  // Presence distinguishes the explicit Claude Code preset (even {}) from the SDK's minimal prompt.
+  // A plain string stays a full replacement; append is included only when the caller supplied it.
   if (config.systemPrompt !== undefined) {
     options.systemPrompt = config.systemPrompt;
+  } else if (config.systemPromptPreset !== undefined) {
+    options.systemPrompt = {
+      type: 'preset',
+      preset: 'claude_code',
+      ...(config.systemPromptPreset.append !== undefined ? { append: config.systemPromptPreset.append } : {}),
+    };
   }
   if (config.outputFormat !== undefined) {
     // A copy, so a caller mutating its config after createSession cannot change what the SDK holds.
@@ -1617,7 +1902,11 @@ export function buildSessionOptions(config: ClaudeSessionConfig): Options {
   return options;
 }
 
-export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = realQuery as unknown as QueryFn): ClaudeRuntimeSession {
+export function createSession(
+  config: ClaudeSessionConfig,
+  queryFn: QueryFn = realQuery as unknown as QueryFn,
+  hooks: { onDiagnostic?: (line: string) => void } = {},
+): ClaudeRuntimeSession {
   // Before anything is built or spawned: a check the caller believes is configured but that has no
   // allow list to run against would be silently skipped.
   const initCheck = initCheckProblem(config);
@@ -1645,15 +1934,17 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
   // The facts that decide who may switch to bypass and who may defer, read once: the caller keeps its
   // own policy object, and a later edit to it must not let one session both defer and switch.
   const creationPolicy: Readonly<ClaudeHostPolicy> = Object.freeze({ ...config.policy });
+  const interactionPort = createInteractionPort(config, (event) => pendingPermissionEvents.push(event));
   const broker = new PermissionBroker(
     (event) => pendingPermissionEvents.push(event),
-    (toolName) => gateDecision(gateState, toolName),
+    (toolName): GateDecision => (gateAbstains(config, toolName) ? { kind: 'abstain' } : gateDecision(gateState, toolName)),
     // A session that can be switched to bypass refuses every deferral: see PermissionBroker.resolve.
     // Decided from the policy it was created with, which is also what decides whether it can switch.
     () =>
       creationPolicy.permissionModeSwitchable === true
         ? 'this session was created with permission_mode_switchable, and a host that can switch a session to bypass cannot also leave decisions to the CLI\'s mode (a switch can reach the CLI before it acts on the deferral)'
         : null,
+    interactionPort,
   );
   // Announced, never silent. `policyToBaseOptions` above has just narrowed this session's tools in a
   // way the caller did not ask for, and under `bypass` there is no PreToolUse hook to surface it
@@ -1710,6 +2001,10 @@ export function createSession(config: ClaudeSessionConfig, queryFn: QueryFn = re
         ? { permittedInitTools: permittedInitTools(config), requiredInitTools: requiredInitTools(config), expectedMcpServers: expectedInitMcpServers(config) }
         : {}),
       permissionSwitch: { state: gateState, policy: creationPolicy },
+      interactionPort,
+      // Read from the options the SDK was handed, so it is exactly what the CLI was told.
+      interruptSparesBackgroundTasks: options.perTaskStopAffordance === true,
+      ...(hooks.onDiagnostic === undefined ? {} : { onDiagnostic: hooks.onDiagnostic }),
       permissionDeniedEvents: permissionDeniedEventsFor(config.policy),
       // Copied from the options object `queryFn` was just handed, after every addition to it, so what
       // session_ready reports is what the SDK was told.

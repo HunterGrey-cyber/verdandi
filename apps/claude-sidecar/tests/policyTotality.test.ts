@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSessionOptions, policyToBaseOptions } from '@verdandi/claude-runtime';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { buildKernelSessionConfig } from '../src/runtimeServiceImpl.js';
+import { buildKernelSessionConfig, validatePolicy } from '../src/runtimeServiceImpl.js';
+import { SidecarError } from '../src/errorMapping.js';
 import {
   ClaudeHostPolicy,
   ConfigurationProfile,
@@ -14,6 +15,7 @@ import {
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
   InitCheck,
   CliPermissionMode,
+  ErrorCode,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 /**
@@ -121,6 +123,11 @@ const TABLE: Record<string, Row> = {
     b: { cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_AUTO },
     observe: (o) => o.permissionMode,
   },
+  perTaskStop: {
+    a: { perTaskStop: false },
+    b: { perTaskStop: true },
+    observe: (o) => o.perTaskStopAffordance,
+  },
 };
 
 /** A policy with every field at a stated, non-default value, so a row's `a`/`b` overlay changes one
@@ -139,6 +146,7 @@ const BASE: ClaudeHostPolicyProto = {
   providerPermissionPrompts: false,
   cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
   acceptUnsupportedCli: false,
+  perTaskStop: false,
 };
 
 function optionsFor(overlay: Partial<ClaudeHostPolicyProto>): Options {
@@ -163,10 +171,18 @@ const SIDECAR_LEVEL: Record<string, { a: Partial<ClaudeHostPolicyProto>; b: Part
   },
 };
 
+/**
+ * Fields on the wire whose feature this sidecar does not have yet. `validatePolicy` refuses a value
+ * that asks for the feature, before any session exists, so no request can have it silently dropped;
+ * each names the test that pins the refusal, and the test below this table asserts it, plus the
+ * absence of any Options effect for the value that asks for nothing. Empty while every field is wired.
+ */
+const REFUSED_UNTIL_WIRED: Record<string, { asks: Partial<ClaudeHostPolicyProto>; quiet: Partial<ClaudeHostPolicyProto>; reason: string; refusedBy: string }> = {};
+
 test('every field on the wire ClaudeHostPolicy is represented in this table', () => {
   // A row may be keyed `field.subField` to observe one half of a message-typed field on its own
   // Options key, so compare on the top-level field names the table actually covers.
-  const covered = [...new Set([...Object.keys(TABLE), ...Object.keys(SIDECAR_LEVEL)].map((k) => k.split('.')[0]))].sort();
+  const covered = [...new Set([...Object.keys(TABLE), ...Object.keys(SIDECAR_LEVEL), ...Object.keys(REFUSED_UNTIL_WIRED)].map((k) => k.split('.')[0]))].sort();
   assert.deepEqual(
     Object.keys(ClaudeHostPolicy.create({})).sort(),
     covered,
@@ -179,6 +195,18 @@ test('every field on the wire ClaudeHostPolicy is represented in this table', ()
 test('a sidecar-level policy field changes nothing the SDK is told, and is observed by the test it names', () => {
   for (const [field, row] of Object.entries(SIDECAR_LEVEL)) {
     assert.deepEqual(optionsFor(row.a), optionsFor(row.b), `ClaudeHostPolicy.${field} must not reach the SDK Options (observed by ${row.observedBy})`);
+  }
+});
+
+test('a field whose feature is not wired is refused when it asks for it, and changes nothing when it does not', () => {
+  for (const [field, row] of Object.entries(REFUSED_UNTIL_WIRED)) {
+    assert.throws(
+      () => validatePolicy({ ...BASE, ...row.asks }),
+      (err: unknown) => err instanceof SidecarError && err.code === ErrorCode.ERROR_CODE_INVALID_CONFIGURATION && err.reason === row.reason,
+      `ClaudeHostPolicy.${field} must be refused with ${row.reason} (observed by ${row.refusedBy})`,
+    );
+    assert.doesNotThrow(() => validatePolicy({ ...BASE, ...row.quiet }), `ClaudeHostPolicy.${field}`);
+    assert.deepEqual(optionsFor(row.quiet), optionsFor({}), `ClaudeHostPolicy.${field} at its quiet value must not reach the SDK Options`);
   }
 });
 

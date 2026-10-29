@@ -15,17 +15,22 @@ import { compareVersions, parseVersion } from './cliCompatibility.js';
  *   `STEER_MIN_CLI_VERSION`, the oldest CLI known to report `command_lifecycle` frames, so
  *   `steer_turn` may be claimed. A promise about the process, not a session: each session still
  *   refuses a steer until its own CLI lists `msg_lifecycle_v1` in a `system/init`.
+ * - `taskOutputRead`: this process can open a file without following a symbolic link and knows its
+ *   own uid (the kernel's `taskOutputReadable`), the two checks a task's output read rests on, so
+ *   `task_output` may be claimed.
  */
 export type CapabilityFacts = {
   egressRestricted: boolean;
   sdkBundledAvailable: boolean;
   cliMessageLifecycle: boolean;
+  taskOutputRead: boolean;
 };
 
 const CONDITION_OF: Record<CapabilityCondition, (facts: CapabilityFacts) => boolean> = {
   egress_restricted: (facts) => facts.egressRestricted,
   sdk_bundled: (facts) => facts.sdkBundledAvailable,
   cli_message_lifecycle: (facts) => facts.cliMessageLifecycle,
+  task_output_read: (facts) => facts.taskOutputRead,
 };
 
 /**

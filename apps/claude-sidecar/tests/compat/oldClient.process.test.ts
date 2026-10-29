@@ -426,7 +426,10 @@ test('environment: a pinned account reaches the Handshake as PINNED, and every s
     await withHarness({}, async (h) => {
       assert.equal((await h.handshake()).accountBinding, old.AccountBinding.ACCOUNT_BINDING_UNPINNED);
       await h.createGolden('create_session_fresh_partial');
-      assert.equal(h.sdk.last.options.env, undefined);
+      // Unpinned: no account variables, only the session-state switch on top of the sidecar's environment.
+      const env = h.sdk.last.options.env;
+      assert.equal(env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, '1');
+      assert.equal(env?.CLAUDE_PROFILE, undefined);
       assert.equal(h.sdk.last.options.pathToClaudeCodeExecutable, HOST_CLI_PATH);
     });
   } finally {

@@ -94,7 +94,7 @@ test('the generated module is the file (a stale src/generated copy fails here, n
     source.capabilities.map((c) => ({ name: c.name, since_minor: c.since_minor, baseline: c.baseline ?? false, when: c.when })),
   );
   assert.deepEqual([...PERMISSION_MODES], source.permission_modes);
-  assert.deepEqual(handshakeCapabilities({ egressRestricted: true, sdkBundledAvailable: true, cliMessageLifecycle: true }), source.capabilities.map((c) => c.name));
+  assert.deepEqual(handshakeCapabilities({ egressRestricted: true, sdkBundledAvailable: true, cliMessageLifecycle: true, taskOutputRead: true }), source.capabilities.map((c) => c.name));
 });
 
 // ---- What the file must always be --------------------------------------------------------------------------------
@@ -167,4 +167,19 @@ test('the minors ledger lists every minor up to the current one, each with a dat
     const entry = source.minors[capability.since_minor];
     assert.ok(entry.summary.includes(capability.name), `minor ${entry.minor}'s summary does not name ${capability.name}, which it introduced`);
   }
+});
+
+test('the Claude Code preset is always advertised after list_commands and before executable_host_cli', async () => {
+  // By index, not adjacency: capabilities of later minors sit between the preset and the executable pair.
+  for (const sdkBundledAvailable of [false, true]) {
+    const response = await handshake({ egressRestricted: false, sdkBundledAvailable });
+    const commands = response.capabilities.indexOf('list_commands');
+    const preset = response.capabilities.indexOf('system_prompt_preset');
+    const hostCli = response.capabilities.indexOf('executable_host_cli');
+    assert.ok(commands >= 0 && commands < preset && preset < hostCli, `list_commands ${commands}, system_prompt_preset ${preset}, executable_host_cli ${hostCli}`);
+    assert.equal(response.protocolMinor, 22);
+  }
+  const preset = source.capabilities.find((c) => c.name === 'system_prompt_preset');
+  assert.equal(preset?.since_minor, 21);
+  assert.equal(preset?.when, undefined);
 });

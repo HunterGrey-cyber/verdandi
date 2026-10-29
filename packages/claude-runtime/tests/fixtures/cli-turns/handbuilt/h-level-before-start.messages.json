@@ -1,0 +1,108 @@
+{
+  "manifest": {
+    "scenario": "h-level-before-start",
+    "cli_version": "2.1.311",
+    "sdk_version": "0.3.252",
+    "verdandi_revision": "handbuilt",
+    "env_names": [],
+    "variant": null,
+    "stamped": true,
+    "handbuilt": true,
+    "source": "sdk.d.ts 0.3.252 SDKBackgroundTasksChangedMessage (line 3273: the level may precede the task_started edge) and SDKTaskStartedMessage (line 5058); the declaration's note that the level in practice precedes the bookends"
+  },
+  "lines": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "type": "user",
+        "uuid": "host-1",
+        "message": {
+          "role": "user",
+          "content": "prompt"
+        }
+      }
+    },
+    {
+      "i": 1,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "session-1",
+        "tools": [],
+        "capabilities": [
+          "msg_lifecycle_v1"
+        ]
+      }
+    },
+    {
+      "i": 2,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "background_tasks_changed",
+        "tasks": [
+          {
+            "task_id": "bg-1",
+            "task_type": "local_bash",
+            "description": "sleep"
+          }
+        ],
+        "uuid": "level-1",
+        "session_id": "session-1"
+      }
+    },
+    {
+      "i": 3,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "bg-1",
+        "description": "sleep",
+        "task_type": "local_bash",
+        "is_backgrounded": true,
+        "uuid": "started-1",
+        "session_id": "session-1"
+      }
+    },
+    {
+      "i": 4,
+      "from": "cli",
+      "message": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "result": "done",
+        "stop_reason": "end_turn",
+        "user_message_uuid": "host-1"
+      }
+    },
+    {
+      "i": 5,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "background_tasks_changed",
+        "tasks": [],
+        "uuid": "level-2",
+        "session_id": "session-1"
+      }
+    },
+    {
+      "i": 6,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "bg-1",
+        "status": "completed",
+        "output_file": "$RUN/tasks/bg-1.output",
+        "summary": "done",
+        "uuid": "done-1",
+        "session_id": "session-1"
+      }
+    }
+  ]
+}

@@ -194,11 +194,14 @@ test('what the SDK is told for Eitri\'s request: gated, project+local settings, 
     assert.equal(options.outputFormat, undefined);
     assert.equal(options.resume, undefined);
     assert.equal(options.forkSession, undefined);
-    // NATIVE leaves MCP and memory alone, and no account is pinned, so the SDK's own environment stands.
+    // NATIVE leaves MCP and memory alone, and no account is pinned, so the environment is the SDK's own
+    // default copy of the process environment plus the one variable that makes the CLI report its
+    // session state, whose frames the sidecar consumes and never forwards (COMPATIBILITY.md, "Old
+    // clients" under cli_turns).
     assert.equal(options.strictMcpConfig, undefined);
     assert.equal(options.mcpServers, undefined);
     assert.equal(options.settings, undefined);
-    assert.equal(options.env, undefined);
+    assert.deepEqual(options.env, { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' });
   });
 });
 
@@ -808,7 +811,7 @@ test('the CLI gate accepts at least everything b3aa188 accepted -- the supported
 
 // ---- Nothing that matters may live only in an event the old client cannot read ----------------------
 
-test('the silent-event rule: an event arm outside Eitri 0.2.0\'s proto (or no arm at all) is reported unless it is allowlisted with a reason, and the allowlist is empty', () => {
+test('the silent-event rule: an event arm outside Eitri 0.2.0\'s proto (or no arm at all) is reported unless it is allowlisted with a reason, and the allowlist holds only the 3.22 turn, task, notice and reset arms', () => {
   // Every scenario in this file runs through `withHarness`, which fails the scenario when a watch received such an
   // event (`assertNoSilentEvents`); this checks the rule itself, on events built by hand.
   const known = old.SessionEvent.encode(old.SessionEvent.fromPartial({ sessionId: 'S', sequence: 1n, turnStarted: { turnId: 't' } })).finish();
@@ -820,7 +823,19 @@ test('the silent-event rule: an event arm outside Eitri 0.2.0\'s proto (or no ar
   assert.deepEqual(undecodableArms(futureArm), [23]);
   assert.deepEqual(undecodableArms(futureArm, new Map([[23, { name: 'PermissionAutoDenied', reason: 'written reason' }]])), []);
   assert.deepEqual(undecodableArms(old.SessionEvent.encode(old.SessionEvent.fromPartial({ sessionId: 'S', sequence: 3n })).finish()), [0], 'an event with no arm at all is reported too');
-  assert.equal(ALLOWED_UNDECODABLE_EVENT_ARMS.size, 0, 'an entry needs a written reason; see eitri.ts');
+  assert.deepEqual([...ALLOWED_UNDECODABLE_EVENT_ARMS.keys()], [30, 31, 32, 33, 34, 35], 'an entry needs a written reason; see eitri.ts');
+  for (const [arm, entry] of ALLOWED_UNDECODABLE_EVENT_ARMS) {
+    assert.ok(entry.reason.length > 200, `arm ${arm} needs its reason written out`);
+  }
+  // The allowlisted arms are tolerated by default; the interaction arms (40, 41), which only a session that asked for
+  // questions gets, are not.
+  const withArm = (field: number, sequence: bigint) => {
+    const tag = (field << 3) | 2;
+    return Uint8Array.from([...old.SessionEvent.encode(old.SessionEvent.fromPartial({ sessionId: 'S', sequence })).finish(), (tag & 0x7f) | 0x80, tag >> 7, 0x00]);
+  };
+  for (const arm of [30, 31, 32, 33, 34, 35]) assert.deepEqual(undecodableArms(withArm(arm, 4n)), [], `arm ${arm}`);
+  assert.deepEqual(undecodableArms(withArm(40, 5n)), [40]);
+  assert.deepEqual(undecodableArms(withArm(41, 6n)), [41]);
 });
 
 function kindsOf(event: old.SessionEvent): string {

@@ -49,11 +49,28 @@ test('the hook callback returns a deny decision with the given reason', async ()
     { signal: new AbortController().signal },
   );
   const permissionId = (events[0] as { permissionId: string }).permissionId;
-  broker.resolve(permissionId, { allow: false, reason: 'policy denies Bash' });
+  broker.resolve(permissionId, { allow: false, reason: 'keep the file' });
 
   const output = await outputPromise;
   assert.equal((output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision, 'deny');
-  assert.equal((output as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason, 'policy denies Bash');
+  assert.equal((output as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason, 'keep the file');
+});
+
+test('a reasonless hook denial stays bare, and a legal hook deferral makes no decision', async () => {
+  for (const decision of [{ allow: false }, { allow: false, defer: true }]) {
+    const { broker, events } = makeBroker();
+    const pending = broker.buildHookMatcher().hooks[0](
+      { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: {}, tool_use_id: 'a', session_id: 's', transcript_path: '', cwd: '' } as never,
+      'a',
+      { signal: new AbortController().signal },
+    );
+    broker.resolve((events[0] as { permissionId: string }).permissionId, decision);
+    assert.deepEqual(await pending, decision.defer ? {} : {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: undefined },
+    });
+    assert.equal(broker.pendingCount(), 0);
+    assert.deepEqual(events.filter((e) => e.type === 'permission_resolved').map((e) => e.outcome), [decision.defer ? 'deferred' : 'denied']);
+  }
 });
 
 test('an MCP tool call is a permission request under its mcp__<server>__<tool> name, and a deny reaches the CLI as deny', async () => {
@@ -214,7 +231,7 @@ test('an abort after failAllPending is also inert -- no double-resolve, no extra
 
 // The two expiry reasons reach the CLI as permissionDecisionReason. Pinned since they became
 // arguments of the shared ask() (provider prompts pass their own pair), where a swap would be silent.
-test('the hook states which expiry happened: aborted while pending vs already aborted', async () => {
+test('host expiry and fallback are explicit', async () => {
   const input = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, tool_use_id: 'a', session_id: 's', transcript_path: '', cwd: '' } as never;
   const reasonOf = (output: unknown): string | undefined =>
     (output as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason;
@@ -223,10 +240,16 @@ test('the hook states which expiry happened: aborted while pending vs already ab
   const controller = new AbortController();
   const outputPromise = pending.broker.buildHookMatcher().hooks[0](input, 'a', { signal: controller.signal });
   controller.abort();
-  assert.equal(reasonOf(await outputPromise), 'permission request expired (hook call aborted)');
+  assert.equal(reasonOf(await outputPromise), 'The host denied this tool call because its permission request expired (hook call aborted).');
+  assert.equal(pending.broker.pendingCount(), 0);
+  assert.deepEqual(pending.events.filter((e) => e.type === 'permission_resolved').map((e) => e.outcome), ['expired']);
+  const permissionId = (pending.events[0] as { permissionId: string }).permissionId;
+  assert.equal(pending.broker.resolve(permissionId, { allow: true }), false);
 
   const already = makeBroker();
   const aborted = new AbortController();
   aborted.abort();
-  assert.equal(reasonOf(await already.broker.buildHookMatcher().hooks[0](input, 'a', { signal: aborted.signal })), 'permission request expired (hook call already aborted)');
+  assert.equal(reasonOf(await already.broker.buildHookMatcher().hooks[0](input, 'a', { signal: aborted.signal })), 'The host denied this tool call because its permission request expired (hook call already aborted).');
+  assert.equal(already.broker.pendingCount(), 0);
+  assert.deepEqual(already.events, []);
 });

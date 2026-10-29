@@ -439,7 +439,9 @@ test('ordering: a sendTurn made while a pump() call is suspended comes out ahead
   const inFlight = session.pump();
   const { turnId } = session.sendTurn('hi');
   const events = [...(await inFlight), ...(await drain(session))];
-  assert.deepEqual(events.map((event) => event.type).slice(0, 2), ['turn_started', 'text_delta']);
+  // The CLI produced this output before it took the send in (no lifecycle frame says it started), so on a
+  // CLI that reports lifecycles it is a cycle of the CLI's own inside the new turn, announced first.
+  assert.deepEqual(events.map((event) => event.type).slice(0, 3), ['turn_started', 'cli_cycle_started', 'text_delta']);
   assert.equal(ofType(events, 'text_delta')[0]!.turnId, turnId);
 });
 
@@ -523,8 +525,9 @@ async function pumpUntil(session: ReturnType<typeof createSession>, done: (event
 
 test('commands: the initialize answer becomes one commands_updated before any turn', async () => {
   const { session } = setup({ supportedCommands: async () => COMMANDS });
-  const events = await pumpUntil(session, (seen) => seen.length > 0);
+  const events = await pumpUntil(session, (seen) => seen.some(event => event.type !== 'background_tasks_changed'));
   assert.deepEqual(events, [
+    { type: 'background_tasks_changed', tasks: [] },
     {
       type: 'commands_updated',
       source: 'initialize',
@@ -541,7 +544,7 @@ test('commands: system/commands_changed replaces the list, and a later initializ
   const { session, controller } = setup({ supportedCommands: () => new Promise((resolve) => (answer = resolve)) });
   controller.emit({ type: 'system', subtype: 'commands_changed', commands: [COMMANDS[0]], uuid: 'u', session_id: 's' } as never);
   const changed = await drain(session);
-  assert.deepEqual(changed, [{ type: 'commands_updated', source: 'changed', commands: [{ name: 'review', description: 'Review a pull request', argumentHint: '<pr>', aliases: [] }] }]);
+  assert.deepEqual(changed, [{ type: 'background_tasks_changed', tasks: [] }, { type: 'commands_updated', source: 'changed', commands: [{ name: 'review', description: 'Review a pull request', argumentHint: '<pr>', aliases: [] }] }]);
   answer(COMMANDS);
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(await drain(session), []);
@@ -571,17 +574,17 @@ for (const ticks of [0, 1, 2, 3, 4, 6, 8]) {
 
 test('commands: entries without a usable name are skipped and missing fields default to empty', async () => {
   const { session } = setup({ supportedCommands: async () => [{ name: '' }, { description: 'nameless' }, null, { name: 'ok' }] as never });
-  const events = await pumpUntil(session, (seen) => seen.length > 0);
-  assert.deepEqual(events, [{ type: 'commands_updated', source: 'initialize', commands: [{ name: 'ok', description: '', argumentHint: '', aliases: [] }] }]);
+  const events = await pumpUntil(session, (seen) => seen.some(event => event.type !== 'background_tasks_changed'));
+  assert.deepEqual(events, [{ type: 'background_tasks_changed', tasks: [] }, { type: 'commands_updated', source: 'initialize', commands: [{ name: 'ok', description: '', argumentHint: '', aliases: [] }] }]);
 });
 
 test('commands: a failed or unreadable answer says so with a notice, and no list', async () => {
   const failed = setup({ supportedCommands: async () => Promise.reject(new Error('initialize failed')) });
-  const a = await pumpUntil(failed.session, (seen) => seen.length > 0);
-  assert.deepEqual(a.map((event) => [event.type, event.type === 'provider_notice' ? `${event.kind}/${event.subtype}` : '']), [['provider_notice', 'verdandi_commands/unavailable']]);
+  const a = await pumpUntil(failed.session, (seen) => seen.some(event => event.type !== 'background_tasks_changed'));
+  assert.deepEqual(a.map((event) => [event.type, event.type === 'provider_notice' ? `${event.kind}/${event.subtype}` : '']), [['background_tasks_changed', ''], ['provider_notice', 'verdandi_commands/unavailable']]);
   const unreadable = setup({ supportedCommands: async () => 'not a list' as never });
-  const b = await pumpUntil(unreadable.session, (seen) => seen.length > 0);
-  assert.deepEqual(b.map((event) => [event.type, event.type === 'provider_notice' ? `${event.kind}/${event.subtype}` : '']), [['provider_notice', 'verdandi_commands/unreadable']]);
+  const b = await pumpUntil(unreadable.session, (seen) => seen.some(event => event.type !== 'background_tasks_changed'));
+  assert.deepEqual(b.map((event) => [event.type, event.type === 'provider_notice' ? `${event.kind}/${event.subtype}` : '']), [['background_tasks_changed', ''], ['provider_notice', 'verdandi_commands/unreadable']]);
 });
 
 test('commands: an answer that arrives after the session ended is not sent', async () => {
@@ -603,5 +606,5 @@ test('commands: a query object without supportedCommands still makes a working s
   session.sendTurn('hi');
   controller.emit(result());
   const events = await drain(session);
-  assert.deepEqual(events.map((event) => event.type), ['turn_started', 'turn_completed']);
+  assert.deepEqual(events.map((event) => event.type), ['background_tasks_changed', 'turn_started', 'turn_completed']);
 });

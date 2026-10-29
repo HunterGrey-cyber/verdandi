@@ -4,6 +4,7 @@ import { isSea } from 'node:sea';
 import * as grpc from '@grpc/grpc-js';
 import {
   cliPermissionModeProblem,
+  interactionOptInProblem,
   PermissionAnswerError,
   PermissionModeError,
   SteerError,
@@ -54,6 +55,8 @@ import { PumpDriver } from './pumpDriver.js';
 import type { ReplayRequest, SequencedEvent } from './ringBuffer.js';
 import { translateEvent, extractTurnId, accountIdentityToProto } from './eventTranslation.js';
 import { SidecarError, toGrpcStatusCode, toGrpcMetadata } from './errorMapping.js';
+import { createTaskRpc } from './taskRpc.js';
+import { createInteractionRpc } from './interactionRpc.js';
 import {
   ErrorCode,
   ConfigurationProfile,
@@ -259,14 +262,17 @@ export type ClaudeSessionConfigLike = {
   model?: string;
   /** SDK Options.effort. Empty string means "not set"; anything else must be a known level. */
   effort?: string;
-  /** SDK Options.systemPrompt as a full replacement. Absent keeps Claude Code's default prompt;
-   *  present-but-blank is refused by `validateSystemPrompt`. */
+  /** Full replacement prompt; with neither field present the SDK uses its minimal prompt. */
   systemPrompt?: string;
+  /** Explicit Claude Code preset, with an optional verbatim append. */
+  systemPromptPreset?: { append?: string };
   /** SDK Options.outputFormat, with the schema as JSON text. Absent means a plain-text answer. */
   outputFormat?: { jsonSchemaJson: string };
   /** Not a session option: whether CreateSession waits for the account probe and returns its answer.
    * `false` and absent mean the same thing (a proto3 bool), and both answer at once. */
   awaitAccountIdentity?: boolean;
+  /** The interactions the host opts into; absent and every member false mean the same thing. */
+  clientInteractions?: { questions: boolean };
 };
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -288,18 +294,27 @@ export function validateEffort(config: ClaudeSessionConfigLike): void {
   }
 }
 
-/**
- * Refuses a present-but-blank system prompt, before any session exists. Presence says "replace
- * Claude Code's prompt", the value says "with nothing" -- no caller means that, and the likeliest
- * way to send it is a partial message literal. Same stance as an empty
- * `resume_provider_session_id`. Exported for direct unit testing.
- */
+/** Refuses conflicting prompt forms before checking values, and blank values before any session exists. */
 export function validateSystemPrompt(config: ClaudeSessionConfigLike): void {
+  if (config.systemPrompt !== undefined && config.systemPromptPreset !== undefined) {
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+      'system_prompt and system_prompt_preset cannot both be set',
+      'system_prompt_conflict',
+    );
+  }
   if (config.systemPrompt !== undefined && config.systemPrompt.trim() === '') {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
-      'system_prompt was set but is blank -- omit the field to keep Claude Code\'s default system prompt',
+      "system_prompt was set but is blank -- omit both prompt fields for the Agent SDK's minimal prompt, or use system_prompt_preset for Claude Code's system prompt",
       'system_prompt_blank',
+    );
+  }
+  if (config.systemPromptPreset?.append !== undefined && config.systemPromptPreset.append.trim() === '') {
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+      'system_prompt_preset.append was set but is blank -- omit append for the unmodified Claude Code preset',
+      'system_prompt_append_blank',
     );
   }
 }
@@ -367,6 +382,26 @@ export function validateResumeRequest(config: ClaudeSessionConfigLike): void {
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
       'fork was requested without resume_provider_session_id -- there is no session to fork from',
       'fork_without_resume',
+    );
+  }
+}
+
+/**
+ * Refuses an interaction opt-in this sidecar cannot honour, before any session exists, by the kernel's
+ * own rule (`interactionOptInProblem`) on the mapped policy. Refused rather than ignored: a host that
+ * asked for questions and silently did not get them would wait for interactions that never come,
+ * while the model's question has nobody to answer it.
+ */
+export function validateClientInteractions(config: ClaudeSessionConfigLike): void {
+  const problem = interactionOptInProblem({
+    policy: mapClaudeHostPolicy(config.policy as ClaudeHostPolicyProto | undefined),
+    clientInteractions: config.clientInteractions,
+  });
+  if (problem !== null) {
+    throw new SidecarError(
+      ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
+      `client_interactions cannot be honoured on this sidecar (${problem}) -- send it only when the handshake lists structured_questions_v1`,
+      problem,
     );
   }
 }
@@ -610,6 +645,8 @@ export function mapClaudeHostPolicy(policy: ClaudeHostPolicyProto | undefined): 
     ...(policy.providerPermissionPrompts ? { providerPermissionPrompts: true } : {}),
     // Only when stated; see mapCliPermissionMode for why UNSPECIFIED leaves the key out.
     ...(cliPermissionMode !== undefined ? { cliPermissionMode } : {}),
+    // Only `true`, as for the two booleans above: a host that can stop one task (StopTask) says so.
+    ...(policy.perTaskStop ? { perTaskStop: true } : {}),
   };
 }
 
@@ -765,6 +802,7 @@ export function buildKernelSessionConfig(
   config: ClaudeSessionConfigLike,
   hostDefaults: { account?: ClaudeAccount; hostCliPath?: string; extraMcpServers?: ExtraMcpServers } = {},
 ): ClaudeSessionConfig {
+  validateSystemPrompt(config);
   return {
     cwd: config.cwd,
     policy: mapClaudeHostPolicy(config.policy as ClaudeHostPolicyProto | undefined),
@@ -778,11 +816,16 @@ export function buildKernelSessionConfig(
     ...(config.model ? { model: config.model } : {}),
     ...(config.effort ? { effort: config.effort as EffortLevel } : {}),
     // Presence, not emptiness: proto3 `optional` gives this field real presence, and
-    // validateSystemPrompt has already refused a blank one.
+    // validateSystemPrompt has refused conflicts and blank values.
     ...(config.systemPrompt !== undefined ? { systemPrompt: config.systemPrompt } : {}),
+    ...(config.systemPromptPreset !== undefined
+      ? { systemPromptPreset: { ...(config.systemPromptPreset.append !== undefined ? { append: config.systemPromptPreset.append } : {}) } }
+      : {}),
     ...(config.outputFormat !== undefined
       ? { outputFormat: { type: 'json_schema' as const, schema: parseOutputSchema(config.outputFormat) } }
       : {}),
+    // Presence, as the request had it: a message field, absent from every client that predates it.
+    ...(config.clientInteractions !== undefined ? { clientInteractions: { questions: config.clientInteractions.questions === true } } : {}),
   };
 }
 
@@ -867,6 +910,10 @@ export type RuntimeServiceOptions = {
    *  (VERDANDI_CLAUDE_SIDECAR_EGRESS=restricted, egress.ts). Governs the `egress_restricted`
    *  capability and nothing else; absent is false. */
   egressRestricted?: boolean;
+  /** True only when index.ts found that this process can read a task's output file under the rules
+   * the kernel applies (`taskOutputReadable`). Governs the `task_output` capability and nothing else;
+   * absent is false. */
+  taskOutputRead?: boolean;
   /**
    * What the startup gate made of each CLI binary, and what to do about it. Absent means the default
    * `refuse` mode with the verdicts derived from `cachedClaudeCodeVersions` by the default policy
@@ -1019,6 +1066,7 @@ export function createRuntimeServiceImpl(
   // of this process, not of a handshake.
   const effectiveConfigDir = effectiveClaudeConfigDir(boundAccount, options.env ?? process.env);
   const egressRestricted = options.egressRestricted === true;
+  const taskOutputRead = options.taskOutputRead === true;
   const cliGate = options.cliGate ?? derivedCliGate(cachedClaudeCodeVersions, canRunSdkBundled);
   // From the version the gate already read and reports, so the handshake's steer promise and its CLI
   // report cannot name two different binaries. An unreadable version promises nothing.
@@ -1244,7 +1292,13 @@ export function createRuntimeServiceImpl(
     return entry;
   }
 
+  const taskRpc = createTaskRpc({ requireEntry });
+  const interactionRpc = createInteractionRpc({ requireEntry });
+
   return {
+    ...taskRpc,
+    ...interactionRpc,
+
     handshake(call: { request: { clientProtocolMajor: number } }, callback: (err: grpc.ServiceError | null, res?: unknown) => void) {
       try {
         if (call.request.clientProtocolMajor !== PROTOCOL_MAJOR) {
@@ -1277,7 +1331,7 @@ export function createRuntimeServiceImpl(
           // --user unit with IPAddressDeny= proves nothing), and `executable_sdk_bundled` only in a build
           // that can spawn the SDK's own CLI. The executable_* pair stays LAST, so a packaged build's list
           // is a checkout's minus its final entry (tests/packagedRuntime.test.ts).
-          capabilities: handshakeCapabilities({ egressRestricted, sdkBundledAvailable: canRunSdkBundled, cliMessageLifecycle }),
+          capabilities: handshakeCapabilities({ egressRestricted, sdkBundledAvailable: canRunSdkBundled, cliMessageLifecycle, taskOutputRead }),
           configurationProfiles: ['native', 'isolated'],
           permissionModes: [...PERMISSION_MODES],
           maxMessageBytes: BigInt(4 * 1024 * 1024),
@@ -1323,6 +1377,8 @@ export function createRuntimeServiceImpl(
         // session object -- and, in production, no Claude subprocess -- ever exists for a request
         // that was never going to be served correctly.
         validatePolicy(call.request.policy as ClaudeHostPolicyProto | undefined, { sdkBundledAvailable: canRunSdkBundled });
+        // After validatePolicy, which has refused any policy value the mapping below cannot read.
+        validateClientInteractions(call.request);
         // After validatePolicy, which settles the executable this session would spawn, and before the
         // factory: a refused CLI must not have a session, and so no subprocess, behind the refusal.
         requireCliAllowed(call.request.policy as ClaudeHostPolicyProto | undefined);
@@ -1428,10 +1484,18 @@ export function createRuntimeServiceImpl(
       }
     },
 
-    sendTurn(call: { request: { sessionId: string; commandId: string; text: string } }, callback: (err: grpc.ServiceError | null, res?: unknown) => void) {
+    sendTurn(
+      call: { request: { sessionId: string; commandId: string; text: string; clientMessageId?: string; typedByPerson?: boolean } },
+      callback: (err: grpc.ServiceError | null, res?: unknown) => void,
+    ) {
       try {
         const entry = requireEntry(call.request.sessionId);
-        const payloadHash = hashPayload({ text: call.request.text });
+        const { clientMessageId } = call.request;
+        // False and absent mean the same unstamped message and retain older clients' payload hashes.
+        const humanOrigin = call.request.typedByPerson === true ? { typedByPerson: true } : {};
+        // `clientMessageId` joins the hashed payload only when present, so a request without it hashes
+        // exactly as before the field existed, and the same command_id reused with another id conflicts.
+        const payloadHash = hashPayload({ text: call.request.text, ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin });
         const cached = entry.sendTurnIdempotency.check(call.request.commandId, payloadHash);
         if (cached.kind === 'conflict') {
           throw new SidecarError(ErrorCode.ERROR_CODE_IDEMPOTENCY_CONFLICT, `command_id ${call.request.commandId} reused with a different payload`);
@@ -1453,7 +1517,7 @@ export function createRuntimeServiceImpl(
         // would then wait forever for a turn_completed that can never arrive.
         let turnId: string;
         try {
-          ({ turnId } = entry.session.sendTurn(call.request.text));
+          ({ turnId } = entry.session.sendTurn(call.request.text, { ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin }));
         } catch (kernelErr) {
           const message = kernelErr instanceof Error ? kernelErr.message : String(kernelErr);
           throw new SidecarError(message === 'session is closed' ? ErrorCode.ERROR_CODE_SESSION_NOT_FOUND : ErrorCode.ERROR_CODE_TURN_ALREADY_ACTIVE, message);
@@ -1471,13 +1535,14 @@ export function createRuntimeServiceImpl(
      * nothing a retry could replay as success. Every refusal is the kernel's `SteerError`, mapped here.
      */
     steerTurn(
-      call: { request: { sessionId: string; commandId: string; expectedTurnId: string; clientMessageId: string; text: string } },
+      call: { request: { sessionId: string; commandId: string; expectedTurnId: string; clientMessageId: string; text: string; typedByPerson?: boolean } },
       callback: (err: grpc.ServiceError | null, res?: unknown) => void,
     ) {
       try {
         const entry = requireEntry(call.request.sessionId);
         const { expectedTurnId, clientMessageId, text } = call.request;
-        const payloadHash = hashPayload({ expectedTurnId, clientMessageId, text });
+        const humanOrigin = call.request.typedByPerson === true ? { typedByPerson: true } : {};
+        const payloadHash = hashPayload({ expectedTurnId, clientMessageId, text, ...humanOrigin });
         const cached = entry.steerTurnIdempotency.check(call.request.commandId, payloadHash);
         if (cached.kind === 'conflict') {
           throw new SidecarError(ErrorCode.ERROR_CODE_IDEMPOTENCY_CONFLICT, `command_id ${call.request.commandId} reused with a different payload`);
@@ -1488,7 +1553,7 @@ export function createRuntimeServiceImpl(
         }
         let turnId: string;
         try {
-          ({ turnId } = entry.session.steerTurn(expectedTurnId, clientMessageId, text));
+          ({ turnId } = entry.session.steerTurn(expectedTurnId, clientMessageId, text, humanOrigin));
         } catch (kernelErr) {
           if (kernelErr instanceof SteerError) {
             throw new SidecarError(STEER_ERROR_CODES[kernelErr.kind], kernelErr.message, kernelErr.reason);

@@ -91,6 +91,7 @@ test('canUseTool: a host allow is EXACTLY { behavior: allow, updatedInput: input
   // deepEqual on the whole object is the assertion: no updatedPermissions (echoing the suggestion
   // switched the spike's CLI session to acceptEdits), no toolUseID (the SDK adds its own), nothing else.
   assert.deepEqual(result, { behavior: 'allow', updatedInput: WRITE_INPUT });
+  assert.equal(result?.behavior === 'allow' && result.updatedInput, WRITE_INPUT, 'allow preserves the input object');
   assert.equal(Object.hasOwn(result as object, 'updatedPermissions'), false);
   assert.equal(events.at(-1)?.type, 'permission_resolved');
   assert.equal((events.at(-1) as { outcome: string }).outcome, 'allowed');
@@ -99,22 +100,29 @@ test('canUseTool: a host allow is EXACTLY { behavior: allow, updatedInput: input
 test('canUseTool: a host deny carries the host reason as the deny message', async () => {
   const { broker, events } = makeBroker();
   const answer = broker.buildCanUseTool()('Write', WRITE_INPUT, sensitiveWriteOptions(new AbortController().signal));
-  broker.resolve(requested(events)[0].permissionId, { allow: false, reason: 'not in this repository' });
+  broker.resolve(requested(events)[0].permissionId, { allow: false, reason: 'keep the file' });
 
-  assert.deepEqual(await answer, { behavior: 'deny', message: 'not in this repository' });
+  assert.deepEqual(await answer, { behavior: 'deny', message: 'keep the file' });
   assert.equal((events.at(-1) as { outcome: string }).outcome, 'denied');
 });
 
-test('canUseTool: a host deny with no reason, or a blank one, still gives the CLI a non-empty message', async () => {
-  for (const reason of [undefined, '', '   ']) {
+test('canUseTool: a deny with no reason, or a blank one, does not infer a denial source', async () => {
+  for (const reason of [undefined, '', '   ', '\t\n']) {
     const { broker, events } = makeBroker();
     const answer = broker.buildCanUseTool()('Write', WRITE_INPUT, sensitiveWriteOptions(new AbortController().signal));
     broker.resolve(requested(events)[0].permissionId, { allow: false, reason });
     const result = (await answer) as PermissionResult & { behavior: 'deny' };
     assert.equal(result.behavior, 'deny', `reason ${JSON.stringify(reason)}`);
-    assert.equal(result.message, 'denied by the host', `reason ${JSON.stringify(reason)}`);
+    assert.equal(result.message, 'This tool call was denied without a reason; no denial source was provided.', `reason ${JSON.stringify(reason)}`);
     assert.deepEqual(Object.keys(result).sort(), ['behavior', 'message'], 'no interrupt: a denied prompt fails that tool call, not the turn');
   }
+});
+
+test('canUseTool: a non-blank caller reason preserves surrounding whitespace', async () => {
+  const { broker, events } = makeBroker();
+  const answer = broker.buildCanUseTool()('Write', WRITE_INPUT, sensitiveWriteOptions(new AbortController().signal));
+  broker.resolve(requested(events)[0].permissionId, { allow: false, reason: ' keep the file\n' });
+  assert.deepEqual(await answer, { behavior: 'deny', message: ' keep the file\n' });
 });
 
 test('canUseTool: the SDK aborting the prompt denies it, emits expired, and a late host answer is a no-op', async () => {
@@ -126,7 +134,10 @@ test('canUseTool: the SDK aborting the prompt denies it, emits expired, and a la
   controller.abort();
 
   const result = await answer;
-  assert.equal(result?.behavior, 'deny');
+  assert.deepEqual(result, {
+    behavior: 'deny',
+    message: 'The host denied this tool call because its permission request expired (provider prompt aborted).',
+  });
   assert.equal(broker.pendingCount(), 0);
   const resolved = events.filter((e) => e.type === 'permission_resolved');
   assert.deepEqual(resolved, [{ type: 'permission_resolved', permissionId, outcome: 'expired' }]);
@@ -139,12 +150,51 @@ test('canUseTool: a prompt whose signal is already aborted is denied at once, an
   const controller = new AbortController();
   controller.abort();
   const result = await broker.buildCanUseTool()('Write', WRITE_INPUT, sensitiveWriteOptions(controller.signal));
-  assert.equal(result?.behavior, 'deny');
+  assert.deepEqual(result, {
+    behavior: 'deny',
+    message: 'The host denied this tool call because its permission request expired (provider prompt already aborted).',
+  });
   assert.equal(broker.pendingCount(), 0);
   assert.deepEqual(events, []);
 });
 
-test('canUseTool: failAllPending (interrupt, close) denies a waiting prompt exactly as it denies a hook request', async () => {
+test('host settlements explain the cause on both callback surfaces', async (t) => {
+  const messages = {
+    cancelled_by_interrupt: 'The host denied this tool call because the turn was interrupted.',
+    cancelled_by_session_close: 'The host denied this tool call because the session closed before permission was answered.',
+    provider_failed: 'The host denied this tool call because the provider failed before permission was answered.',
+  };
+  for (const surface of ['hook', 'canUseTool'] as const) {
+    for (const outcome of ['cancelled_by_interrupt', 'cancelled_by_session_close', 'provider_failed'] as const) {
+      await t.test(`${surface}: ${outcome}`, async () => {
+        const { broker, events } = makeBroker();
+        const controller = new AbortController();
+        const pending = surface === 'hook'
+          ? broker.buildHookMatcher().hooks[0](
+            { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, tool_use_id: 'toolu_hook', session_id: 's', transcript_path: '', cwd: '' } as never,
+            'toolu_hook',
+            { signal: controller.signal },
+          )
+          : broker.buildCanUseTool()('Write', WRITE_INPUT, sensitiveWriteOptions(controller.signal));
+        const { permissionId } = requested(events)[0];
+        assert.equal(broker.pendingCount(), 1);
+
+        broker.failAllPending(outcome);
+
+        assert.deepEqual(await pending, surface === 'hook' ? {
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: messages[outcome] },
+        } : { behavior: 'deny', message: messages[outcome] });
+        assert.equal(broker.pendingCount(), 0);
+        assert.deepEqual(events.filter((e) => e.type === 'permission_resolved').map((e) => e.outcome), [outcome]);
+        controller.abort();
+        assert.equal(broker.resolve(permissionId, { allow: true }), false);
+        assert.deepEqual(events.filter((e) => e.type === 'permission_resolved').map((e) => e.outcome), [outcome]);
+      });
+    }
+  }
+});
+
+test('failAllPending settles concurrent hook and provider prompt requests', async () => {
   for (const outcome of ['cancelled_by_interrupt', 'cancelled_by_session_close', 'provider_failed'] as const) {
     const { broker, events } = makeBroker();
     const controller = new AbortController();
@@ -152,7 +202,7 @@ test('canUseTool: failAllPending (interrupt, close) denies a waiting prompt exac
     const hook = broker.buildHookMatcher().hooks[0](
       { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, tool_use_id: 'toolu_hook', session_id: 's', transcript_path: '', cwd: '' } as never,
       'toolu_hook',
-      { signal: new AbortController().signal },
+      { signal: controller.signal },
     );
     assert.equal(broker.pendingCount(), 2);
 
@@ -161,12 +211,11 @@ test('canUseTool: failAllPending (interrupt, close) denies a waiting prompt exac
     assert.equal(broker.pendingCount(), 0);
     assert.equal((await prompt)?.behavior, 'deny', outcome);
     assert.equal(((await hook) as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision, 'deny', outcome);
-    assert.deepEqual(
-      events.filter((e) => e.type === 'permission_resolved').map((e) => (e as { outcome: string }).outcome),
-      [outcome, outcome],
-    );
     controller.abort();
-    assert.equal(events.filter((e) => e.type === 'permission_resolved').length, 2, 'an abort after the fail-close is inert');
+    assert.deepEqual(events.filter((e) => e.type === 'permission_resolved').map((e) => e.outcome), [outcome, outcome]);
+    for (const { permissionId } of requested(events)) {
+      assert.equal(broker.resolve(permissionId, { allow: true }), false);
+    }
   }
 });
 

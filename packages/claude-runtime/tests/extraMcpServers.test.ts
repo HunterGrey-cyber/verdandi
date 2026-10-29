@@ -158,13 +158,15 @@ test('a: unset leaves the options byte-identical, NATIVE and ISOLATED', () => {
     assert.equal(JSON.stringify(buildSessionOptions({ cwd: '/tmp/p', policy })), JSON.stringify(buildSessionOptions({ cwd: '/tmp/p', policy, extraMcpServers: undefined })));
   }
   // What "today's" means, pinned: ISOLATED states an empty server set and only the auto-memory
-  // switches; NATIVE states no MCP option and no environment at all.
+  // switches; NATIVE states no MCP option, and its environment is the base one plus the session-state
+  // switch every session gets.
   const isolated = policyToBaseOptions(ISOLATED, '/tmp/p', { baseEnv: BASE_ENV });
   assert.deepEqual(isolated.mcpServers, {});
   assert.deepEqual(isolated.settings, { autoMemoryEnabled: false });
   assert.equal(isolated.env?.ENABLE_CLAUDEAI_MCP_SERVERS, undefined);
   const native = policyToBaseOptions(NATIVE, '/tmp/p', { baseEnv: BASE_ENV });
-  assert.equal('mcpServers' in native || 'strictMcpConfig' in native || 'settings' in native || 'env' in native, false);
+  assert.equal('mcpServers' in native || 'strictMcpConfig' in native || 'settings' in native, false);
+  assert.deepEqual(native.env, { ...BASE_ENV, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' });
 });
 
 test('c: ISOLATED with the variable sees exactly the extra servers, strict, with the connectors off', () => {
@@ -182,7 +184,7 @@ test('NATIVE with the variable gets the servers, without strict and with its con
   assert.deepEqual(options.mcpServers, servers);
   assert.equal('strictMcpConfig' in options, false);
   assert.equal('settings' in options, false, 'no connector switch in a NATIVE session');
-  assert.equal('env' in options, false, 'the SDK default environment, as before');
+  assert.deepEqual(options.env, { ...BASE_ENV, ENABLE_CLAUDEAI_MCP_SERVERS: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, 'the environment untouched but for the session-state switch');
 });
 
 test('the switch is per session: an ISOLATED session with servers never changes what a NATIVE one is handed', () => {

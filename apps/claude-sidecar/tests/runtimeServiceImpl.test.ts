@@ -17,6 +17,7 @@ import {
 import { makeFakeSession } from './fakeSession.js';
 import {
   ErrorCode,
+  ErrorDetail,
   ReplayStart,
   ConfigurationProfile,
   PermissionMode,
@@ -27,6 +28,7 @@ import {
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
   InitCheck,
   CliPermissionMode,
+  TurnOrigin,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 // Every impl.createSession() call anywhere in this file starts a real PumpDriver 20ms-interval. As of
@@ -412,7 +414,7 @@ test('watchSessionEvents replays ring-buffer contents already present at connect
   impl.watchSessionEvents(call);
 
   assert.equal(written.length, 1);
-  assert.deepEqual((written[0] as { turnStarted?: { turnId: string } }).turnStarted, { turnId: 't1' });
+  assert.deepEqual((written[0] as { turnStarted?: { turnId: string } }).turnStarted, { turnId: 't1', origin: TurnOrigin.TURN_ORIGIN_UNSPECIFIED, cause: undefined });
 });
 
 test('watchSessionEvents destroys the stream with event_gap when after_sequence is older than the retained buffer', () => {
@@ -449,7 +451,7 @@ test('watchSessionEvents delivers a live event broadcast by PumpDriver to an act
   await new Promise((r) => setTimeout(r, 50));
 
   assert.equal(written.length, 1);
-  assert.deepEqual((written[0] as { turnStarted?: { turnId: string } }).turnStarted, { turnId: 't1' });
+  assert.deepEqual((written[0] as { turnStarted?: { turnId: string } }).turnStarted, { turnId: 't1', origin: TurnOrigin.TURN_ORIGIN_UNSPECIFIED, cause: undefined });
 });
 
 test('watchSessionEvents stops delivering to a subscriber once its stream fires cancelled', async () => {
@@ -583,7 +585,8 @@ test('the advertised capability list is exactly this, in this order', async () =
     // A host CLI version at or above STEER_MIN_CLI_VERSION, so the conditional `steer_turn` is in the
     // list; the next test pins the other side.
     { sdkDeclared: 'fake-sdk-cli-version', hostCli: '2.1.293' },
-    { sdkBundledAvailable: true },
+    // A process that can read a task's output file, so the conditional `task_output` is in the list.
+    { sdkBundledAvailable: true, taskOutputRead: true },
   );
   const res = await callResult<{ capabilities: string[] }>(impl.handshake.bind(impl), { clientProtocolMajor: 3 });
   assert.deepEqual(res.capabilities, [
@@ -660,6 +663,22 @@ test('the advertised capability list is exactly this, in this order', async () =
     // packaged; ahead of the executable pair.
     'steer_turn',
     'list_commands',
+    'system_prompt_preset',
+    // Added at protocol 3.22, each by the change that makes it work: turns the CLI starts by itself,
+    // with their causes, result attribution and the idle close; the human-origin stamp on typed input;
+    // subagent frames; background tasks and workflow progress; stopping one task and reading a shell's
+    // output (the latter only where the process can read it safely); AskUserQuestion as a typed
+    // interaction answered through ResolveInteraction. Ahead of the executable pair.
+    'cli_turns',
+    'human_origin',
+    'subagent_frames',
+    'background_tasks',
+    'workflow_progress',
+    'task_control',
+    'task_output',
+    'session_notices',
+    'conversation_reset',
+    'structured_questions_v1',
     'executable_host_cli',
     'executable_sdk_bundled',
   ]);
@@ -842,6 +861,7 @@ function protoPolicy(extra: Partial<ClaudeHostPolicyProto> = {}): ClaudeHostPoli
     providerPermissionPrompts: false,
     cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
     acceptUnsupportedCli: false,
+    perTaskStop: false,
     ...extra,
   };
 }
@@ -1143,5 +1163,61 @@ test('an effort level the SDK does not define is refused before a session exists
   assert.throws(() => validateEffort({ cwd: '/tmp/p', policy: undefined, effort: 'undefined' }), /effort must be one of/);
   for (const ok of [undefined, '', 'low', 'medium', 'high', 'xhigh', 'max']) {
     assert.doesNotThrow(() => validateEffort({ cwd: '/tmp/p', policy: undefined, effort: ok }));
+  }
+});
+
+test('preset invalid configuration never builds a session', async () => {
+  let factoryCount = 0;
+  const impl = createRuntimeServiceImpl(new SessionRegistry(), () => {
+    factoryCount++;
+    const made = makeFakeSession();
+    allCreatedFakeSessions.push(made.session);
+    return made.session;
+  }, { sdkDeclared: 'fake-sdk-cli-version', hostCli: 'fake-cli-version' });
+  const cases: Array<{ fields: Partial<ClaudeSessionConfigLike>; reason: string; message?: string }> = [
+    { fields: { systemPrompt: 'replacement', systemPromptPreset: {} }, reason: 'system_prompt_conflict' },
+    { fields: { systemPrompt: '', systemPromptPreset: {} }, reason: 'system_prompt_conflict' },
+    { fields: { systemPrompt: ' ', systemPromptPreset: { append: '' } }, reason: 'system_prompt_conflict' },
+    { fields: { systemPromptPreset: { append: '' } }, reason: 'system_prompt_append_blank' },
+    { fields: { systemPromptPreset: { append: ' \n' } }, reason: 'system_prompt_append_blank' },
+    { fields: { systemPrompt: '' }, reason: 'system_prompt_blank',
+      message: "system_prompt was set but is blank -- omit both prompt fields for the Agent SDK's minimal prompt, or use system_prompt_preset for Claude Code's system prompt" },
+  ];
+  for (const { fields, reason, message } of cases) {
+    await assert.rejects(() => callResult(impl.createSession.bind(impl), { cwd: '/tmp', ...fields }),
+      (err: grpc.ServiceError) => {
+        const detail = err.metadata.get('grpc-status-details-bin')[0];
+        assert.ok(Buffer.isBuffer(detail));
+        const decoded = ErrorDetail.decode(detail);
+        assert.equal(decoded.code, ErrorCode.ERROR_CODE_INVALID_CONFIGURATION);
+        assert.equal(decoded.reason, reason);
+        if (message !== undefined) assert.equal(decoded.message, message);
+        return true;
+      });
+    assert.equal(factoryCount, 0);
+  }
+});
+
+test('preset mapping accepts absent append and preserves append whitespace', async () => {
+  for (const preset of [{}, { append: ' panel note ' }]) {
+    let seen: ClaudeSessionConfigLike | undefined;
+    const impl = createRuntimeServiceImpl(new SessionRegistry(), (config) => {
+      seen = config;
+      const made = makeFakeSession();
+      allCreatedFakeSessions.push(made.session);
+      return made.session;
+    }, { sdkDeclared: 'fake-sdk-cli-version', hostCli: 'fake-cli-version' });
+    await callResult(impl.createSession.bind(impl), { cwd: '/tmp', systemPromptPreset: preset });
+    assert.deepEqual(buildKernelSessionConfig(seen!).systemPromptPreset, preset);
+  }
+});
+
+test('buildKernelSessionConfig refuses conflicting prompt forms before mapping options', () => {
+  for (const systemPrompt of ['', 'replacement']) {
+    assert.throws(() => buildKernelSessionConfig({ cwd: '/tmp', policy: undefined, systemPrompt, systemPromptPreset: {} }),
+      (err: unknown) => {
+        assert.equal((err as { reason: string }).reason, 'system_prompt_conflict');
+        return true;
+      });
   }
 });

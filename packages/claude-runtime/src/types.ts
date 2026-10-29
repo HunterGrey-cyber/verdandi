@@ -90,6 +90,10 @@ export type ClaudeHostPolicy = {
    *   still asks the host about every call first. Only valid with `permissions: 'interactive'` and
    *   without `permissionModeSwitchable` -- see `cliPermissionModeProblem`. */
   cliPermissionMode?: CliPermissionMode;
+  /** Opt-in: the host can stop one background task at a time (`stopTask`), so the CLI is told so
+   * (`perTaskStopAffordance`) and an interrupt then spares background agents and workflows.
+   * `undefined` and `false` change nothing. See the proto field `per_task_stop`. */
+  perTaskStop?: boolean;
 };
 
 /** See `ClaudeHostPolicy.cliPermissionMode`. */
@@ -172,14 +176,13 @@ export type ClaudeSessionConfig = {
    */
   permissionHookTimeoutSeconds?: number;
   /**
-   * SDK `Options.systemPrompt` as a plain string: a FULL REPLACEMENT of Claude Code's own system
-   * prompt, never an append. `undefined` -- the shipped default -- leaves Claude Code's default
-   * prompt in force, which is what every session got before this field existed.
-   *
-   * Presence is the test, not truthiness: the sidecar refuses an empty string before a session
-   * exists, and a kernel consumer that passes `''` gets exactly what it asked for.
+   * A full replacement prompt as a plain string. With neither prompt field present the SDK uses
+   * its minimal prompt. The sidecar refuses blank replacements; direct kernel calls preserve them.
+   * Both prompt fields present are refused before constructing SDK options.
    */
   systemPrompt?: string;
+  /** Explicit Claude Code system prompt preset; an absent append requests the unmodified preset. */
+  systemPromptPreset?: { append?: string };
   /**
    * SDK `Options.outputFormat`, verbatim in the SDK's own shape. When set, the provider validates
    * the turn's answer against `schema` and returns it as the result message's `structured_output`,
@@ -195,6 +198,30 @@ export type ClaudeSessionConfig = {
    * DEFAULT_ACCOUNT_INFO_TIMEOUT_MS. A test seam first; production keeps the default.
    */
   accountInfoTimeoutMs?: number;
+  /**
+   * Interactions the host shows and answers itself. `questions: true` asks for the model's
+   * structured questions (AskUserQuestion) as interactions only the user answers; the sidecar refuses
+   * it until that path exists (`interactionOptInProblem`). `undefined` -- what every caller that
+   * predates the field passes -- changes nothing.
+   */
+  clientInteractions?: ClientInteractions;
+};
+
+/** See `ClaudeSessionConfig.clientInteractions` and the proto message of the same name. */
+export type ClientInteractions = { questions: boolean };
+
+/** What `sendTurn` is told about its message beside the text. */
+export type SendTurnOptions = {
+  /** The host's own id for the message, named back when the CLI reports the message's fate. */
+  clientMessageId?: string;
+  /** A person typed the text (the proto's `typed_by_person`). */
+  typedByPerson?: boolean;
+};
+
+/** What `steerTurn` is told about its message beside the text and the ids. */
+export type SteerTurnOptions = {
+  /** A person typed the text (the proto's `typed_by_person`). */
+  typedByPerson?: boolean;
 };
 
 /**
@@ -350,14 +377,18 @@ export type ClaudeRuntimeEvent =
       /** Set by the session, like `effectiveToolOptions`, and on the same events. */
       effectiveSessionOptions?: EffectiveSessionOptions;
     }
-  | { type: 'turn_started'; turnId: string }
+  /** `origin` and `cause` are stated by a session that tracks who started each turn; absent, the wire
+   * says UNSPECIFIED. `cause` is only ever stated for an `origin` of `cli`. */
+  | { type: 'turn_started'; turnId: string; origin?: TurnOrigin; cause?: TurnCause }
   /** `messageId` is the Claude API message id the text belongs to (see TextDelta.message_id in the
    * proto): a change of id between two deltas is a new assistant message. Absent when the provider
    * reported none. */
-  | { type: 'text_delta'; turnId: string; text: string; messageId?: string }
-  | { type: 'thinking_delta'; turnId: string; text: string; messageId?: string }
-  | { type: 'tool_call_started'; turnId: string; toolUseId: string; name: string; input: unknown }
-  | { type: 'tool_call_completed'; turnId: string; toolUseId: string; content: unknown; isError: boolean }
+  | { type: 'text_delta'; turnId: string; text: string; messageId?: string; parentToolUseId?: string }
+  | { type: 'thinking_delta'; turnId: string; text: string; messageId?: string; parentToolUseId?: string }
+  /** `parentToolUseId` on this and the next three events names the Agent tool call a subagent's frame
+   * belongs under; absent for the main thread. */
+  | { type: 'tool_call_started'; turnId: string; toolUseId: string; name: string; input: unknown; parentToolUseId?: string }
+  | { type: 'tool_call_completed'; turnId: string; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
   | { type: 'usage_updated'; totalCostUsd: number; numTurns: number }
   /** `origin` says what asked (see PermissionOrigin). The `provider*` fields are the CLI's own words
    * for a `provider_prompt`, verbatim, each absent when the CLI gave none; a `hook` request never
@@ -384,7 +415,18 @@ export type ClaudeRuntimeEvent =
       providerMatchedAskRule?: ProviderMatchedAskRule;
     }
   | { type: 'permission_resolved'; permissionId: string; outcome: PermissionOutcome }
-  | ({ type: 'turn_completed'; turnId: string; outcome: TurnOutcome; resultText: string; isError: boolean; stopReason: string | null } & TurnResultDetail)
+  | ({
+      type: 'turn_completed';
+      turnId: string;
+      outcome: TurnOutcome;
+      resultText: string;
+      isError: boolean;
+      stopReason: string | null;
+      /** The closing result's `origin.kind`, verbatim, when it had one. */
+      originKind?: string;
+      /** The closing result's `num_turns`, when it reported one. */
+      numTurns?: number;
+    } & TurnResultDetail)
   | { type: 'session_closed'; reason: SessionCloseReason }
   /** A `setPermissionMode` the CLI acknowledged. `permissions` is the host-level mode now on the
    * gate, `permissionMode` the provider-level one the CLI accepted (SessionReady's vocabulary), and
@@ -437,4 +479,182 @@ export type ClaudeRuntimeEvent =
    * lands here -- diagnostic only, never thrown, never silently dropped. `kind`/`subtype` mirror
    * the raw message's own `type`/`subtype` fields (when present) so a human can correlate this
    * against `sdk.d.ts` without this package needing to re-export the raw payload verbatim. */
-  | { type: 'provider_notice'; kind: string; subtype: string | null; raw: unknown };
+  | { type: 'provider_notice'; kind: string; subtype: string | null; raw: unknown }
+  /** A more specific cause for a turn already announced, read from a frame that came later. */
+  | { type: 'turn_cause_updated'; turnId: string; cause: TurnCause }
+  /** The CLI ran a cycle of its own, for `cause`, inside the open turn `turnId`. */
+  | { type: 'cli_cycle_started'; turnId: string; cause: TurnCause }
+  /** The whole background-task roster; replaces any roster held for the session. */
+  | { type: 'background_tasks_changed'; tasks: BackgroundTask[] }
+  /** One CLI frame about one background task. */
+  | ({ type: 'task_event' } & TaskEventPayload)
+  /** A notice the CLI's own terminal shows. */
+  | ({ type: 'session_notice' } & SessionNoticePayload)
+  /** The conversation was cleared; the session goes on under a new provider conversation id. */
+  | { type: 'conversation_reset'; newConversationId: string; trigger?: string }
+  /** The model asked the user a question. `questions` is absent when the question could not be offered
+   * (`unsupportedReason` then says why). */
+  | { type: 'interaction_requested'; interactionId: string; toolUseId: string; questions?: InteractionQuestion[]; unsupportedReason?: string }
+  /** How an interaction ended; exactly one per `interaction_requested`. */
+  | { type: 'interaction_resolved'; interactionId: string; outcome: InteractionOutcome; answers?: ShownAnswer[]; reason?: string };
+
+/** An `interaction_requested` event on its own, as the interaction port lists the pending ones. */
+export type InteractionRequestedEvent = Extract<ClaudeRuntimeEvent, { type: 'interaction_requested' }>;
+/** An `interaction_resolved` event on its own. */
+export type InteractionResolvedEvent = Extract<ClaudeRuntimeEvent, { type: 'interaction_resolved' }>;
+
+/** Who started a turn. */
+export type TurnOrigin = 'client' | 'follow_up' | 'cli';
+
+export type TurnCauseKind = 'task' | 'scheduled' | 'peer' | 'other' | 'unknown';
+
+/** Why the CLI started a turn: facts read from its frames. Which fields are set depends on `kind`. */
+export type TurnCause = {
+  kind: TurnCauseKind;
+  taskId?: string;
+  taskKind?: TaskKind;
+  taskStatus?: TaskStatus;
+  description?: string;
+  summary?: string;
+  peerName?: string;
+  /** A peer's message body. */
+  text?: string;
+  wakeupSource?: string;
+  /** When a scheduled prompt was due, milliseconds since the Unix epoch. */
+  scheduledForMs?: number;
+  scheduleReason?: string;
+  cronId?: string;
+  /** The scheduled prompt itself. */
+  prompt?: string;
+};
+
+export type TaskKind = 'shell' | 'monitor' | 'local_agent' | 'workflow' | 'other';
+
+export type TaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'killed';
+
+export type TaskEdge = 'started' | 'progress' | 'updated' | 'notified';
+
+/** One background task as the CLI's roster lists it. */
+export type BackgroundTask = {
+  taskId: string;
+  runId?: string;
+  kind: TaskKind;
+  /** The CLI's own type word, verbatim. */
+  taskType: string;
+  description: string;
+  subagentType?: string;
+  parentTaskId?: string;
+  toolUseId?: string;
+  ambient: boolean;
+  workflowName?: string;
+};
+
+/** Token and time spent by a background task so far. */
+export type TaskUsage = { totalTokens: number; toolUses: number; durationMs: number };
+
+export type WorkflowPhase = { index: number; title: string; kind: string };
+
+export type WorkflowAgent = {
+  index: number;
+  label: string;
+  phaseIndex: number;
+  state: string;
+  model?: string;
+  agentType?: string;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+  error?: string;
+};
+
+export type WorkflowProgress = { phases: WorkflowPhase[]; agents: WorkflowAgent[] };
+
+/** A `task_event` without its `type` tag. */
+export type TaskEventPayload = {
+  edge: TaskEdge;
+  taskId: string;
+  runId?: string;
+  task?: BackgroundTask;
+  status?: TaskStatus;
+  summary?: string;
+  lastToolName?: string;
+  usage?: TaskUsage;
+  /** When the task ended, milliseconds since the Unix epoch. */
+  endTimeMs?: number;
+  error?: string;
+  isBackgrounded?: boolean;
+  reason?: string;
+  outputFile?: string;
+  /** On progress edges of workflow tasks only. */
+  workflowProgress?: WorkflowProgress;
+};
+
+export type SessionNoticeKind =
+  | 'api_retry'
+  | 'rate_limit'
+  | 'model_fallback'
+  | 'model_refusal'
+  | 'compacting'
+  | 'compact_boundary'
+  | 'informational'
+  | 'notification'
+  | 'peer_hold';
+
+export type NoticeLevel = 'info' | 'notice' | 'suggestion' | 'warning';
+
+export type RateLimitStatus = 'allowed' | 'allowed_warning' | 'rejected';
+
+export type PeerHoldState = 'held' | 'released' | 'dropped';
+
+/** A `session_notice` without its `type` tag. `content` is only ever the CLI's own text. */
+export type SessionNoticePayload = {
+  kind: SessionNoticeKind;
+  level: NoticeLevel;
+  content?: string;
+  attempt?: number;
+  maxRetries?: number;
+  retryDelayMs?: number;
+  errorStatus?: number;
+  fromModel?: string;
+  toModel?: string;
+  preTokens?: number;
+  postTokens?: number;
+  rateStatus?: RateLimitStatus;
+  /** When the rate limit resets, milliseconds since the Unix epoch. */
+  resetsAtMs?: number;
+  utilization?: number;
+  trigger?: string;
+  peerName?: string;
+  holdState?: PeerHoldState;
+  /** The CLI's word for why an API call is being retried. */
+  errorKind?: string;
+  /** A model refusal's fallback scope, `session` or `local`; absent means `session`. */
+  fallbackScope?: string;
+};
+
+export type InteractionQuestionOption = { label: string; description: string; preview?: string };
+
+/** One question of a structured question set, as the model asked it. */
+export type InteractionQuestion = { question: string; header: string; multiSelect: boolean; options: InteractionQuestionOption[] };
+
+export type InteractionOutcome =
+  | 'answered'
+  | 'declined'
+  | 'chat_requested'
+  | 'interrupted'
+  | 'expired'
+  | 'session_closed'
+  | 'provider_failed'
+  | 'host_refused';
+
+/** What was sent to the model for one answered question. */
+export type ShownAnswer = { questionIndex: number; answer: string; notes?: string };
+
+/** The tail of a background task's output. */
+export type TaskOutputResult = {
+  output: Uint8Array;
+  /** The whole output's size in bytes. */
+  totalBytes: number;
+  /** `output` is only the tail of it. */
+  truncated: boolean;
+};

@@ -95,6 +95,6 @@ so it is a deliberate edit that takes the new checksums from the Node release's 
 | `supported_cli_range` | `{ "min", "max_exclusive" }` for the host `claude` CLI. |
 | `tested_cli_versions` | CLI versions a real-CLI run has exercised, in numeric version order. |
 | `executables` | The executable sources this build serves. |
-| `capabilities` | The handshake capability list for this build, in wire order, from the same source. `egress_restricted` is never listed here: it is proven by a running process, not by a build. |
+| `capabilities` | The handshake capability list for this build, in wire order, from the same source. `egress_restricted` is never listed here: it is proven by a running process, not by a build; nor is `steer_turn`, which needs the host CLI's version that only a started process probes. `task_output` is listed exactly when the runtime this artifact carries can open a file without following a symbolic link and knows its uid, asked the same way a started process asks it, so the report states it as the process would. |
 
 The text and the JSON are produced from one set of facts, and a test compares them field by field.

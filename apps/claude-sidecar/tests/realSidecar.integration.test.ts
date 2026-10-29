@@ -94,10 +94,13 @@ test('real sidecar: a plain-text turn completes with outcome completed, observed
           providerPermissionPrompts: false,
           cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
           acceptUnsupportedCli: false,
+          perTaskStop: false,
         },
         fork: false,
         outputFormat: undefined, // Plain text, without a structured-output schema.
         awaitAccountIdentity: false,
+        systemPromptPreset: undefined,
+        clientInteractions: undefined,
       };
       const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 
@@ -175,10 +178,13 @@ test('real sidecar: a denied real tool call is genuinely blocked, and CloseSessi
           providerPermissionPrompts: false,
           cliPermissionMode: CliPermissionMode.CLI_PERMISSION_MODE_UNSPECIFIED,
           acceptUnsupportedCli: false,
+          perTaskStop: false,
         },
         fork: false,
         outputFormat: undefined, // Plain text, without a structured-output schema.
         awaitAccountIdentity: false,
+        systemPromptPreset: undefined,
+        clientInteractions: undefined,
       };
       const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 

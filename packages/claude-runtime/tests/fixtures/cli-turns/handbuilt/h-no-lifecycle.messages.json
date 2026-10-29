@@ -1,0 +1,67 @@
+{
+  "manifest": {
+    "scenario": "h-no-lifecycle",
+    "cli_version": "2.1.311",
+    "sdk_version": "0.3.252",
+    "verdandi_revision": "handbuilt",
+    "env_names": [],
+    "variant": null,
+    "stamped": true,
+    "handbuilt": true,
+    "source": "docs/superpowers/specs/2026-10-27-claude-cli-turns-design.md Open point 3 fallback: a stamped send answered by a CLI that declares no msg_lifecycle_v1 and sends no command_lifecycle frames; init and result shapes as recorded in c01"
+  },
+  "lines": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "type": "user",
+        "uuid": "host-1",
+        "message": {
+          "role": "user",
+          "content": "prompt"
+        }
+      }
+    },
+    {
+      "i": 1,
+      "from": "cli",
+      "message": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "session-1",
+        "tools": [],
+        "capabilities": []
+      }
+    },
+    {
+      "i": 2,
+      "from": "cli",
+      "message": {
+        "type": "assistant",
+        "parent_tool_use_id": null,
+        "message": {
+          "id": "answer-1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "i": 3,
+      "from": "cli",
+      "message": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "result": "done",
+        "stop_reason": "end_turn"
+      }
+    }
+  ]
+}

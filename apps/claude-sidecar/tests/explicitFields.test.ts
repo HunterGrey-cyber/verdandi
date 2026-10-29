@@ -32,6 +32,7 @@ import {
   PermissionMode,
   PersistenceMode,
   RuntimeServiceClient,
+  SendTurnRequest,
   SessionEvent,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
   type SessionReady,
@@ -498,7 +499,7 @@ test('await_account_identity over a real socket: the session handed out stays us
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(sessions[0]!.closeReason(), undefined, 'the answered call did not close its session');
     await new Promise<void>((resolve, reject) =>
-      c.sendTurn({ sessionId: created.sessionId, commandId: 'c1', text: 'go' }, (err) => (err ? reject(err) : resolve())),
+      c.sendTurn(SendTurnRequest.fromPartial({ sessionId: created.sessionId, commandId: 'c1', text: 'go' }), (err) => (err ? reject(err) : resolve())),
     );
     assert.equal(await sdk.last.nextUserMessage(), 'go');
 
@@ -649,4 +650,25 @@ test('every frozen client\'s CreateSession is accepted as it is, and refused wit
     }
     assert.equal(s.sessions.length, 1, `${name}: no refused request built a session`);
   }
+});
+
+// ---- (f) protocol 3.22's request fields, from clients that predate them -----------------------------------------
+
+test('every frozen client\'s request decodes with the 3.22 request fields at their quiet values, which ask for nothing', () => {
+  let creates = 0;
+  let sends = 0;
+  for (const [name, bytes] of [...goldenRequests(), ...completionGoldenRequests()]) {
+    if (name.includes('create')) {
+      const request = CreateSessionRequest.decode(bytes);
+      assert.equal(request.clientInteractions, undefined, `${name}: client_interactions`);
+      assert.equal(request.policy?.perTaskStop, false, `${name}: per_task_stop`);
+      creates += 1;
+    } else if (name.includes('send_turn')) {
+      const request = SendTurnRequest.decode(bytes);
+      assert.equal(request.clientMessageId, undefined, `${name}: client_message_id`);
+      assert.equal(request.typedByPerson, false, `${name}: typed_by_person`);
+      sends += 1;
+    }
+  }
+  assert.ok(creates >= 5 && sends >= 3, `found ${creates} golden CreateSession and ${sends} golden SendTurn requests`);
 });

@@ -5,6 +5,7 @@
 //! here rather than by a host. The TypeScript half is `apps/claude-sidecar/tests/protocolSource.test.ts`.
 
 use claude_runtime_protocol::*;
+use prost::Message;
 use serde_json::Value;
 
 fn source() -> Value {
@@ -112,4 +113,84 @@ fn the_generated_types_are_still_reachable_beside_the_constants() {
     // The constants are additive: the prost module keeps its place and its names.
     let response = v1::HandshakeResponse { protocol_major: PROTOCOL_MAJOR, protocol_minor: PROTOCOL_MINOR, ..Default::default() };
     assert_eq!(response.protocol_minor, PROTOCOL_MINOR);
+}
+
+#[test]
+fn preset_presence_survives_wire_round_trip() {
+    // The preset arrived at 21; later minors keep it.
+    assert!(PROTOCOL_MINOR >= 21);
+    assert_eq!(CAP_SYSTEM_PROMPT_PRESET, "system_prompt_preset");
+    let presets = [
+        None,
+        Some(v1::SystemPromptPreset { append: None }),
+        Some(v1::SystemPromptPreset { append: Some("panel note".into()) }),
+    ];
+    let mut wires = Vec::new();
+    for preset in presets {
+        let request = v1::CreateSessionRequest { system_prompt_preset: preset.clone(), ..Default::default() };
+        let wire = request.encode_to_vec();
+        let decoded = v1::CreateSessionRequest::decode(wire.as_slice()).unwrap();
+        assert_eq!(decoded.system_prompt_preset, preset);
+        assert_eq!(decoded.system_prompt, None);
+        wires.push(wire);
+    }
+    assert_ne!(wires[0], wires[1]);
+    assert_ne!(wires[1], wires[2]);
+    assert_ne!(wires[0], wires[2]);
+}
+
+#[test]
+fn protocol_3_22_messages_compile_and_survive_a_round_trip() {
+    use v1::session_event::Event;
+    assert_eq!(PROTOCOL_MINOR, 22);
+    let events = [
+        Event::TurnCauseUpdated(v1::TurnCauseUpdated {
+            turn_id: "t1".into(),
+            cause: Some(v1::TurnCause { kind: v1::TurnCauseKind::Task as i32, task_id: Some("b1".into()), ..Default::default() }),
+        }),
+        Event::CliCycleStarted(v1::CliCycleStarted { turn_id: "t1".into(), cause: None }),
+        Event::BackgroundTasksChanged(v1::BackgroundTasksChanged {
+            tasks: vec![v1::BackgroundTask { task_id: "b1".into(), kind: v1::TaskKind::Shell as i32, ..Default::default() }],
+        }),
+        Event::TaskEvent(v1::TaskEvent {
+            edge: v1::TaskEdge::Notified as i32,
+            task_id: "b1".into(),
+            status: Some(v1::TaskStatus::Killed as i32),
+            workflow_progress: Some(v1::WorkflowProgress { phases: vec![], agents: vec![v1::WorkflowAgent { index: 1, ..Default::default() }] }),
+            ..Default::default()
+        }),
+        Event::SessionNotice(v1::SessionNotice {
+            kind: v1::SessionNoticeKind::PeerHold as i32,
+            level: v1::NoticeLevel::Warning as i32,
+            hold_state: Some(v1::PeerHoldState::Dropped as i32),
+            ..Default::default()
+        }),
+        Event::ConversationReset(v1::ConversationReset { new_conversation_id: "c2".into(), trigger: None }),
+        Event::InteractionRequested(v1::InteractionRequested {
+            interaction_id: "i1".into(),
+            kind: v1::InteractionKind::Question as i32,
+            payload: Some(v1::interaction_requested::Payload::Questions(v1::QuestionSet { questions: vec![] })),
+            ..Default::default()
+        }),
+        Event::InteractionResolved(v1::InteractionResolved {
+            interaction_id: "i1".into(),
+            outcome: v1::InteractionOutcome::HostRefused as i32,
+            ..Default::default()
+        }),
+    ];
+    for event in events {
+        let sent = v1::SessionEvent { session_id: "s".into(), event: Some(event), ..Default::default() };
+        let decoded = v1::SessionEvent::decode(sent.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, sent);
+    }
+    assert_eq!(v1::ErrorCode::TaskNotFound as i32, 16);
+    assert_eq!(v1::ErrorCode::TaskOutputUnavailable as i32, 17);
+    assert_eq!(v1::ErrorCode::InteractionNotFound as i32, 30);
+    assert_eq!(v1::ErrorCode::InteractionAnswerRefused as i32, 31);
+    let request = v1::SendTurnRequest { client_message_id: Some("m1".into()), typed_by_person: true, ..Default::default() };
+    assert_eq!(v1::SendTurnRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
+    let stop = v1::StopTaskRequest { session_id: "s".into(), command_id: "c".into(), task_id: "b1".into() };
+    assert_eq!(v1::StopTaskRequest::decode(stop.encode_to_vec().as_slice()).unwrap(), stop);
+    let output = v1::GetTaskOutputResponse { output: vec![0xe2, 0x82], total_bytes: 2, truncated: true };
+    assert_eq!(v1::GetTaskOutputResponse::decode(output.encode_to_vec().as_slice()).unwrap(), output);
 }

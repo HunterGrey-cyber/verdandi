@@ -8,6 +8,7 @@ import { SteerError, type ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
 import { SessionRegistry, type MinimalKernelSession } from '../src/sessionRegistry.js';
 import { createRuntimeServiceImpl } from '../src/runtimeServiceImpl.js';
 import { startSidecar } from '../src/lifecycle.js';
+import { PROTOCOL_MINOR } from '../src/generated/protocolConstants.js';
 import { extractTurnId, translateEvent } from '../src/eventTranslation.js';
 import { makeFakeSession } from './fakeSession.js';
 import {
@@ -163,7 +164,7 @@ test('over a real UDS with the generated client: the handshake lists steer_turn 
     const handshake = await promisify<{ capabilities: string[]; protocolMinor: number }>(client.handshake.bind(client), { clientProtocolMajor: 3 });
     assert.ok(handshake.capabilities.includes('steer_turn'));
     assert.ok(handshake.capabilities.includes('list_commands'));
-    assert.equal(handshake.protocolMinor, 20);
+    assert.equal(handshake.protocolMinor, PROTOCOL_MINOR);
 
     const { sessionId } = await promisify<{ sessionId: string }>(client.createSession.bind(client), { cwd: '/tmp', policy: undefined });
     const watch = client.watchSessionEvents({ sessionId, start: ReplayStart.REPLAY_START_AVAILABLE_HISTORY });

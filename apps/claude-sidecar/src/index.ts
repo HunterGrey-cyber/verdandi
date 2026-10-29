@@ -1,4 +1,4 @@
-import { createSession, describeExtraMcpServers, EXTRA_MCP_SERVERS_VARIABLE, resolveExtraMcpServers, type ClaudeAccount } from '@verdandi/claude-runtime';
+import { createSession, describeExtraMcpServers, EXTRA_MCP_SERVERS_VARIABLE, resolveExtraMcpServers, taskOutputReadable, type ClaudeAccount } from '@verdandi/claude-runtime';
 import { resolveAccount } from './legacyAccountName.js';
 import { startSidecar } from './lifecycle.js';
 import {
@@ -205,6 +205,8 @@ async function main(): Promise<void> {
       // the sessions really have. Undefined (VERDANDI_CLAUDE_ACCOUNT unset) reports UNPINNED.
       account,
       egressRestricted: egressMode === 'restricted',
+      // Asked of this runtime once, the same way --version --json asks it.
+      taskOutputRead: taskOutputReadable(),
     },
   });
 }

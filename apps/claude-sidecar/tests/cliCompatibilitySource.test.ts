@@ -9,6 +9,6 @@ test('the Claude sidecar answers exactly what the shared sdk surface answers', (
   const wording = { strictSwitch: 'VERDANDI_CLAUDE_SIDECAR_STRICT_CLI_VERSION', dataFile: 'apps/claude-sidecar/src/cliCompatibility.ts' };
   for (const strict of [false, true]) for (const v of CORPUS)
     assert.deepEqual(classifyCliVersion(v, { strict }), shared(v, { surface: 'sdk', wording, policy: { strict } }), v);
-  assert.deepEqual([...TESTED_CLI_VERSIONS], ['2.1.267', '2.1.252', '2.1.270', '2.1.283', '2.1.292']);
+  assert.deepEqual([...TESTED_CLI_VERSIONS], ['2.1.267', '2.1.252', '2.1.270', '2.1.283', '2.1.292', '2.1.311']);
   assert.equal(MIN_SUPPORTED_CLI_VERSION, '2.1.252'); assert.equal(MAX_SUPPORTED_CLI_VERSION_EXCLUSIVE, '3.0.0');
 });

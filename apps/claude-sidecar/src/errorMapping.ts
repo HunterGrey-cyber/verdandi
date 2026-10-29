@@ -33,6 +33,12 @@ const STATUS_CODE_MAP: Record<number, grpc.status> = {
   [ErrorCode.ERROR_CODE_DEADLINE_EXCEEDED]: grpc.status.DEADLINE_EXCEEDED,
   [ErrorCode.ERROR_CODE_TURN_MISMATCH]: grpc.status.FAILED_PRECONDITION,
   [ErrorCode.ERROR_CODE_STEER_UNAVAILABLE]: grpc.status.FAILED_PRECONDITION,
+  // An unknown id is NOT_FOUND, as for sessions and permissions; output that cannot be read is a state of
+  // the task, not of the request; an answer that breaks a rule is a bad argument, as INVALID_CONFIGURATION is.
+  [ErrorCode.ERROR_CODE_TASK_NOT_FOUND]: grpc.status.NOT_FOUND,
+  [ErrorCode.ERROR_CODE_TASK_OUTPUT_UNAVAILABLE]: grpc.status.FAILED_PRECONDITION,
+  [ErrorCode.ERROR_CODE_INTERACTION_NOT_FOUND]: grpc.status.NOT_FOUND,
+  [ErrorCode.ERROR_CODE_INTERACTION_ANSWER_REFUSED]: grpc.status.INVALID_ARGUMENT,
   [ErrorCode.UNRECOGNIZED]: grpc.status.INTERNAL,
 };
 

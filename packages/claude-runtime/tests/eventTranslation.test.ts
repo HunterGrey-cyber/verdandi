@@ -109,11 +109,10 @@ test('translateMessage: an unrecognized top-level message type produces exactly 
   assert.equal(events[0].type, 'provider_notice');
 });
 
-test('translateMessage: an assistant message with no turn in progress produces a provider_notice instead of throwing', () => {
+test('translateMessage: an assistant message with no attributed turn keeps its text under an empty turn id', () => {
   const message = { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } } as unknown as SDKMessage;
   const events = translateMessage(message, { currentTurnId: undefined });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, 'provider_notice');
+  assert.deepEqual(events, [{ type: 'text_delta', turnId: '', text: 'hi' }]);
 });
 
 // --- partial streaming (2026-09-12) --------------------------------------------------------------
@@ -162,6 +161,7 @@ test('partial streaming: the completed assistant message no longer re-emits text
   const assistant = {
     type: 'assistant',
     message: {
+      id: 'msg_streamed',
       content: [
         { type: 'text', text: 'Hello there' },
         { type: 'thinking', thinking: 'pondering' },
@@ -171,17 +171,17 @@ test('partial streaming: the completed assistant message no longer re-emits text
   } as never;
   // Tool calls still come from the assistant message -- their complete input JSON is only reliable
   // there -- so exactly one event survives, and it is the tool call.
-  assert.deepEqual(translateMessage(assistant, PARTIAL_CTX), [
+  assert.deepEqual(translateMessage(assistant, { ...PARTIAL_CTX, streamMessageId: 'msg_streamed' }), [
     { type: 'tool_call_started', turnId: 't1', toolUseId: 'toolu_1', name: 'Bash', input: { command: 'echo hi' } },
   ]);
   // Without partials the same message is the ONLY source of that text, so all three survive.
   assert.equal(translateMessage(assistant, COMPLETE_CTX).length, 3);
 });
 
-test('partial streaming: a stream event with no turn in flight is dropped, never mis-attributed', () => {
+test('partial streaming: a stream event with no attributed turn keeps its text under an empty turn id', () => {
   assert.deepEqual(
     translateMessage(streamEvent({ type: 'text_delta', text: 'x' }), { currentTurnId: undefined, partialStreaming: true }),
-    [],
+    [{ type: 'text_delta', turnId: '', text: 'x' }],
   );
 });
 
@@ -222,6 +222,6 @@ test('partial streaming: thinking is recovered on the same terms as text', () =>
 
 /** The half that keeps the fallback from becoming the duplication bug it replaced. */
 test('partial streaming: text is still suppressed when the deltas did arrive', () => {
-  const assistant = { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello there' }] } } as never;
-  assert.deepEqual(translateMessage(assistant, { currentTurnId: 't1', partialStreaming: true, streamedSinceLastAssistant: true }), []);
+  const assistant = { type: 'assistant', message: { id: 'msg_streamed', content: [{ type: 'text', text: 'Hello there' }] } } as never;
+  assert.deepEqual(translateMessage(assistant, { currentTurnId: 't1', partialStreaming: true, streamedSinceLastAssistant: true, streamMessageId: 'msg_streamed' }), []);
 });

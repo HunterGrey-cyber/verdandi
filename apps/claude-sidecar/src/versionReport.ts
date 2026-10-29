@@ -1,5 +1,6 @@
 import { PROTOCOL_MAJOR } from './runtimeServiceImpl.js';
 import { PROTOCOL_MINOR } from './generated/protocolConstants.js';
+import { taskOutputReadable } from '@verdandi/claude-runtime';
 import { handshakeCapabilities } from './capabilities.js';
 import { MIN_SUPPORTED_CLI_VERSION, MAX_SUPPORTED_CLI_VERSION_EXCLUSIVE, TESTED_CLI_VERSIONS, compareVersions, parseVersion } from './cliCompatibility.js';
 import { SIDECAR_VERSION, CLAUDE_AGENT_SDK_VERSION, SDK_DECLARED_CLAUDE_CODE_VERSION } from './generated/sdkVersions.js';
@@ -40,8 +41,10 @@ export function versionReport(options: { sdkBundledAvailable: boolean }): string
  * `capabilities` is the handshake's list for what can be known without a process: the build decides
  * `executable_sdk_bundled`, but `egress_restricted` is proven by a running process at startup, so a
  * report that has not started anything never claims it; nor `steer_turn`, which needs the host CLI's
- * version that only a started process probes. The list comes from the same table the
- * handshake filters (capabilities.json via the generated constants), not a second copy.
+ * version that only a started process probes. `task_output` is decided by the runtime this artifact
+ * carries, so the report asks it the way a started process does (`taskOutputReadable`) and states it
+ * as that process would. The list comes from the same table the handshake filters (capabilities.json
+ * via the generated constants), not a second copy.
  */
 export function versionReportJson(options: { sdkBundledAvailable: boolean }): string {
   return JSON.stringify({ v: 1, ...versionFacts(options) });
@@ -58,7 +61,7 @@ function versionFacts(options: { sdkBundledAvailable: boolean }) {
     supported_cli_range: { min: MIN_SUPPORTED_CLI_VERSION, max_exclusive: MAX_SUPPORTED_CLI_VERSION_EXCLUSIVE },
     tested_cli_versions: sortedByVersion(TESTED_CLI_VERSIONS),
     executables: options.sdkBundledAvailable ? ['host_cli', 'sdk_bundled'] : ['host_cli'],
-    capabilities: handshakeCapabilities({ egressRestricted: false, sdkBundledAvailable: options.sdkBundledAvailable, cliMessageLifecycle: false }),
+    capabilities: handshakeCapabilities({ egressRestricted: false, sdkBundledAvailable: options.sdkBundledAvailable, cliMessageLifecycle: false, taskOutputRead: taskOutputReadable() }),
   };
 }
 

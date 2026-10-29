@@ -17,7 +17,39 @@ export type {
   CliPermissionMode,
   SlashCommandInfo,
   SteerDropReason,
+  ClientInteractions,
+  TurnOrigin,
+  TurnCauseKind,
+  TurnCause,
+  TaskKind,
+  TaskStatus,
+  TaskEdge,
+  BackgroundTask,
+  TaskUsage,
+  TaskEventPayload,
+  WorkflowProgress,
+  WorkflowPhase,
+  WorkflowAgent,
+  SessionNoticeKind,
+  NoticeLevel,
+  RateLimitStatus,
+  PeerHoldState,
+  SessionNoticePayload,
+  InteractionQuestion,
+  InteractionQuestionOption,
+  InteractionOutcome,
+  InteractionRequestedEvent,
+  InteractionResolvedEvent,
+  ShownAnswer,
+  TaskOutputResult,
+  SendTurnOptions,
+  SteerTurnOptions,
 } from './types.js';
+export { interactionOptInProblem, applyQuestionOptIn, gateAbstains } from './questionOptions.js';
+export { createInteractionPort, InteractionAnswerError, InteractionNotFoundError } from './interactionPort.js';
+export type { InteractionPort, InteractionFailCause, InteractionResult, InteractionAnswerInput, InteractionAnswerRefusal } from './interactionPort.js';
+export { TaskNotFoundError, TaskOutputUnavailableError, TASK_OUTPUT_TAIL_BYTES, taskOutputReadable } from './taskOutput.js';
+export type { TaskOutputUnavailableReason } from './taskOutput.js';
 export { STRUCTURED_OUTPUT_CARRIER_TOOLS, permittedInitTools, requiredInitTools, expectedInitMcpServers, mcpToolServer, initToolViolation, verifiesInitTools, initCheckProblem } from './toolInvariant.js';
 export { EXTRA_MCP_SERVERS_VARIABLE, MAX_EXTRA_MCP_SERVERS, resolveExtraMcpServers, describeExtraMcpServers, copyExtraMcpServers } from './extraMcpServers.js';
 export type { ExtraMcpServers, ExtraMcpServerConfig } from './extraMcpServers.js';

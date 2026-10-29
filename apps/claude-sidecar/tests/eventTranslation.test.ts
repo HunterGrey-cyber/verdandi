@@ -4,6 +4,25 @@ import type { ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
 import { translateEvent, extractTurnId } from '../src/eventTranslation.js';
 import { CliPermissionModeKind, ConfigurationProfile, PermissionOutcome, SessionEvent, TurnOutcome, SessionCloseReason } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
+test('subagent parent ids survive the wire and are bounded on character boundaries for all four content events', () => {
+  const content: ClaudeRuntimeEvent[] = [
+    { type: 'tool_call_started', turnId: 'root', toolUseId: 'read', name: 'Read', input: {} },
+    { type: 'tool_call_completed', turnId: 'root', toolUseId: 'read', content: 'done', isError: false },
+    { type: 'text_delta', turnId: 'root', text: 'text' },
+    { type: 'thinking_delta', turnId: 'root', text: 'thought' },
+  ];
+  for (const event of content) {
+    for (const parent of [undefined, 'agent', '😀'.repeat(129)]) {
+      const translated = translateEvent({ ...event, ...(parent === undefined ? {} : { parentToolUseId: parent }) });
+      const decoded = SessionEvent.decode(SessionEvent.encode(SessionEvent.fromPartial(translated)).finish());
+      const payload = decoded.toolCallStarted ?? decoded.toolCallCompleted ?? decoded.textDelta ?? decoded.thinkingDelta;
+      assert.ok(payload);
+      assert.equal(payload.turnId, 'root');
+      assert.equal(payload.parentToolUseId, parent?.startsWith('😀') ? `${'😀'.repeat(127)}…` : parent);
+    }
+  }
+});
+
 test('translateEvent: session_ready maps to a sessionReady oneof member', () => {
   const event: ClaudeRuntimeEvent = { type: 'session_ready', sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions' };
   assert.deepEqual(translateEvent(event), {

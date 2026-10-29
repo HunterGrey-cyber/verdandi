@@ -1,4 +1,5 @@
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, PermissionAnswer, SessionCloseReason } from '@verdandi/claude-runtime';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, InteractionPort, PermissionAnswer, SendTurnOptions, SessionCloseReason, SteerTurnOptions, TaskOutputResult } from '@verdandi/claude-runtime';
+import type { InteractionOutcome } from './generated/verdandi/claude/runtime/v1/runtime.js';
 import { RingBuffer, type SequencedEvent } from './ringBuffer.js';
 import { IdempotencyCache } from './idempotency.js';
 
@@ -10,9 +11,9 @@ import { IdempotencyCache } from './idempotency.js';
  */
 export interface MinimalKernelSession {
   pump(): Promise<ClaudeRuntimeEvent[]>;
-  sendTurn(text: string): { turnId: string };
+  sendTurn(text: string, options?: SendTurnOptions): { turnId: string };
   /** SteerTurn. Throws the kernel's `SteerError` for every refusal; nothing reached the CLI then. */
-  steerTurn(expectedTurnId: string, clientMessageId: string, text: string): { turnId: string };
+  steerTurn(expectedTurnId: string, clientMessageId: string, text: string, options?: SteerTurnOptions): { turnId: string };
   interrupt(): Promise<void>;
   close(): void;
   /** Throws the kernel's `PermissionAnswerError` for an answer it refuses without resolving (a
@@ -28,6 +29,15 @@ export interface MinimalKernelSession {
   /** Why the session ended, or `undefined` while it is alive. Read on the session itself because the
    * registry entry is removed only on a later PumpDriver callback. */
   closeReason(): SessionCloseReason | undefined;
+  /** StopTask. Rejects with the kernel's `TaskNotFoundError` for a task the session never saw;
+   * resolves without asking the CLI for one that has already ended. */
+  stopTask(taskId: string): Promise<void>;
+  /** GetTaskOutput. Rejects with the kernel's `TaskNotFoundError` for an unknown task and its
+   * `TaskOutputUnavailableError` when there is nothing it may read. */
+  taskOutput(taskId: string): Promise<TaskOutputResult>;
+  /** The route this session's structured questions take to the host; `undefined` for a session that
+   * offers none. */
+  interactions(): InteractionPort | undefined;
 }
 
 export type SessionEntry = {
@@ -41,6 +51,8 @@ export type SessionEntry = {
   readonly resolvePermissionIdempotency: IdempotencyCache<Record<string, never>>;
   readonly closeIdempotency: IdempotencyCache<Record<string, never>>;
   readonly setPermissionModeIdempotency: IdempotencyCache<{ permissionMode: string }>;
+  readonly stopTaskIdempotency: IdempotencyCache<Record<string, never>>;
+  readonly resolveInteractionIdempotency: IdempotencyCache<{ outcome: InteractionOutcome }>;
   /** SetPermissionMode calls still waiting on the CLI, by command_id. The only async mutating RPC
    * whose outcome is recorded after an await, so a duplicate arriving in that window must join the
    * call in flight rather than run the switch a second time. */
@@ -71,6 +83,8 @@ export class SessionRegistry {
       resolvePermissionIdempotency: new IdempotencyCache(),
       closeIdempotency: new IdempotencyCache(),
       setPermissionModeIdempotency: new IdempotencyCache(),
+      stopTaskIdempotency: new IdempotencyCache(),
+      resolveInteractionIdempotency: new IdempotencyCache(),
       setPermissionModeInFlight: new Map(),
       latestCommands: undefined,
     };

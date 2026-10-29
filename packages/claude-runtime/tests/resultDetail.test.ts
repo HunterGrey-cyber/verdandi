@@ -4,7 +4,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { makeFakeQuery } from './fakeQuery.js';
 import { m1FailureResultKeys, readM1Fixture } from './m1FixtureFiles.js';
 import { createSession } from '../src/session.js';
-import { MAX_RESULT_ERRORS, MAX_RESULT_ERROR_CHARS, boundErrors, resultDetail } from '../src/resultDetail.js';
+import { MAX_RESULT_ERRORS, MAX_RESULT_ERROR_CHARS, boundErrors, resultAttribution, resultDetail } from '../src/resultDetail.js';
 import type { ClaudeRuntimeEvent } from '../src/types.js';
 
 type Result = Extract<SDKMessage, { type: 'result' }>;
@@ -88,5 +88,47 @@ test('M1 recording: every recorded failure result keeps its own words and delive
     assert.equal(detail.apiErrorStatus, typeof result.api_error_status === 'number' ? result.api_error_status : undefined, key);
     assert.deepEqual(detail.errors, Array.isArray(result.errors) ? boundErrors(result.errors) : undefined, key);
     assert.equal(detail.structuredOutput, undefined, key);
+  }
+});
+
+test('resultAttribution: origin kind, num_turns and every uuid the result names, older single uuid included, without duplicates', () => {
+  assert.deepEqual(
+    resultAttribution(asResult({ type: 'result', is_error: false, origin: { kind: 'task-notification', producer: 'session-task' }, num_turns: 0, user_message_uuid: 'a', user_message_uuids: ['a', 'b'] })),
+    { originKind: 'task-notification', numTurns: 0, isError: false, names: ['a', 'b'] },
+  );
+  assert.deepEqual(resultAttribution(asResult({ type: 'result', is_error: true, user_message_uuid: 'only' })), { isError: true, names: ['only'] });
+});
+
+test('resultAttribution: a field of the wrong type is absent, never guessed', () => {
+  for (const drifted of [
+    { origin: 'task-notification', num_turns: '2', user_message_uuids: 'a', user_message_uuid: 3 },
+    { origin: { kind: 7 }, num_turns: 1.5, user_message_uuids: [null, '', 4] },
+    { origin: null, num_turns: -1 },
+  ]) {
+    assert.deepEqual(resultAttribution(asResult({ type: 'result', is_error: false, ...drifted })), { isError: false, names: [] }, JSON.stringify(drifted));
+  }
+});
+
+test('the session completes a turn with the result\'s origin kind and num_turns, and leaves them out when it said none', async () => {
+  for (const [extra, expected] of [
+    [{ origin: { kind: 'human' }, num_turns: 3 }, { originKind: 'human', numTurns: 3 }],
+    [{}, {}],
+  ] as const) {
+    const { query, controller } = makeFakeQuery();
+    const session = createSession({ cwd: '/tmp/p', policy: { configuration: 'native', permissions: 'interactive', persistence: 'host_cli', executable: 'host_cli' } }, () => query, { onDiagnostic: () => {} });
+    const { turnId } = session.sendTurn('hi');
+    controller.emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: 'end_turn', ...extra } as unknown as SDKMessage);
+    const events: ClaudeRuntimeEvent[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      events.push(...(await session.pump()));
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const completed = events.find((event) => event.type === 'turn_completed');
+    assert.ok(completed !== undefined && completed.type === 'turn_completed');
+    assert.equal(completed.turnId, turnId);
+    assert.equal(completed.originKind, (expected as { originKind?: string }).originKind);
+    assert.equal(completed.numTurns, (expected as { numTurns?: number }).numTurns);
+    assert.equal('originKind' in completed, 'originKind' in expected);
+    session.close();
   }
 });

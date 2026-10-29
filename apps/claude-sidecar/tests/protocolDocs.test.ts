@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT, SIDECAR_DIR } from './compat/paths.js';
+import { DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE } from '@verdandi/claude-runtime';
+import { CURRENT_PROTO, REPO_ROOT, SIDECAR_DIR } from './compat/paths.js';
 
 /**
  * The prose that says what the contract is must not drift from the code and the file it describes. Three
@@ -33,6 +34,14 @@ function sourceFiles(dir: string): string[] {
 }
 
 const sources = [...sourceFiles(join(SIDECAR_DIR, 'src')), ...sourceFiles(join(REPO_ROOT, 'packages', 'claude-runtime', 'src'))];
+
+test('the live provider-prompt contract documents the broker\'s blank-reason denial message', () => {
+  const proto = readFileSync(CURRENT_PROTO, 'utf8').replace(/^\s*\/\/ ?/gm, '').replace(/\s+/g, ' ');
+  const deny = proto.match(/- deny:(.*?)(?=- interrupt, close,)/)?.[1];
+  assert.ok(deny, 'provider-prompt deny contract is missing');
+  assert.ok(deny.includes(`"${DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE}" when blank`));
+  assert.ok(!deny.includes('denied by the host'));
+});
 
 /** The text of a `## ` section, up to the next `## `. */
 function section(markdown: string, heading: string): string {

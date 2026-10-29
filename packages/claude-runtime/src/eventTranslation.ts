@@ -1,4 +1,8 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { sessionNoticeOf } from './sessionNotices.js';
+import { resultAttribution } from './resultDetail.js';
+import { BackgroundTasks } from './backgroundTasks.js';
+import type { TurnFrame } from './turnTracker.js';
 import type { ClaudeRuntimeEvent, InitFingerprint } from './types.js';
 
 /**
@@ -34,9 +38,12 @@ function initFingerprintOf(message: SDKMessage): { initFingerprint?: InitFingerp
 }
 
 export type TranslationContext = {
-  /** The turnId this package's session actor assigned to the turn currently in flight, or
-   * `undefined` if no turn is in flight (a `system`/`init` message can arrive before any turn is
-   * sent). Task 3 owns assigning and clearing this as turns start and finish. */
+  /** Shared with the turn tracker so task edges, rosters and causes use the same launching tool. */
+  backgroundTasks?: BackgroundTasks;
+  /** One counted diagnostic for malformed task or notice fields in this frame. */
+  onDiagnostic?: (line: string) => void;
+  /** The turn selected for this frame. For a child this is the parent's recorded turn, falling back
+   * to the open turn or an empty id. Main-thread work always has a turn opened by the session. */
   currentTurnId: string | undefined;
   /** True when the session asked the SDK for `includePartialMessages`.
    *
@@ -47,9 +54,9 @@ export type TranslationContext = {
    * source of tool_use blocks, whose complete input JSON is only reliable there. */
   partialStreaming?: boolean;
   /**
-   * Whether any text/thinking delta was actually emitted from a `stream_event` since the last
-   * `assistant` message. Maintained by the session actor, which already sees every event this
-   * function returns.
+   * Whether a main-thread stream emitted text/thinking since its last complete assistant message,
+   * with its start observed in the current turn. Maintained by the session actor, which already
+   * sees every event this function returns.
    *
    * It exists because the suppression described above rests on an assumption nobody was checking:
    * that the deltas really came. `includePartialMessages` is a REQUEST, and whether it is honoured
@@ -69,15 +76,16 @@ export type TranslationContext = {
    * an incident that turned out to be someone else's.
    *
    * Absent (or false) with `partialStreaming` on means "nothing streamed for this message", and the
-   * complete blocks are emitted instead. It cannot double: it fires only when zero deltas were seen.
+   * complete blocks are emitted instead. A matching stream message id is also required so an
+   * abandoned attempt cannot suppress the reply that replaces it.
    */
   streamedSinceLastAssistant?: boolean;
   /**
    * The API message id (`msg_...`) of the partial-streaming message currently being produced, taken
    * from its `message_start` stream event -- the only stream event that carries it; the
    * `content_block_delta`s that follow do not. Maintained by the session actor (keyed by
-   * `parent_tool_use_id`, so a subagent's stream cannot relabel the main thread's), because this
-   * function stays a pure function of one message. `undefined` leaves `messageId` off the deltas.
+   * `parent_tool_use_id`, so a subagent's stream cannot relabel the main thread's).
+   * `undefined` leaves `messageId` off the deltas.
    */
   streamMessageId?: string;
   /**
@@ -128,6 +136,11 @@ function messageIdOf(value: unknown): { messageId?: string } {
  * handles `message.type === 'result'` itself.
  */
 export function translateMessage(message: SDKMessage, ctx: TranslationContext): ClaudeRuntimeEvent[] {
+  const background = (ctx.backgroundTasks ?? new BackgroundTasks()).translate(message as unknown as Record<string, unknown>, ctx.onDiagnostic);
+  if (background !== undefined) return background;
+  const notices = sessionNoticeOf(message as unknown as Record<string, unknown>, ctx.onDiagnostic);
+  if (notices !== undefined) return notices;
+  const parent = optionalString('parentToolUseId', (message as { parent_tool_use_id?: unknown }).parent_tool_use_id);
   switch (message.type) {
     case 'system': {
       if (message.subtype === 'init') {
@@ -153,33 +166,25 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
       return [{ type: 'provider_notice', kind: 'system', subtype: message.subtype, raw: message }];
     }
     case 'assistant': {
-      const turnId = ctx.currentTurnId;
-      if (turnId === undefined) {
-        // An assistant message with no turn in flight is unexpected but must never throw --
-        // surface it as a notice rather than crash the session actor's read loop.
-        return [{ type: 'provider_notice', kind: 'assistant', subtype: 'no_turn_in_progress', raw: message }];
-      }
-      // Suppress the complete text/thinking blocks ONLY when the deltas that replace them actually
-      // arrived. Under partial streaming they normally did, and re-emitting would double every
-      // reply; when they did not, this message is once again the only source of the reply, and
-      // dropping it loses the answer entirely while every other signal says the turn succeeded.
-      const suppressCompleteText = ctx.partialStreaming === true && ctx.streamedSinceLastAssistant === true;
-      // One API message may arrive as several SDK assistant messages (one per content block); they
-      // share `message.id`, which is exactly what lets a consumer tell "same reply, next block" from
-      // "a new reply".
+      const turnId = ctx.currentTurnId ?? '';
+      // A complete reply replaces an abandoned or unobserved stream. Only suppress text when
+      // the main stream started in this turn and actually emitted deltas for this same message.
       const messageId = messageIdOf((message.message as { id?: unknown }).id);
+      const suppressCompleteText = ctx.partialStreaming === true && ctx.streamedSinceLastAssistant === true &&
+        messageId.messageId !== undefined && messageId.messageId === ctx.streamMessageId;
       const events: ClaudeRuntimeEvent[] = [];
       for (const block of message.message.content) {
         if (block.type === 'text') {
           if (!suppressCompleteText) {
-            events.push({ type: 'text_delta', turnId, text: block.text, ...messageId });
+            events.push({ type: 'text_delta', turnId, text: block.text, ...messageId, ...parent });
           }
         } else if (block.type === 'thinking') {
           if (!suppressCompleteText) {
-            events.push({ type: 'thinking_delta', turnId, text: block.thinking, ...messageId });
+            events.push({ type: 'thinking_delta', turnId, text: block.thinking, ...messageId, ...parent });
           }
         } else if (block.type === 'tool_use') {
-          events.push({ type: 'tool_call_started', turnId, toolUseId: block.id, name: block.name, input: block.input });
+          ctx.backgroundTasks?.tool(block.id, block.name);
+          events.push({ type: 'tool_call_started', turnId, toolUseId: block.id, name: block.name, input: block.input, ...parent });
         } else {
           events.push({ type: 'provider_notice', kind: 'assistant_content_block', subtype: block.type, raw: block });
         }
@@ -193,10 +198,7 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
       if (ctx.partialStreaming !== true) {
         return [];
       }
-      const turnId = ctx.currentTurnId;
-      if (turnId === undefined) {
-        return [];
-      }
+      const turnId = ctx.currentTurnId ?? '';
       // `content_block_delta` is the only variant that carries produced content. message_start /
       // content_block_start / content_block_stop / message_delta / message_stop are framing, and
       // `input_json_delta` is a tool's arguments being assembled -- the complete, parseable input
@@ -209,29 +211,33 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
       const delta = event.delta;
       const messageId = messageIdOf(ctx.streamMessageId);
       if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        return [{ type: 'text_delta', turnId, text: delta.text, ...messageId }];
+        return [{ type: 'text_delta', turnId, text: delta.text, ...messageId, ...parent }];
       }
       if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        return [{ type: 'thinking_delta', turnId, text: delta.thinking, ...messageId }];
+        return [{ type: 'thinking_delta', turnId, text: delta.thinking, ...messageId, ...parent }];
       }
       return [];
     }
     case 'user': {
-      const turnId = ctx.currentTurnId;
+      const turnId = ctx.currentTurnId ?? '';
       const content = message.message.content;
-      if (turnId === undefined || typeof content === 'string') {
+      if (typeof content === 'string') {
         return [];
       }
       const events: ClaudeRuntimeEvent[] = [];
       for (const block of content) {
         if (typeof block === 'object' && block !== null && 'type' in block && block.type === 'tool_result') {
           const toolResult = block as { tool_use_id: string; content: unknown; is_error?: boolean };
+          // A background launch's result names the task's output file; the task table decides whether
+          // it is that task's launch.
+          if (typeof toolResult.tool_use_id === 'string') ctx.backgroundTasks?.toolResult(toolResult.tool_use_id, toolResult.content, ctx.onDiagnostic);
           events.push({
             type: 'tool_call_completed',
             turnId,
             toolUseId: toolResult.tool_use_id,
             content: toolResult.content,
             isError: toolResult.is_error ?? false,
+            ...parent,
           });
         }
       }
@@ -239,5 +245,71 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
     }
     default:
       return [{ type: 'provider_notice', kind: message.type, subtype: null, raw: message }];
+  }
+}
+
+/** Whether the frame carries a string parent id: a subagent's frame. */
+export function hasParent(raw: Record<string, unknown>): boolean {
+  return typeof raw.parent_tool_use_id === 'string';
+}
+
+function optionalField<K extends string>(key: K, value: unknown): { [P in K]?: string } {
+  return (typeof value === 'string' && value !== '' ? { [key]: value } : {}) as { [P in K]?: string };
+}
+
+/**
+ * What one SDK message means for who has the floor (see `TurnTracker`). A pure function of the
+ * message; every field is type-checked, and a frame that does not match what is expected is `other`.
+ * A subagent's frame is always `other`: it never opens, closes or starts anything on the main thread.
+ */
+export function turnFrameOf(message: SDKMessage): TurnFrame {
+  const raw = message as unknown as Record<string, unknown>;
+  // Child lifecycle, idle and result frames are no more authoritative over the main turn than
+  // child content. Classify them before looking at any frame-specific state.
+  if (hasParent(raw)) return { kind: 'other' };
+  switch (raw.type) {
+    case 'result':
+      return { kind: 'result', ...resultAttribution(message as Extract<SDKMessage, { type: 'result' }>) };
+    case 'command_lifecycle':
+      return typeof raw.command_uuid === 'string' && typeof raw.state === 'string' ? { kind: 'lifecycle', uuid: raw.command_uuid, state: raw.state } : { kind: 'other' };
+    case 'assistant':
+      return { kind: 'content' };
+    case 'stream_event': {
+      const event = raw.event as { type?: unknown } | undefined;
+      return event?.type === 'content_block_delta' ? { kind: 'content' } : { kind: 'stream' };
+    }
+    case 'user': {
+      const content = (raw.message as { content?: unknown } | undefined)?.content;
+      if (Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === 'tool_result')) {
+        return { kind: 'content' };
+      }
+      return typeof raw.uuid === 'string' && raw.uuid !== '' ? { kind: 'user_echo', uuid: raw.uuid } : { kind: 'other' };
+    }
+    case 'system':
+      switch (raw.subtype) {
+        case 'status':
+          return raw.status === 'requesting' ? { kind: 'requesting' } : { kind: 'other' };
+        case 'session_state_changed':
+          return typeof raw.state === 'string' ? { kind: 'session_state', state: raw.state } : { kind: 'other' };
+        case 'task_started':
+          return typeof raw.task_id === 'string' && raw.task_id !== ''
+            ? {
+                kind: 'task_started',
+                taskId: raw.task_id,
+                ...optionalField('description', raw.description),
+                ...optionalField('taskType', raw.task_type),
+                ...optionalField('toolUseId', raw.tool_use_id),
+                ...optionalField('runId', raw.run_id),
+              }
+            : { kind: 'other' };
+        case 'task_notification':
+          return typeof raw.task_id === 'string' && raw.task_id !== ''
+            ? { kind: 'task_notification', taskId: raw.task_id, ...optionalField('status', raw.status), ...optionalField('summary', raw.summary) }
+            : { kind: 'other' };
+        default:
+          return { kind: 'other' };
+      }
+    default:
+      return { kind: 'other' };
   }
 }

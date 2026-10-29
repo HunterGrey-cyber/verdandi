@@ -155,3 +155,8 @@ test('strictModeFromEnv: only 1/true enable it; an empty or absent value does no
   assert.equal(strictModeFromEnv({ VERDANDI_CLAUDE_SIDECAR_STRICT_CLI_VERSION: 'true' }), true);
   assert.equal(strictModeFromEnv({ VERDANDI_CLAUDE_SIDECAR_STRICT_CLI_VERSION: ' TRUE ' }), true);
 });
+
+test('recorded CLI 2.1.311 is tested on the SDK surface', () => {
+  assert.ok(TESTED_CLI_VERSIONS.has('2.1.311'));
+  assert.deepEqual(classifyCliVersion('2.1.311'), { kind: 'supported' });
+});

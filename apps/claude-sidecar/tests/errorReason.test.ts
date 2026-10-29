@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import { SidecarError, toGrpcMetadata } from '../src/errorMapping.js';
 import { startSidecar } from '../src/lifecycle.js';
-import { validatePolicy, validateEffort, validateResumeRequest, validateSystemPrompt, validateOutputFormat } from '../src/runtimeServiceImpl.js';
+import { validatePolicy, validateEffort, validateResumeRequest, validateSystemPrompt, validateOutputFormat, validateClientInteractions } from '../src/runtimeServiceImpl.js';
 import { replayRequestFromProto } from '../src/replayRequest.js';
 import {
   ClaudeHostPolicy,
@@ -69,6 +69,7 @@ const POLICY_ROWS: Array<[reason: string, run: () => void]> = [
         policy({ providerPermissionPrompts: true, toolPolicy: { deny: [], unrestricted: false, allow: { tools: ['AskUserQuestion'], initCheck: InitCheck.INIT_CHECK_UNSPECIFIED } } }),
       ),
   ],
+  ['client_interactions_needs_provider_prompts', () => validateClientInteractions({ cwd: '/', policy: undefined, clientInteractions: { questions: true } })],
   ['effort_unknown', () => validateEffort({ cwd: '/', policy: undefined, effort: 'enormous' })],
   ['system_prompt_blank', () => validateSystemPrompt({ cwd: '/', policy: undefined, systemPrompt: '  ' })],
   ['output_schema_not_json', () => validateOutputFormat({ cwd: '/', policy: undefined, outputFormat: { jsonSchemaJson: '{' } })],
@@ -312,6 +313,21 @@ test('reason: COMPATIBILITY.md documents exactly the reasons the sources can pro
     'steer_client_message_id_reused',
     'cli_lifecycle_not_reported',
     'first_turn_held',
+    // The question opt-in's: the kernel's `interactionOptInProblem`, passed through.
+    'client_interactions_needs_provider_prompts',
+    // ResolveInteraction's (INTERACTION_ANSWER_REFUSED): the kernel's `InteractionAnswerRefusal`,
+    // passed through, and `kind_mismatch`, which the sidecar also gives for a result arm that fits no
+    // question.
+    'unknown_question_index',
+    'duplicate_question_index',
+    'unknown_option_index',
+    'duplicate_option_index',
+    'single_select_takes_one',
+    'notes_not_allowed',
+    'answer_too_long',
+    'answers_too_long',
+    'notes_too_long',
+    'kind_mismatch',
   ]) {
     produced.add(reason);
   }

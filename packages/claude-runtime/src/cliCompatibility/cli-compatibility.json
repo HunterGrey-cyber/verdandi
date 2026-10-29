@@ -83,6 +83,13 @@
         "screen"
       ],
       "evidence": "Screen: the recorded corpus captures for 2.1.288 and a recorded state-classifier selftest."
+    },
+    {
+      "version": "2.1.311",
+      "surfaces": [
+        "sdk"
+      ],
+      "evidence": "Harness recordings of the Verdandi sidecar against the scripted model, 2026-10-28 (fixtures/cli-turns)."
     }
   ]
 }

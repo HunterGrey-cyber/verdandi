@@ -1,4 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { ResultFacts } from './turnTracker.js';
 import type { TurnResultDetail, TurnUsage } from './types.js';
 
 /** At most this many `errors` entries reach a turn_completed; see `boundErrors`. */
@@ -43,6 +44,34 @@ export function resultDetail(message: Extract<SDKMessage, { type: 'result' }>): 
     detail.usage = usage;
   }
   return detail;
+}
+
+/**
+ * Reads what a result says about whose turn it ended: `origin.kind`, `num_turns`, and the pushed
+ * messages it answered (`user_message_uuids`, and the older single `user_message_uuid`). Read
+ * defensively like `resultDetail`: a field of the wrong type is absent, and a non-string entry of the
+ * uuid list is skipped. The CLI fills the uuids only for messages that carried one.
+ */
+export function resultAttribution(message: Extract<SDKMessage, { type: 'result' }>): ResultFacts {
+  const raw = message as unknown as Record<string, unknown>;
+  const origin = raw.origin as { kind?: unknown } | null | undefined;
+  const names = new Set<string>();
+  if (Array.isArray(raw.user_message_uuids)) {
+    for (const uuid of raw.user_message_uuids) {
+      if (typeof uuid === 'string' && uuid !== '') {
+        names.add(uuid);
+      }
+    }
+  }
+  if (typeof raw.user_message_uuid === 'string' && raw.user_message_uuid !== '') {
+    names.add(raw.user_message_uuid);
+  }
+  return {
+    ...(origin !== null && typeof origin === 'object' && typeof origin.kind === 'string' ? { originKind: origin.kind } : {}),
+    ...(typeof raw.num_turns === 'number' && Number.isInteger(raw.num_turns) && raw.num_turns >= 0 ? { numTurns: raw.num_turns } : {}),
+    isError: raw.is_error === true,
+    names: [...names],
+  };
 }
 
 /**

@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { compileProto, compileProtoText, diffProtos, modelOf, type ProtoModel } from './protoModel.js';
-import { CURRENT_PROTO, FROZEN_PROTO } from './paths.js';
+import { join } from 'node:path';
+import { CURRENT_PROTO, FROZEN_PROTO, REPO_ROOT } from './paths.js';
 import { BREAKING, HARMLESS } from './protoMutations.js';
 
 /**
@@ -28,6 +29,17 @@ test('the current runtime.proto is the frozen one plus additions: nothing Eitri 
   if (diff.additions.length > 0) {
     console.log(`runtime.proto has grown since b3aa188 (additive, allowed):\n  ${diff.additions.join('\n  ')}`);
   }
+});
+
+test('protocol 3.22 is additions only: every line its ledger entry records is an addition the check lists', () => {
+  const diff = diffProtos(frozen, modelOf(compileProto(CURRENT_PROTO)));
+  const ledger = JSON.parse(readFileSync(join(REPO_ROOT, 'crates', 'claude-runtime-protocol', 'capabilities.json'), 'utf8')) as {
+    minors: Array<{ minor: number; wire_additions?: string[] }>;
+  };
+  const recorded = ledger.minors.find((m) => m.minor === 22)?.wire_additions ?? [];
+  assert.ok(recorded.length > 0, 'minor 22 records no wire additions');
+  assert.deepEqual(recorded.filter((line) => !diff.additions.includes(line)), [], 'minor 22 records lines the proto check does not list');
+  assert.deepEqual(diff.breaking, []);
 });
 
 test('the frozen proto is what Eitri 0.2.0 was built against: one service with the eight RPCs, and field 2 of WatchSessionEventsRequest reserved', () => {

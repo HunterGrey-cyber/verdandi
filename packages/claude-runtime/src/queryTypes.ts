@@ -26,4 +26,8 @@ export type MinimalQuery = AsyncGenerator<SDKMessage, void> & {
    * push when one came (sdk.d.ts `supportedCommands(): Promise<SlashCommand[]>`). Waits for
    * initialize, which needs no turn. */
   supportedCommands(): Promise<SlashCommand[]>;
+  /** Widened for StopTask: the real `Query` has it (sdk.d.ts `stopTask(taskId: string):
+   * Promise<void>`, a `stop_task` control request). The CLI then reports the task's end itself, as a
+   * `task_notification` with status `stopped`. A workflow's id stops the whole run. */
+  stopTask(taskId: string): Promise<void>;
 };

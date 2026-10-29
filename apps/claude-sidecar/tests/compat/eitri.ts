@@ -64,7 +64,8 @@ const SESSION_EVENT_ENVELOPE_FIELDS: ReadonlySet<number> = new Set([1, 2, 3, 4])
 
 /**
  * The field numbers of event arms that an old client's session may be sent although Eitri 0.2.0 cannot
- * decode them -- EMPTY, and an entry has to earn its place.
+ * decode them -- the 3.22 turn, task, notice and reset arms, each with its reason -- and a new entry has to earn
+ * its place.
  *
  * Eitri drops an unknown arm silently, so whatever such an event says never reaches the user. An entry
  * here is therefore only acceptable when it can be argued, in the `reason`, that NOTHING a human or a
@@ -74,7 +75,81 @@ const SESSION_EVENT_ENVELOPE_FIELDS: ReadonlySet<number> = new Set([1, 2, 3, 4])
  * say what an old client misses by not seeing it, and say where the old client gets the safety
  * information from instead. "It is only informational" is not a reason by itself; say what it informs.
  */
-export const ALLOWED_UNDECODABLE_EVENT_ARMS: ReadonlyMap<number, { name: string; reason: string }> = new Map();
+export const ALLOWED_UNDECODABLE_EVENT_ARMS: ReadonlyMap<number, { name: string; reason: string }> = new Map([
+  [
+    30,
+    {
+      name: 'TurnCauseUpdated',
+      reason:
+        'A more specific cause (a peer\'s name and message, a task\'s status and summary) for a turn the CLI started by itself, ' +
+        'read from that turn\'s closing result and sent just before its TurnCompleted. The handshake cannot tell a client that reads it ' +
+        'from one that does not, so every client gets it. Eitri 0.2.0 does not read TurnStarted.cause either, so all it misses is why ' +
+        'the CLI ran that turn. The turn itself is the TurnStarted/TurnCompleted pair it reads, permissions in it are ' +
+        'PermissionRequested/PermissionResolved decided by the sidecar, and nothing fail-closed is reported only here.',
+    },
+  ],
+  [
+    31,
+    {
+      name: 'CliCycleStarted',
+      reason:
+        'Says that the CLI answered something of its own (a task notification queued just before) after accepting a SendTurn and ' +
+        'before taking that turn\'s message in. The cycle\'s output carries the open turn\'s id, the one the old client got from ' +
+        'SendTurn, so it reaches Eitri 0.2.0 as part of its own turn; what it misses is the line between the CLI\'s cycle and the ' +
+        'answer to its message. The turn still ends with one TurnCompleted, permissions are still PermissionRequested/' +
+        'PermissionResolved, and nothing fail-closed is reported only here.',
+    },
+  ],
+  [
+    32,
+    {
+      name: 'BackgroundTasksChanged',
+      reason:
+        'The roster of background tasks, sent first on every watch (an empty one when a query starts) and whenever the set changes. ' +
+        'The handshake cannot tell a client that reads it from one that does not, so every client gets it. Before arm 32 existed the same ' +
+        'task frames reached an old client as ProviderNotices, which Eitri 0.2.0 prints as diagnostic lines and keeps no state from; those ' +
+        'lines are all it misses. Nothing fail-closed lives in it: tool permissions are decided by the sidecar and reach the client as ' +
+        'PermissionRequested/PermissionResolved, and the end of a turn is TurnCompleted, which an old client already reads.',
+    },
+  ],
+  [
+    33,
+    {
+      name: 'TaskEvent',
+      reason:
+        'One edge (started, progress, updated, notified) of a background task. It replaces the ProviderNotice an old client got for the ' +
+        'same task frame, so what Eitri 0.2.0 misses is the same diagnostic line. A turn the CLI starts because a task ended is an ordinary ' +
+        'TurnStarted/TurnCompleted pair, which an old client reads; no permission, kill, downgrade or refusal is reported only here.',
+    },
+  ],
+  [
+    34,
+    {
+      name: 'SessionNotice',
+      reason:
+        'A line the CLI\'s own terminal shows: an API retry, a rate-limit report, a model fallback or a refusal with no fallback, ' +
+        'compaction, an informational line, a notification, a held peer message. Before arm 34 these frames reached an old client ' +
+        'as ProviderNotices carrying only the frame\'s type and subtype, which Eitri 0.2.0 prints as diagnostic lines and keeps no ' +
+        'state from; it now loses those lines: it is not told that a call is being retried, that the account is near or at its ' +
+        'rate limit, that the model was switched, or that the conversation was summarised. None of these is the only report of a ' +
+        'failure: a rate limit or refusal that stops the work ends the turn with a TurnCompleted whose is_error, stop_reason, ' +
+        'terminal_reason, api_error_status (429) and errors an old client reads; a fallback model answers the same turn; a retry ' +
+        'that gives up fails the turn the same way. Permissions are untouched.',
+    },
+  ],
+  [
+    35,
+    {
+      name: 'ConversationReset',
+      reason:
+        'The conversation was cleared (/clear). Before arm 35 the frame reached an old client as a ProviderNotice with only its ' +
+        'type, a diagnostic line; that line is what Eitri 0.2.0 loses. The provider session id the conversation goes on under, the ' +
+        'one a resume needs, arrives in the SessionReady the CLI\'s next system/init produces, which an old client reads; the ' +
+        'reset\'s own new_conversation_id is not that id. The sidecar changes no turn, permission or lease state on a reset, so ' +
+        'nothing fail-closed is reported only here.',
+    },
+  ],
+]);
 
 /** Field numbers present at the top level of a protobuf message, in wire order. Throws on a malformed buffer. */
 export function topLevelFieldNumbers(bytes: Uint8Array): number[] {

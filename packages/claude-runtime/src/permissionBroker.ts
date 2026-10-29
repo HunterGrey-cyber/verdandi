@@ -1,11 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, HookCallback, HookCallbackMatcher, PermissionResult, PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import type { InteractionPort } from './interactionPort.js';
+import { QUESTION_NOT_OFFERED_TEXT, QUESTION_TOOL } from './questionBroker.js';
 import type { ClaudeRuntimeEvent, PermissionOrigin, PermissionOutcome, ProviderMatchedAskRule } from './types.js';
 
-/** What a provider prompt the host denied without a (non-blank) reason tells the CLI -- and through
- * the tool result, the model. The SDK's deny `message` is required, and an empty one would leave the
- * model with a failed call and no words about why. */
-export const DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE = 'denied by the host';
+/** The subagent a call came from, as the CLI names it (hook `agent_id`, `canUseTool`'s `agentID`), or
+ * nothing for the main thread or a value that is not a usable id. */
+export function agentIdOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** The SDK requires a deny message, but a missing reason does not identify the denial's source. */
+export const DEFAULT_PROVIDER_PROMPT_DENY_MESSAGE = 'This tool call was denied without a reason; no denial source was provided.';
+
+/** What the model reads when the host settles a waiting request itself; the question broker uses the
+ * same texts for the same causes. */
+export const HOST_SETTLEMENT_MESSAGES = {
+  cancelled_by_interrupt: 'The host denied this tool call because the turn was interrupted.',
+  cancelled_by_session_close: 'The host denied this tool call because the session closed before permission was answered.',
+  provider_failed: 'The host denied this tool call because the provider failed before permission was answered.',
+};
 
 /** One request as the broker announces it. The provider fields are spread in only when present, so a
  * hook request's event has no such keys at all. */
@@ -88,6 +102,8 @@ type PendingPermission = {
   input: unknown;
   /** Which mechanism raised it; `resolve()` accepts `defer` only for `hook`. */
   origin: PermissionOrigin;
+  /** The subagent that made the call, when the CLI named one; absent for the main thread. */
+  agentId?: string;
   resolve: (decision: Settlement) => void;
   /** Removes this request's `AbortSignal` 'abort' listener. Called whenever this entry is
    * resolved through any path OTHER than that same signal aborting (`resolve()`,
@@ -230,6 +246,9 @@ export class PermissionBroker {
     /** Why this session refuses every `defer`, whatever the call, or `null` when it accepts them.
      * Absent means it accepts them. See `resolve`. */
     private readonly deferRefusal?: () => string | null,
+    /** The route a session's structured questions take to the host, when it offers any. `canUseTool`
+     * hands it the question tool's calls; absent, the question tool is refused. See `buildCanUseTool`. */
+    private readonly interactionPort?: InteractionPort,
   ) {}
 
   /**
@@ -290,9 +309,10 @@ export class PermissionBroker {
         },
         signal,
         {
-          alreadyAborted: 'permission request expired (hook call already aborted)',
-          aborted: 'permission request expired (hook call aborted)',
+          alreadyAborted: 'The host denied this tool call because its permission request expired (hook call already aborted).',
+          aborted: 'The host denied this tool call because its permission request expired (hook call aborted).',
         },
+        agentIdOf(preToolUse.agent_id),
       );
       if (decision.deferred === true) {
         // The host explicitly left this call to the CLI's own mode (the auto-mode classifier under
@@ -357,9 +377,28 @@ export class PermissionBroker {
    * abstaining would mean the refusal this callback exists to replace. Under `bypass` (reached by a
    * switch) the SDK documents that the CLI does not call it; if a CLI ever does, the host is asked
    * rather than the call being allowed on its behalf.
+   *
+   * ### The question tool is never a permission request
+   *
+   * `AskUserQuestion` is a question for the person, not a call to approve, and the CLI asks this
+   * callback for it even after a hook allowed it. It never reaches `ask`: on a session that offers
+   * questions it goes to the interaction port, where only the host's answer through
+   * `ResolveInteraction` settles it, so no path that answers permissions (a bypass switch, an
+   * approve-all, `resolve` on any id) can see it, let alone answer it. A session that does not offer
+   * questions has the tool on its deny list, so the call should not arrive; if it does, it is denied
+   * with no event, since nobody could be shown it.
    */
   buildCanUseTool(): CanUseTool {
     return async (toolName, input, options): Promise<PermissionResult> => {
+      if (toolName === QUESTION_TOOL) {
+        const agentId = agentIdOf(options.agentID);
+        const routed = this.interactionPort?.route(toolName, input, {
+          signal: options.signal,
+          ...(typeof options.toolUseID === 'string' ? { toolUseID: options.toolUseID } : {}),
+          ...(agentId === undefined ? {} : { agentID: agentId }),
+        });
+        return routed ?? { behavior: 'deny', message: QUESTION_NOT_OFFERED_TEXT };
+      }
       const decision = await this.ask(
         {
           // Typed required by the SDK, but it is whatever the CLI's control request carried; an
@@ -376,9 +415,10 @@ export class PermissionBroker {
         },
         options.signal,
         {
-          alreadyAborted: 'permission request expired (provider prompt already aborted)',
-          aborted: 'permission request expired (provider prompt aborted)',
+          alreadyAborted: 'The host denied this tool call because its permission request expired (provider prompt already aborted).',
+          aborted: 'The host denied this tool call because its permission request expired (provider prompt aborted).',
         },
+        agentIdOf(options.agentID),
       );
       // `deferred` cannot reach here (`resolve()` refuses `defer` for a provider prompt); were it to,
       // it carries `allow: false` and is read as the denial it is written as.
@@ -399,6 +439,7 @@ export class PermissionBroker {
     request: PermissionAsk,
     signal: AbortSignal,
     expiredReason: { alreadyAborted: string; aborted: string },
+    agentId: string | undefined,
   ): Promise<Settlement> {
     const permissionId = randomUUID();
     return new Promise<Settlement>((resolve) => {
@@ -410,9 +451,8 @@ export class PermissionBroker {
         return;
       }
       const onAbort = (): void => {
-        // The CLI's own hook timeout (spec §7.2's ~600s figure), the CLI cancelling a prompt, or
-        // any other abort of this specific call gave up waiting on a decision. Global Constraint:
-        // fail closed -- and specifically, remove the entry so a LATER, stale
+        // An SDK abort means this call stopped waiting; it does not establish a timeout or a human
+        // refusal. Fail closed and remove the entry so a LATER, stale
         // `resolvePermission()`/`resolve()` call on this id can't write a false
         // `permission_resolved: allowed/denied` for a request the CLI already gave up on (this
         // package's whole purpose is that audit trail). Resolve this call's own promise to deny
@@ -429,6 +469,7 @@ export class PermissionBroker {
         toolName: request.toolName,
         input: request.input,
         origin: request.origin,
+        ...(agentId === undefined ? {} : { agentId }),
         resolve,
         cleanupAbortListener: () => signal.removeEventListener('abort', onAbort),
       });
@@ -516,12 +557,23 @@ export class PermissionBroker {
   /** Global Constraint: fail closed. Denies and clears every currently-pending request, emitting
    * `permission_resolved` for each so a caller's own event log/UI projection sees a genuine
    * terminal state rather than a card that silently stops updating. Called by the session actor
-   * from both `interrupt()` and `close()`. */
-  failAllPending(outcome: Extract<PermissionOutcome, 'cancelled_by_interrupt' | 'cancelled_by_session_close' | 'provider_failed'>): void {
+   * from both `interrupt()` and `close()`.
+   *
+   * `spares`, given only by an interrupt that leaves background tasks running, names the subagents
+   * whose requests stay open: a call from a task the interrupt did not stop is still waiting for the
+   * host, and denying it "because the turn was interrupted" would refuse a call that interrupt was
+   * not meant to touch. A request with no subagent is the main thread's and is always settled. */
+  failAllPending(
+    outcome: Extract<PermissionOutcome, 'cancelled_by_interrupt' | 'cancelled_by_session_close' | 'provider_failed'>,
+    spares?: (agentId: string) => boolean,
+  ): void {
     for (const [permissionId, entry] of this.pending) {
+      if (entry.agentId !== undefined && spares?.(entry.agentId) === true) {
+        continue;
+      }
       this.pending.delete(permissionId);
       entry.cleanupAbortListener();
-      entry.resolve({ allow: false, reason: `session ${outcome}` });
+      entry.resolve({ allow: false, reason: HOST_SETTLEMENT_MESSAGES[outcome] });
       this.emit({ type: 'permission_resolved', permissionId, outcome });
     }
   }

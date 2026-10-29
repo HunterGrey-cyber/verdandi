@@ -7,6 +7,7 @@ import {
   SessionEvent,
   ErrorCode,
   PermissionOutcome,
+  TurnOrigin,
 } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
 
 test('generated types: HandshakeResponse can be constructed and encoded/decoded round-trip', () => {
@@ -56,13 +57,13 @@ test('generated types: SessionEvent can carry a TurnStarted oneof member and enc
     sequence: BigInt(1),
     occurredAt: BigInt(0),
     turnId: 't1',
-    turnStarted: { turnId: 't1' },
+    turnStarted: { turnId: 't1', origin: TurnOrigin.TURN_ORIGIN_UNSPECIFIED, cause: undefined },
   };
 
   const bytes = SessionEvent.encode(original).finish();
   const decoded = SessionEvent.decode(bytes);
 
   assert.equal(decoded.sessionId, 's1');
-  assert.deepEqual(decoded.turnStarted, { turnId: 't1' });
+  assert.deepEqual(decoded.turnStarted, { turnId: 't1', origin: TurnOrigin.TURN_ORIGIN_UNSPECIFIED, cause: undefined });
   assert.equal(decoded.textDelta, undefined);
 });

@@ -113,3 +113,82 @@ test('partial mode: a subagent\'s stream does not relabel the main thread\'s del
   ]);
   session.close();
 });
+
+function assistantMessage(id: string, text: string, parent: string | null = null) {
+  return { type: 'assistant', parent_tool_use_id: parent, message: { id, content: [{ type: 'text', text }] } } as never;
+}
+
+test('partial mode: a turn opened mid-message emits the complete text', async () => {
+  const { query, controller } = makeFakeQuery();
+  const session = createSession({ cwd: '/tmp/project', policy: PARTIAL }, () => query);
+  session.sendTurn('first');
+  controller.emit(startEvent('msg_A'));
+  controller.emit(textDelta('old prefix'));
+  controller.emit({ type: 'result', subtype: 'success', result: '', is_error: false } as never);
+  await session.pump();
+  session.sendTurn('next');
+  controller.emit(assistantMessage('msg_A', 'whole reply'));
+  assert.deepEqual(deltas([...(await session.pump()), ...(await session.pump())]), [
+    { type: 'text_delta', text: 'whole reply', messageId: 'msg_A' },
+  ]);
+  session.close();
+});
+
+test('partial mode: a subagent assistant between main deltas and completion does not double the reply', async () => {
+  const { query, controller } = makeFakeQuery();
+  const session = createSession({ cwd: '/tmp/project', policy: PARTIAL }, () => query);
+  session.sendTurn('hi');
+  controller.emit(startEvent('msg_main'));
+  controller.emit(textDelta('main reply'));
+  controller.emit(assistantMessage('msg_child', 'child reply', 'toolu_task'));
+  controller.emit(assistantMessage('msg_main', 'main reply'));
+  assert.deepEqual(deltas(await session.pump()), [
+    { type: 'text_delta', text: 'main reply', messageId: 'msg_main' },
+    { type: 'text_delta', text: 'child reply', messageId: 'msg_child' },
+  ]);
+  session.close();
+});
+
+test('partial mode: an abandoned stream does not suppress a complete reply with another id', async () => {
+  const { query, controller } = makeFakeQuery();
+  const session = createSession({ cwd: '/tmp/project', policy: PARTIAL }, () => query);
+  session.sendTurn('hi');
+  controller.emit(startEvent('msg_A'));
+  controller.emit(textDelta('partial attempt'));
+  controller.emit(assistantMessage('msg_B', 'whole reply'));
+  assert.deepEqual(deltas(await session.pump()), [
+    { type: 'text_delta', text: 'partial attempt', messageId: 'msg_A' },
+    { type: 'text_delta', text: 'whole reply', messageId: 'msg_B' },
+  ]);
+  session.close();
+});
+
+test('partial mode: a replacement message that streams nothing is not suppressed by the abandoned one\'s text', async () => {
+  const { query, controller } = makeFakeQuery();
+  const session = createSession({ cwd: '/tmp/project', policy: PARTIAL }, () => query);
+  session.sendTurn('hi');
+  controller.emit(startEvent('msg_A'));
+  controller.emit(textDelta('partial attempt'));
+  controller.emit(startEvent('msg_B'));
+  controller.emit(assistantMessage('msg_B', 'whole reply'));
+  assert.deepEqual(deltas(await session.pump()), [
+    { type: 'text_delta', text: 'partial attempt', messageId: 'msg_A' },
+    { type: 'text_delta', text: 'whole reply', messageId: 'msg_B' },
+  ]);
+  session.close();
+});
+
+test('partial mode: the same holds for a subagent\'s stream', async () => {
+  const { query, controller } = makeFakeQuery();
+  const session = createSession({ cwd: '/tmp/project', policy: PARTIAL }, () => query);
+  session.sendTurn('hi');
+  controller.emit(startEvent('msg_A', 'toolu_task'));
+  controller.emit(textDelta('partial attempt', 'toolu_task'));
+  controller.emit(startEvent('msg_B', 'toolu_task'));
+  controller.emit(assistantMessage('msg_B', 'whole reply', 'toolu_task'));
+  assert.deepEqual(deltas(await session.pump()), [
+    { type: 'text_delta', text: 'partial attempt', messageId: 'msg_A' },
+    { type: 'text_delta', text: 'whole reply', messageId: 'msg_B' },
+  ]);
+  session.close();
+});

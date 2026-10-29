@@ -5,7 +5,7 @@ import { testedVersionsFor, rangeFor, parseVersion, compareVersions, KNOWN_INCOM
 import { CLI_COMPATIBILITY, CLI_SURFACES } from '../src/cliCompatibility/index.js';
 
 test('today\'s tested sets, verbatim and in order -- P0 adds entries, nothing else does', () => {
-  assert.deepEqual(testedVersionsFor('sdk'), ['2.1.267', '2.1.252', '2.1.270', '2.1.283', '2.1.292']);
+  assert.deepEqual(testedVersionsFor('sdk'), ['2.1.267', '2.1.252', '2.1.270', '2.1.283', '2.1.292', '2.1.311']);
   assert.deepEqual(testedVersionsFor('interactive'), ['2.1.267', '2.1.268']);
   assert.deepEqual(testedVersionsFor('transcript'), []);
   assert.deepEqual(testedVersionsFor('screen'), ['2.1.293', '2.1.292', '2.1.288']);
