@@ -1,0 +1,292 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize",
+        "systemPrompt": [
+          ""
+        ]
+      },
+      "request_id": "7nddagd65bu",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize",
+          "systemPrompt": [
+            ""
+          ]
+        },
+        "request_id": "7nddagd65bu",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "i": 31,
+      "from": "cli",
+      "message": {
+        "request": {
+          "display_name": "ExitPlanMode",
+          "input": {
+            "plan": "# PM plan\n\n1. Change hello.txt to say hi.\n",
+            "planFilePath": "$RUN/cases/empty/claude/plans/snazzy-hatching-reddy.md"
+          },
+          "requires_user_interaction": true,
+          "subtype": "can_use_tool",
+          "tool_name": "ExitPlanMode",
+          "tool_use_id": "toolu_exit"
+        },
+        "request_id": "84abb6f5-f633-409e-ba7e-4f2de8270e8e",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 32,
+      "from": "host",
+      "message": {
+        "response": {
+          "request_id": "84abb6f5-f633-409e-ba7e-4f2de8270e8e",
+          "response": {
+            "behavior": "deny",
+            "message": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+            "toolUseID": "toolu_exit"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      }
+    }
+  ],
+  "tool_results": {
+    "ee_enter": {
+      "content": "Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.\n\nIn plan mode, you should:\n1. Thoroughly explore the codebase to understand existing patterns\n2. Identify similar features and architectural approaches\n3. Consider multiple approaches and their trade-offs\n4. Use AskUserQuestion if you need to clarify the approach\n5. Design a concrete implementation strategy\n6. When ready, use ExitPlanMode to present your plan for approval\n\nRemember: DO NOT write or edit any files yet. This is a read-only exploration and planning phase.",
+      "tool_use_id": "ee_enter",
+      "type": "tool_result"
+    },
+    "toolu_exit": {
+      "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+      "is_error": true,
+      "tool_use_id": "toolu_exit",
+      "type": "tool_result"
+    }
+  },
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter"
+      ]
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter",
+        "ee_enter"
+      ]
+    },
+    {
+      "file": "body_5.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter",
+        "ee_enter",
+        "ee_planw"
+      ]
+    },
+    {
+      "file": "body_6.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter",
+        "ee_enter",
+        "ee_planw",
+        "toolu_preload_ee_exit"
+      ]
+    },
+    {
+      "file": "body_7.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter",
+        "ee_enter",
+        "ee_planw",
+        "toolu_preload_ee_exit",
+        "toolu_exit"
+      ]
+    },
+    {
+      "file": "body_8.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_ee_enter",
+        "ee_enter",
+        "ee_planw",
+        "toolu_preload_ee_exit",
+        "toolu_exit"
+      ]
+    }
+  ],
+  "dropped_controls": 13
+}

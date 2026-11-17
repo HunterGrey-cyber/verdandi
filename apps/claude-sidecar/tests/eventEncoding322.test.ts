@@ -305,11 +305,12 @@ test('interaction_requested: a question set, and a refusal without one', () => {
   assert.equal(refused.unsupportedReason, 'too_many_options');
 });
 
+// Since 3.26 every settlement carries `kind` (field 5, QUESTION here): the trailing `2801`.
 test('interaction_resolved: with answers and a reason, and bare', () => {
   const full = assertGolden(
     'interaction_resolved full',
     { type: 'interaction_resolved', interactionId: 'i1', outcome: 'answered', answers: [{ questionIndex: 0, answer: 'Redis', notes: 'fast' }, { questionIndex: 1, answer: 'yes' }], reason: 'because' },
-    '0a017310071809ca02270a02693110011a0d120552656469731a04666173741a0708011203796573220762656361757365',
+    '0a017310071809ca02290a02693110011a0d120552656469731a04666173741a0708011203796573220762656361757365' + '2801',
   ).interactionResolved!;
   assert.equal(full.outcome, InteractionOutcome.INTERACTION_OUTCOME_ANSWERED);
   assert.deepEqual(full.answers, [
@@ -317,7 +318,7 @@ test('interaction_resolved: with answers and a reason, and bare', () => {
     { questionIndex: 1, answer: 'yes', notes: undefined },
   ]);
   assert.equal(full.reason, 'because');
-  const bare = assertGolden('interaction_resolved bare', { type: 'interaction_resolved', interactionId: 'i1', outcome: 'session_closed' }, '0a017310071809ca02060a0269311006').interactionResolved!;
+  const bare = assertGolden('interaction_resolved bare', { type: 'interaction_resolved', interactionId: 'i1', outcome: 'session_closed' }, '0a017310071809ca02080a0269311006' + '2801').interactionResolved!;
   assert.deepEqual(bare.answers, []);
   assert.equal(bare.reason, undefined);
 });

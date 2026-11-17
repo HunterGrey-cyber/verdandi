@@ -22,9 +22,18 @@ function initFingerprintOf(message: SDKMessage): { initFingerprint?: InitFingerp
   }
   const servers: unknown[] = Array.isArray(raw.mcp_servers) ? raw.mcp_servers : [];
   const readable = servers.flatMap((server: unknown) => {
-    const entry = server as { name?: unknown; status?: unknown } | null;
+    const entry = server as { name?: unknown; status?: unknown; source?: unknown } | null;
     return entry !== null && typeof entry === 'object' && typeof entry.name === 'string'
-      ? [{ name: entry.name, status: typeof entry.status === 'string' ? entry.status : '' }]
+      ? [
+          {
+            name: entry.name,
+            status: typeof entry.status === 'string' ? entry.status : '',
+            // Kept as the CLI reports it and never defaulted: a server that collides with a project
+            // server reports `project`, and a consumer comparing it with `sdk` must see that. A value
+            // of the wrong type is absent; only `name` decides whether the list is readable.
+            ...(typeof entry.source === 'string' && entry.source !== '' ? { source: entry.source } : {}),
+          },
+        ]
       : [];
   });
   return {
@@ -88,6 +97,15 @@ export type TranslationContext = {
    * `undefined` leaves `messageId` off the deltas.
    */
   streamMessageId?: string;
+  /**
+   * The content block index of the last text block of the partial-streaming message in flight that has
+   * already produced a delta, taken from its `content_block_delta`s. Maintained by the session actor per
+   * stream like `streamMessageId`, and cleared at each `message_start`. `null` means this message has
+   * produced text without a numeric index, so where its blocks begin is not known. A text delta starts a
+   * block (`startsBlock`) only at a numeric index other than this one, and never after `null`: a delta
+   * that cannot tell says it does not, and so does the first indexed one after it.
+   */
+  streamTextBlockIndex?: number | null;
   /**
    * Translate `system/permission_denied` into a `permission_denied` event. Absent or false: it stays
    * the `provider_notice` it always was. Set by the session from its policy (see session.ts's
@@ -156,6 +174,8 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
             // into the requested-mode vocabulary would fold the two back together and delete the
             // only signal that they can differ.
             permissionMode: message.permissionMode,
+            // `null` is the CLI saying none will be sent; absent, it said nothing.
+            ...(typeof message.effort === 'string' ? { effort: message.effort } : message.effort === null ? { effort: '' } : {}),
             ...initFingerprintOf(message),
           },
         ];
@@ -176,7 +196,8 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
       for (const block of message.message.content) {
         if (block.type === 'text') {
           if (!suppressCompleteText) {
-            events.push({ type: 'text_delta', turnId, text: block.text, ...messageId, ...parent });
+            // A complete message's text block is a whole block, so it always starts one.
+            events.push({ type: 'text_delta', turnId, text: block.text, ...messageId, ...parent, startsBlock: true });
           }
         } else if (block.type === 'thinking') {
           if (!suppressCompleteText) {
@@ -204,14 +225,17 @@ export function translateMessage(message: SDKMessage, ctx: TranslationContext): 
       // `input_json_delta` is a tool's arguments being assembled -- the complete, parseable input
       // arrives on the `assistant` message's tool_use block, so accumulating it here would only
       // risk emitting a half-built object.
-      const event = (message as { event?: { type?: string; delta?: { type?: string; text?: string; thinking?: string } } }).event;
+      const event = (message as { event?: { type?: string; index?: unknown; delta?: { type?: string; text?: string; thinking?: string } } }).event;
       if (event?.type !== 'content_block_delta') {
         return [];
       }
       const delta = event.delta;
       const messageId = messageIdOf(ctx.streamMessageId);
       if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        return [{ type: 'text_delta', turnId, text: delta.text, ...messageId, ...parent }];
+        // The block index is the only thing that tells two text blocks of one message apart here;
+        // without one, the delta is taken as more of the same block.
+        const startsBlock = typeof event.index === 'number' && ctx.streamTextBlockIndex !== null && event.index !== ctx.streamTextBlockIndex;
+        return [{ type: 'text_delta', turnId, text: delta.text, ...messageId, ...parent, ...(startsBlock ? { startsBlock: true } : {}) }];
       }
       if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
         return [{ type: 'thinking_delta', turnId, text: delta.thinking, ...messageId, ...parent }];

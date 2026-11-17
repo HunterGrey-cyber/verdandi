@@ -1,3 +1,4 @@
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
@@ -75,6 +76,23 @@ const ofType = <T extends ClaudeRuntimeEvent['type']>(events: ClaudeRuntimeEvent
   events.filter((event): event is Extract<ClaudeRuntimeEvent, { type: T }> => event.type === type);
 
 // ---- Accepting and refusing ------------------------------------------------------------------------------
+
+test('a slash command steered into a turn has the effort read again at the end of the turn', async () => {
+  let reads = 0;
+  const { session, controller, turnId } = await running({
+    getSettings: async () => {
+      reads += 1;
+      return { applied: { effort: 'low' } };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const before = reads;
+  session.steerTurn(turnId, 'client-1', '/effort low');
+  controller.emit({ type: 'result', subtype: 'success', result: 'ok', is_error: false, stop_reason: 'end_turn', num_turns: 1, session_id: 'c1', usage: {}, modelUsage: {}, total_cost_usd: 0, duration_ms: 1, duration_api_ms: 1, uuid: 'r' } as unknown as SDKMessage);
+  await drain(session);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, before + 1);
+});
 
 test('steerTurn mid-turn: the message goes to the CLI at once with priority next and a session uuid, and the turn stays in progress', async () => {
   const { session, nextInput, turnId } = await running();

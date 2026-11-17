@@ -1,0 +1,169 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize",
+        "systemPrompt": [
+          ""
+        ]
+      },
+      "request_id": "c418r8cksop",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize",
+          "systemPrompt": [
+            ""
+          ]
+        },
+        "request_id": "c418r8cksop",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [],
+  "tool_results": {
+    "toolu_eo": {
+      "content": "Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.\n\nIn plan mode, you should:\n1. Thoroughly explore the codebase to understand existing patterns\n2. Identify similar features and architectural approaches\n3. Consider multiple approaches and their trade-offs\n4. Use AskUserQuestion if you need to clarify the approach\n5. Design a concrete implementation strategy\n6. When ready, use ExitPlanMode to present your plan for approval\n\nRemember: DO NOT write or edit any files yet. This is a read-only exploration and planning phase.",
+      "tool_use_id": "toolu_eo",
+      "type": "tool_result"
+    }
+  },
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_enter_only"
+      ]
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_enter_only",
+        "toolu_eo"
+      ]
+    },
+    {
+      "file": "body_5.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "EnterPlanMode",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_preload_enter_only",
+        "toolu_eo"
+      ]
+    }
+  ],
+  "dropped_controls": 7
+}

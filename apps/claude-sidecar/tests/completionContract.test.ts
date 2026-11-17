@@ -260,7 +260,22 @@ test('session_ready: the init fingerprint survives the wire verbatim', () => {
     ...READY,
     initFingerprint: { tools: ['StructuredOutput'], mcpServers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }], apiKeySource: 'none' },
   }).sessionReady;
-  assert.deepEqual(ready?.initFingerprint, { tools: ['StructuredOutput'], mcpServers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }], apiKeySource: 'none' });
+  assert.deepEqual(ready?.initFingerprint, { tools: ['StructuredOutput'], mcpServers: [{ name: 'claude.ai Gmail', status: 'needs-auth', source: '' }], apiKeySource: 'none' });
+});
+
+test('session_ready: a server source from the kernel arrives as sent, and a long one is cut to 64 characters', () => {
+  const ready = overTheWire({
+    ...READY,
+    initFingerprint: {
+      tools: [],
+      mcpServers: [{ name: 'eitri', status: 'connected', source: 'sdk' }, { name: 'long', status: 'connected', source: 'x'.repeat(100) }],
+      apiKeySource: 'none',
+    },
+  }).sessionReady;
+  const [short, long] = ready?.initFingerprint?.mcpServers ?? [];
+  assert.equal(short?.source, 'sdk');
+  assert.equal(long?.source.length, 64);
+  assert.ok(long?.source.startsWith('x'.repeat(63)));
 });
 
 test('session_ready: an init with an EMPTY tools list is still a present fingerprint, distinct from none', () => {

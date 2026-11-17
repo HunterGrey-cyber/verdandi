@@ -94,8 +94,23 @@ message HandshakeResponse {
   // capability 'effective_claude_config_dir'.
   string effective_claude_config_dir = 19;
 
-  // Held for a later minor's attachment limits, so that no other field can take the number first.
-  reserved 20;
+  // What this sidecar accepts as SendTurnRequest.content. Capability 'turn_content_v1': filled by a
+  // sidecar that lists it, absent otherwise. A host checks a turn's images against these limits before
+  // it sends them, and sends content at all only when the handshake lists the capability (an older
+  // sidecar ignores SendTurnRequest.content, so the images would silently not reach the model).
+  TurnContentLimits turn_content_limits = 20;
+}
+
+// The limits on one turn's content (capability 'turn_content_v1'). They are sized so that a turn at
+// every limit still fits max_message_bytes.
+message TurnContentLimits {
+  // The media types an ImageContent may name, e.g. `image/png`.
+  repeated string image_media_types = 1;
+  uint32 max_images_per_turn = 2;
+  // One image's bytes, before any encoding the sidecar applies.
+  uint64 max_image_bytes = 3;
+  // All of one turn's content bytes together.
+  uint64 max_content_bytes = 4;
 }
 
 // One CLI binary's compatibility with this sidecar. The version and range are the facts; the verdict
@@ -644,8 +659,31 @@ message CreateSessionRequest {
   // capability refuses it with reason `client_interactions_unsupported`.
   ClientInteractions client_interactions = 11;
 
-  // Held for a later minor's attachment switch, so that no other field can take the number first.
+  // Not used: image content travels per turn, on SendTurnRequest.content (3.26), and no session-level
+  // switch was needed. Reserved so that no other field takes the number.
   reserved 12;
+
+  // Tools the host answers itself, served to the model as one in-process MCP server. Capability
+  // 'client_tools'; a host sends it only when the handshake lists that capability (an older sidecar
+  // does not know the field and runs the session without the tools). Absent changes nothing. Taken on
+  // a fresh session, a resume and a fork alike: each CreateSession states the list its own CLI gets,
+  // and a resume may state a different list from the session it continues.
+  //
+  // The sidecar starts nothing for this field: no process, no socket and nothing on any command line.
+  // Each call reaches the host as a ClientToolCall event on this session's stream and is answered with
+  // AnswerClientToolCall.
+  //
+  // Refused with INVALID_CONFIGURATION before a session exists (ErrorDetail.reason in brackets):
+  // `server_name` breaks the extra-server name rule, ^[a-z][a-z0-9_]{0,40}$ with no `__` and no trailing
+  // `_` [client_tools_server_name]; it is `ide`, whose tools the CLI hides from the model
+  // [client_tools_server_reserved]; it is one of the servers VERDANDI_CLAUDE_EXTRA_MCP_SERVERS declares
+  // [client_tools_server_taken]; `tools` is empty [client_tools_no_tools] or has more than 32 entries
+  // [client_tools_too_many]; a tool's name is not ^[A-Za-z0-9_-]+$, or `mcp__<server_name>__<name>` is
+  // longer than 64 characters [client_tools_tool_name]; two tools share a name
+  // [client_tools_tool_duplicate]; a schema is longer than 16 KiB in UTF-8 bytes
+  // [client_tools_schema_too_large]; a schema is not a JSON object whose `type` is "object"
+  // [client_tools_schema_invalid]; `timeout_ms` is below 1000 [client_tools_timeout_too_small].
+  ClientTools client_tools = 13;
 }
 
 // The interactions a host opts into on CreateSession.
@@ -653,8 +691,12 @@ message ClientInteractions {
   // The model may ask the user structured questions (the CLI's AskUserQuestion tool), which arrive as
   // InteractionRequested and are answered with ResolveInteraction.
   bool questions = 1;
-  // Held for plan approval.
-  reserved 2;
+  // The model may plan before it acts (the CLI's plan mode): EnterPlanMode and ExitPlanMode are offered,
+  // each plan the model proposes arrives as InteractionRequested with kind PLAN_APPROVAL and is settled
+  // with ResolveInteraction (approve or keep planning), and SetPlanning enters or leaves plan mode on the
+  // person's behalf. Capability 'plan_mode_v1'; a host sends it only when the handshake lists that
+  // capability. A sidecar older than 3.26 ignores the field (the plan tools stay denied).
+  bool plan_mode = 2;
 }
 
 // SDK Options.systemPrompt = {type: 'preset', preset: 'claude_code', append?}.
@@ -695,6 +737,30 @@ message SendTurnRequest {
   // `human_origin_unsupported`. false (the default, and what every client that predates the field
   // sends) is exactly the behaviour before it existed.
   bool typed_by_person = 5;
+  // Images sent with the text, in order, after it. Capability 'turn_content_v1', within the handshake's
+  // turn_content_limits; a turn with content may have empty text. Content outside those limits is refused
+  // with INVALID_CONFIGURATION and a turn_content_* reason, and nothing is recorded under the command_id.
+  // An older sidecar does not know the field and sends the
+  // text alone, so a host sends content only when the handshake lists the capability. Empty (what every
+  // client that predates the field sends) is exactly the behaviour before it existed.
+  repeated TurnContentBlock content = 6;
+}
+
+// One block of a turn's content. A oneof so that a later kind reaches an older sidecar as an empty
+// block, which it refuses rather than drops.
+message TurnContentBlock {
+  oneof block {
+    ImageContent image = 1;
+  }
+  // Held for documents, a later minor.
+  reserved 2;
+}
+
+// An image as its bytes, never a path: the sidecar reads no file for it.
+message ImageContent {
+  // One of the handshake's turn_content_limits.image_media_types; the bytes must be of that type.
+  string media_type = 1;
+  bytes data = 2;
 }
 
 message SendTurnResponse {
@@ -866,6 +932,77 @@ message SetPermissionModeResponse {
   // `bypassPermissions` for BYPASS, `default` for INTERACTIVE / VERDANDI_RULES. Returned only after
   // the CLI accepted the change; a CLI refusal fails the RPC and leaves the session's mode as it was.
   string permission_mode = 1;
+}
+
+// ---- Model and effort of a live session (capabilities 'set_model', 'list_models', 'apply_effort') ----
+//
+// These change a running CLI through its control channel: no turn, no message, nothing queued, so they
+// work while a turn runs. The response being generated finishes on the old model; the next request of
+// the same turn uses the new one (measured on CLI 2.1.311: docs/measurements/2026-11-01-model-switch-cli-2.1.311.md).
+// A permission request left waiting stays waiting, and the call it holds runs as answered.
+
+// What the CLI says it will use, from its applied settings, read after the change.
+message AppliedSettings {
+  // The canonical id. Empty when the read did not answer: the change itself still succeeded.
+  string model = 1;
+  // As SessionReady.effort: empty when the read did not answer or the model takes no effort level.
+  string effort = 2;
+}
+
+// Idempotent per command_id, per RPC. `model` is a ModelOption.value, or any id the CLI accepts: one it
+// does not list costs one small API request, which the CLI makes to check it. A change the CLI did not
+// take leaves the session on its model: ERROR_CODE_INVALID_CONFIGURATION with reason `model_refused` and
+// the CLI's own words. A CLI that has not answered in 25 s is ERROR_CODE_DEADLINE_EXCEEDED, and the change
+// may still happen. A model that cannot run the CLI's auto mode moves the session out of it, reported by
+// CliModeReported, which may reach a host after this RPC's answer. The CLI does not move back when a
+// later model can run it, and a session created in auto has no other way back: SetPermissionMode stays
+// refused on it.
+message SetModelRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string model = 3;
+}
+
+message SetModelResponse {
+  AppliedSettings applied = 1;
+}
+
+// A read, so it carries no command_id. Needs no turn.
+message ListModelsRequest {
+  string session_id = 1;
+}
+
+// One model the CLI offers, in the CLI's words and order.
+message ModelOption {
+  // What SetModel takes: an alias such as `sonnet`, or `default`.
+  string value = 1;
+  // The canonical id `value` resolves to; empty when the CLI did not say.
+  string resolved_model = 2;
+  string display_name = 3;
+  string description = 4;
+  bool supports_effort = 5;
+  repeated string supported_effort_levels = 6;
+  bool supports_auto_mode = 7;
+}
+
+message ListModelsResponse {
+  repeated ModelOption models = 1;
+  AppliedSettings applied = 2;
+}
+
+// Idempotent per command_id, per RPC. `effort` is `low`, `medium`, `high`, `xhigh` or `max`, or empty to go back
+// to what the settings say; anything else is ERROR_CODE_INVALID_CONFIGURATION with reason
+// `effort_unknown`, because the CLI itself accepts any word and ignores it. It holds from the session's
+// next request, inside a running turn too. `max` lasts for this session only and is never written to a
+// settings file. A model that takes no effort level ignores it: `applied.effort` says what holds.
+message ApplyEffortRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string effort = 3;
+}
+
+message ApplyEffortResponse {
+  AppliedSettings applied = 1;
 }
 
 // ---- WatchSessionEvents ----
@@ -1061,6 +1198,12 @@ message SessionReady {
   // unchanged. UNSPECIFIED means the string was empty (system/init carried none) or the sidecar
   // predates 'effective_session_report'; a host must not read it as an all-clear.
   CliPermissionModeKind cli_permission_mode_kind = 12;
+
+  // The effort level the CLI will send on its next request, as last read: its own system/init report
+  // when it gave one, else its applied settings, read once when the session starts, again when a
+  // turn that opened with a slash command ends, and after SetModel and ApplyEffort. Empty when no read
+  // has answered yet, or when the model takes no effort level. Capability 'session_effort_report'.
+  string effort = 13;
 }
 
 // The CLI's own permission modes, as the Agent SDK's PermissionMode type spells them, for
@@ -1103,6 +1246,13 @@ message InitFingerprint {
 message InitMcpServer {
   string name = 1;
   string status = 2;
+  // Where the CLI says this server came from, copied from system/init's entry with no default of its
+  // own: `sdk` for an in-process server such as client_tools, `dynamic` for one from --mcp-config,
+  // `project` for a project's, others for the CLI's own scopes; cut to 64 characters. Empty when the CLI
+  // reported none, and from a sidecar older than the capability 'client_tools'. An in-process server
+  // that shares its name with a project or --mcp-config server shows as one entry with that server's
+  // source, never `sdk`, and the session's tool list is the union of both.
+  string source = 3;
 }
 
 // Exactly what accountInfo() returned, unmapped; a field is absent when it returned nothing for it.
@@ -1391,6 +1541,16 @@ message TextDelta {
   // The Agent tool call this text belongs under, when a subagent produced it; absent for the main
   // thread. Capability 'subagent_frames'.
   optional string parent_tool_use_id = 4;
+  // True on the first text_delta of a content block: every text_delta under STREAMING_MODE_COMPLETE
+  // (one per block), and under STREAMING_MODE_PARTIAL the first delta whose stream event names a
+  // block index this message has not produced text under yet. False on the rest of a block's deltas,
+  // and also when the provider gave no block index to tell by (then also on the first indexed delta
+  // after it, since the earlier text may have been the same block), so a host that joins on false never
+  // splits a block; at worst it joins two. One API message can hold two text blocks with nothing
+  // between them (a paragraph, then a table); the CLI draws each as its own row, and without this a
+  // host sees one run of characters. What a host puts between blocks is its own choice.
+  // Capability 'text_block_start'.
+  bool starts_block = 5;
 }
 
 message ThinkingDelta {
@@ -1630,6 +1790,17 @@ message ResumeOutcome {
   string detail = 5;
 }
 
+// The CLI said its permission mode moved by itself, in a `system/status` frame: a change to a model that
+// cannot run auto moves `auto` to `default` at once, and every later report says so too. Emitted when
+// the report differs from the last one the session saw, so at most once per move. Verbatim, in
+// SessionReady.permission_mode's vocabulary. A host that lets the CLI's own mode decide reads this ahead
+// of the next SessionReady, which only comes with the next turn. It reports; the sidecar decides nothing
+// by it. A SetPermissionMode the host made itself is PermissionModeChanged, and comes with no report of
+// this kind. A watcher that attaches after the last report is sent it again.
+message CliModeReported {
+  string permission_mode = 1;
+}
+
 // A SetPermissionMode the CLI accepted. Emitted once per accepted SetPermissionMode, after the CLI
 // acknowledged it, so every watcher -- not only the caller of the RPC -- learns the mode changed.
 // The next turn's SessionReady.permission_mode is the provider's own independent report of the same
@@ -1741,10 +1912,13 @@ message InteractionRequested {
   string interaction_id = 1;
   // The tool call the question came from; empty when the SDK gave none.
   string tool_use_id = 2;
-  // QUESTION only in this minor.
+  // QUESTION or, on a session that opted into plan mode (capability 'plan_mode_v1'), PLAN_APPROVAL.
   InteractionKind kind = 3;
   oneof payload {
     QuestionSet questions = 10;
+    // PLAN_APPROVAL. A host that does not know this arm reads an interaction with no payload; only a
+    // session created with client_interactions.plan_mode, which such a host cannot ask for, sends it.
+    PlanProposal plan = 11;
   }
   // Set when the question could not be offered (the payload is then absent); an InteractionResolved
   // with HOST_REFUSED follows at once.
@@ -1754,8 +1928,36 @@ message InteractionRequested {
 enum InteractionKind {
   INTERACTION_KIND_UNSPECIFIED = 0;
   INTERACTION_KIND_QUESTION = 1;
-  // Held for plan approval.
-  reserved 2;
+  // A plan the model proposes (the CLI's ExitPlanMode), for the person to approve or to keep planning.
+  // Capability 'plan_mode_v1'.
+  INTERACTION_KIND_PLAN_APPROVAL = 2;
+}
+
+// The plan the model proposed, carried verbatim: the sidecar reads no plan file. Capability 'plan_mode_v1'.
+message PlanProposal {
+  // Markdown, as the model wrote it.
+  string plan = 1;
+  // Lower-case hex SHA-256 of `plan`'s UTF-8 bytes. PlanApproval names it back, so an approval is of the
+  // plan that was shown.
+  string plan_sha256 = 2;
+  // The prompts the plan says it will need, as the model listed them. Information for the person only:
+  // approving the plan grants none of them.
+  repeated PlanAllowedPrompt allowed_prompts = 3;
+}
+
+message PlanAllowedPrompt {
+  string tool = 1;
+  string prompt = 2;
+}
+
+// The execution mode a person approved a plan into, as the host names it. The CLI's own mode after the
+// approval is reported by CliModeReported and the next SessionReady; this is the host's choice, carried
+// so that every watcher learns it.
+enum PlanExecutionMode {
+  PLAN_EXECUTION_MODE_UNSPECIFIED = 0;
+  PLAN_EXECUTION_MODE_MANUAL = 1;
+  PLAN_EXECUTION_MODE_AUTO = 2;
+  PLAN_EXECUTION_MODE_BYPASS = 3;
 }
 
 message QuestionSet {
@@ -1783,6 +1985,16 @@ message InteractionResolved {
   repeated ShownAnswer answers = 3;
   // HOST_REFUSED and PROVIDER_FAILED: why, plain text, bounded.
   optional string reason = 4;
+  // The kind of the interaction that ended, so that a host can read a settlement without having kept
+  // the request. A 3.26 sidecar sets it on every settlement, questions too; UNSPECIFIED, from an older
+  // sidecar, means QUESTION.
+  InteractionKind kind = 5;
+  // APPROVED: the execution mode the person approved the plan into. Capability 'plan_mode_v1'.
+  optional PlanExecutionMode mode_after = 6;
+  // KEPT_PLANNING: the person's feedback exactly as they wrote it, set on every KEPT_PLANNING (empty when
+  // they wrote none). Feedback that is empty or only whitespace reaches the model as the CLI's plain
+  // rejection text. Capability 'plan_mode_v1'.
+  optional string feedback = 7;
 }
 
 message ShownAnswer {
@@ -1802,6 +2014,11 @@ enum InteractionOutcome {
   INTERACTION_OUTCOME_SESSION_CLOSED = 6;
   INTERACTION_OUTCOME_PROVIDER_FAILED = 7;
   INTERACTION_OUTCOME_HOST_REFUSED = 8;
+  // PLAN_APPROVAL only (capability 'plan_mode_v1'), sent only on a session that opted into plan mode:
+  // the person approved the plan, and the model goes on to carry it out.
+  INTERACTION_OUTCOME_APPROVED = 9;
+  // The person kept planning, with or without feedback; the model stays in plan mode.
+  INTERACTION_OUTCOME_KEPT_PLANNING = 10;
 }
 
 // The host's answer to one InteractionRequested. Idempotent per (session_id, command_id): the same
@@ -1816,9 +2033,29 @@ message ResolveInteractionRequest {
   oneof result {
     QuestionAnswers answers = 10;
     QuestionDecline decline = 11;
+    // PLAN_APPROVAL only (capability 'plan_mode_v1'). Either arm on a question, or a question's arm on a
+    // plan, is INTERACTION_ANSWER_REFUSED, reason `kind_mismatch`, and the interaction keeps waiting; a
+    // 3.26 sidecar that does not list the capability refuses both arms that way.
+    PlanApproval approve = 12;
+    PlanKeepPlanning keep_planning = 13;
   }
-  // Held for plan-approval results.
-  reserved 12 to 19;
+  // Held for later interaction results.
+  reserved 14 to 19;
+}
+
+// The person approves the plan into an execution mode. Capability 'plan_mode_v1'.
+message PlanApproval {
+  // UNSPECIFIED is refused.
+  PlanExecutionMode mode = 1;
+  // PlanProposal.plan_sha256 of the plan being approved; any other value is refused and the plan keeps
+  // waiting.
+  string plan_sha256 = 2;
+}
+
+// The person keeps planning; the model is told so, with the feedback when there is any. Capability
+// 'plan_mode_v1'.
+message PlanKeepPlanning {
+  string feedback = 1;
 }
 
 message QuestionAnswers {
@@ -1848,7 +2085,8 @@ message ResolveInteractionResponse {
   InteractionOutcome outcome = 1;
 }
 
-// The questions still waiting for an answer, for a host that reconnects.
+// The interactions still waiting for an answer, for a host that reconnects: questions, and on a session
+// that opted into plan mode the plan waiting for review.
 message GetInteractionStateRequest {
   string session_id = 1;
 }
@@ -1858,6 +2096,154 @@ message GetInteractionStateResponse {
   uint64 through_sequence = 1;
   // Live, unsettled.
   repeated InteractionRequested pending = 2;
+}
+
+// ---- SetPlanning (capability 'plan_mode_v1') ----
+//
+// Enters or leaves the CLI's plan mode on the person's behalf, on a session created with
+// client_interactions.plan_mode. The CLI makes the move; its own report of it is CliModeReported (and the
+// next SessionReady), which is what confirms it. A sidecar older than 3.26 answers UNIMPLEMENTED.
+message SetPlanningRequest {
+  string session_id = 1;
+  string command_id = 2;
+  // true: enter plan mode; false: leave it for the mode the session was created in.
+  bool enter = 3;
+}
+
+message SetPlanningResponse {
+  // The mode the CLI acknowledged, in SessionReady.permission_mode's vocabulary.
+  string permission_mode = 1;
+}
+
+// ---- Client tools (capability 'client_tools') ----
+//
+// Tools a host declares on CreateSession and answers itself. The sidecar serves the declared schemas to
+// the CLI as an in-process MCP server, carries each call to the host and each answer back, and decides
+// nothing: the permission gate treats the call as it treats any other MCP tool, and the tool's meaning
+// is the host's.
+
+message ClientTools {
+  // The MCP server's name: the model sees each tool as mcp__<server_name>__<tool>.
+  string server_name = 1;
+  // The CLI's hard limit on one call, in milliseconds, at least 1000 (the SDK ignores a smaller value).
+  // A call the host has not answered by then fails to the model with the CLI's own error and settles
+  // TIMED_OUT. The sidecar has no timer of its own.
+  uint32 timeout_ms = 2;
+  // At least one, at most 32.
+  repeated ClientToolDeclaration tools = 3;
+}
+
+message ClientToolDeclaration {
+  // The tool's name as declared, without the mcp__<server>__ prefix.
+  string name = 1;
+  string description = 2;
+  // The tool's JSON Schema as JSON text, served to the CLI as it is. At most 16 KiB; must parse to an
+  // object whose `type` is "object".
+  string input_schema_json = 3;
+  // Keeps this tool out of ToolSearch: it is in the model's tool list from the first request.
+  bool always_load = 4;
+}
+
+// The model called a tool of this session's client_tools. An event on the session's stream. While the
+// stream lives, exactly one ClientToolCallSettled follows each one. At most 64 calls are open on a
+// session at once: one more fails to the model and never becomes an event.
+message ClientToolCall {
+  // Random, unique per call, single-use. The sidecar's; AnswerClientToolCall names it.
+  string call_id = 1;
+  // The model's tool_use id, from the CLI's request; empty when the CLI gave none. Not cut: a call whose
+  // id is longer than 128 bytes fails to the model and never becomes an event.
+  string tool_use_id = 2;
+  // The tool's name as declared, without the mcp__<server>__ prefix.
+  string tool = 3;
+  // The call's arguments as JSON text: always an object. Neither the CLI nor the sidecar checks them
+  // against the declared schema, so the host validates them. Not cut: a call whose arguments are
+  // longer than 1 MiB fails to the model and never becomes an event.
+  string arguments_json = 4;
+}
+
+// ANSWERED, INTERRUPTED and SESSION_CLOSED are facts. TIMED_OUT, WITHDRAWN and PROVIDER_FAILED are
+// best-effort labels, read from how long the call had been open when the CLI let go of it: a late
+// cancel can read TIMED_OUT and a dying provider WITHDRAWN. No host may branch on them. Every outcome
+// means the same to a host: the call is over.
+enum ClientToolCallOutcome {
+  CLIENT_TOOL_CALL_OUTCOME_UNSPECIFIED = 0;
+  // AnswerClientToolCall reached the model.
+  CLIENT_TOOL_CALL_OUTCOME_ANSWERED = 1;
+  // InterruptTurn ended it. Under per_task_stop a call that a surviving background agent made on a
+  // gated session stays open, as its permission requests and questions do: the PreToolUse hook names
+  // the agent. A call the sidecar cannot place ends here: every call of a session with no hook (bypass),
+  // and any call whose tool_use_id the hook never saw. That agent reads an error and may retry.
+  CLIENT_TOOL_CALL_OUTCOME_INTERRUPTED = 2;
+  // The session closed while it waited.
+  CLIENT_TOOL_CALL_OUTCOME_SESSION_CLOSED = 3;
+  // The CLI's limit (ClientTools.timeout_ms) ran out.
+  CLIENT_TOOL_CALL_OUTCOME_TIMED_OUT = 4;
+  // The CLI gave up on the call before its limit, for a reason of its own, such as a stopped subagent.
+  CLIENT_TOOL_CALL_OUTCOME_WITHDRAWN = 5;
+  // The provider failed or exited while it waited.
+  CLIENT_TOOL_CALL_OUTCOME_PROVIDER_FAILED = 6;
+}
+
+// How a call ended. Sent exactly once per ClientToolCall while the session's stream lives. A stream
+// that ends without SessionClosed (the sidecar died, the session's pump failed), an EVENT_GAP and
+// SESSION_NOT_FOUND carry no settled event: to a host each of them ends every call it holds.
+message ClientToolCallSettled {
+  string call_id = 1;
+  ClientToolCallOutcome outcome = 2;
+}
+
+// One block of a tool's answer. A oneof so that a later kind reaches an older sidecar as an empty entry,
+// which it refuses, rather than as text it drops.
+message ClientToolContent {
+  oneof kind {
+    string text = 1;
+  }
+}
+
+// The host's answer to one ClientToolCall. Idempotent per (session_id, command_id): the same request
+// returns the same answer, even after the call is spent, and a different payload under the same id is
+// IDEMPOTENCY_CONFLICT. The first answer to a call wins: a later answer under another command_id is
+// CLIENT_TOOL_CALL_ALREADY_ANSWERED. A call that settled any other way (interrupted, timed out,
+// withdrawn, closed) refuses an answer with the same code, and ErrorDetail.reason says how it settled.
+// An unknown call_id, or one of another session, is CLIENT_TOOL_CALL_NOT_FOUND. A content entry with no
+// kind set is INVALID_CONFIGURATION, reason `client_tool_content_unknown`, which leaves the call open
+// and records nothing under the command_id. The whole request must stay under the handshake's
+// max_message_bytes: over it the RPC fails RESOURCE_EXHAUSTED with no ErrorDetail, and the call stays
+// open.
+message AnswerClientToolCallRequest {
+  string session_id = 1;
+  string command_id = 2;
+  string call_id = 3;
+  repeated ClientToolContent content = 4;
+  // The tool failed: the model reads `content` as the error.
+  bool is_error = 5;
+}
+
+message AnswerClientToolCallResponse {}
+
+// The calls still waiting for an answer, for a host that adopts or reconnects to a session.
+//
+// Without the arguments, on purpose: a host adopting a session answers every open call "moved" and runs
+// none of them, so it needs only the ids. And the arguments are what could not be bounded here: 64 open
+// calls of up to 1 MiB each would pass max_message_bytes, and a snapshot too large to read would cost a
+// host the one thing it asked for.
+message OpenClientToolCall {
+  string call_id = 1;
+  string tool_use_id = 2;
+  string tool = 3;
+}
+
+message GetClientToolCallStateRequest {
+  string session_id = 1;
+}
+
+message GetClientToolCallStateResponse {
+  // The event sequence the snapshot is consistent with. A ClientToolCall at or below it that is not in
+  // `open` has settled. A host applies `open`, then the events after this sequence, deduplicating by
+  // call_id.
+  uint64 through_sequence = 1;
+  // Live, unsettled, oldest first. At most 64.
+  repeated OpenClientToolCall open = 2;
 }
 
 // ---- Background task control (capabilities 'task_control', 'task_output') ----
@@ -1872,11 +2258,18 @@ message StopTaskRequest {
 
 message StopTaskResponse {}
 
-// The tail of a background task's output. A read, so it carries no command_id.
-// TASK_OUTPUT_UNAVAILABLE when there is none to read (always for WORKFLOW and LOCAL_AGENT tasks).
+// The tail of a background task's output, or with `offset` a range of it. A read, so it carries no
+// command_id. TASK_OUTPUT_UNAVAILABLE when there is none to read (always for WORKFLOW and LOCAL_AGENT
+// tasks).
 message GetTaskOutputRequest {
   string session_id = 1;
   string task_id = 2;
+  // Capability 'task_output_range'. The first byte to read. Absent, the response is the last 8 KiB, and
+  // `max_bytes` is ignored. An older sidecar ignores it (unknown field) and answers the tail.
+  optional uint64 offset = 3;
+  // With `offset`: at most this many bytes, cut to 1 MiB. 0 means 1 MiB. An `offset` past the end gives
+  // no bytes, and the response's `offset` is the end.
+  uint32 max_bytes = 4;
 }
 
 message GetTaskOutputResponse {
@@ -1884,8 +2277,12 @@ message GetTaskOutputResponse {
   bytes output = 1;
   // The whole output's size.
   uint64 total_bytes = 2;
-  // `output` is only the tail of it.
+  // `output` is only part of it. True for the last page of a ranged read as well: a reader paging
+  // through compares `offset` plus the length with `total_bytes`.
   bool truncated = 3;
+  // Capability 'task_output_range'. Where `output` starts in the whole output. The tail's start for a
+  // read with no `offset`.
+  uint64 offset = 4;
 }
 
 message SessionEvent {
@@ -1929,10 +2326,16 @@ message SessionEvent {
     // Capability 'structured_questions_v1'.
     InteractionRequested interaction_requested = 40;
     InteractionResolved interaction_resolved = 41;
+    // Capability 'client_tools'.
+    ClientToolCall client_tool_call = 50;
+    ClientToolCallSettled client_tool_call_settled = 51;
+    // Capability 'cli_mode_reports'.
+    CliModeReported cli_mode_reported = 60;
   }
 
-  // 27-28 are not used; 29 is held for a later minor's planning-state event. 36-39 are free for
-  // later turn events and 42-49 for later interactions.
+  // 27-29 are not used (29 was once held for a planning-state event; plan mode's moves are reported by
+  // CliModeReported instead). 36-39 are free for later turn events, 42-49 for later interactions and
+  // 52-59 for later client-tool events.
   reserved 27 to 29;
 }
 
@@ -1975,6 +2378,11 @@ enum ErrorCode {
   // ResolveInteraction: the answer breaks a rule (ErrorDetail.reason names it); the interaction stays
   // pending.
   ERROR_CODE_INTERACTION_ANSWER_REFUSED = 31;
+  // AnswerClientToolCall: an unknown call_id, or one of another session.
+  ERROR_CODE_CLIENT_TOOL_CALL_NOT_FOUND = 32;
+  // AnswerClientToolCall: the call has settled (ErrorDetail.reason says how, one of `answered`,
+  // `interrupted`, `session_closed`, `timed_out`, `withdrawn`, `provider_failed`).
+  ERROR_CODE_CLIENT_TOOL_CALL_ALREADY_ANSWERED = 33;
 }
 
 message ErrorDetail {
@@ -2011,4 +2419,15 @@ service RuntimeService {
   // Capability 'structured_questions_v1'. A sidecar without it answers UNIMPLEMENTED.
   rpc ResolveInteraction(ResolveInteractionRequest) returns (ResolveInteractionResponse);
   rpc GetInteractionState(GetInteractionStateRequest) returns (GetInteractionStateResponse);
+  // Capability 'plan_mode_v1'. A sidecar without it answers UNIMPLEMENTED.
+  rpc SetPlanning(SetPlanningRequest) returns (SetPlanningResponse);
+  // Capability 'client_tools'. A sidecar without it answers UNIMPLEMENTED.
+  rpc AnswerClientToolCall(AnswerClientToolCallRequest) returns (AnswerClientToolCallResponse);
+  rpc GetClientToolCallState(GetClientToolCallStateRequest) returns (GetClientToolCallStateResponse);
+  // Capability 'set_model'. A sidecar without it answers UNIMPLEMENTED.
+  rpc SetModel(SetModelRequest) returns (SetModelResponse);
+  // Capability 'list_models'. A sidecar without it answers UNIMPLEMENTED.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  // Capability 'apply_effort'. A sidecar without it answers UNIMPLEMENTED.
+  rpc ApplyEffort(ApplyEffortRequest) returns (ApplyEffortResponse);
 }

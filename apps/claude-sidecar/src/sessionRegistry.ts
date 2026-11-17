@@ -1,4 +1,4 @@
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, InteractionPort, PermissionAnswer, SendTurnOptions, SessionCloseReason, SteerTurnOptions, TaskOutputResult } from '@verdandi/claude-runtime';
+import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClientToolPort, InteractionPort, PermissionAnswer, SendTurnOptions, SessionCloseReason, SteerTurnOptions, TaskOutputResult, AppliedSettings, ModelOption, OutputRange } from '@verdandi/claude-runtime';
 import type { InteractionOutcome } from './generated/verdandi/claude/runtime/v1/runtime.js';
 import { RingBuffer, type SequencedEvent } from './ringBuffer.js';
 import { IdempotencyCache } from './idempotency.js';
@@ -34,10 +34,18 @@ export interface MinimalKernelSession {
   stopTask(taskId: string): Promise<void>;
   /** GetTaskOutput. Rejects with the kernel's `TaskNotFoundError` for an unknown task and its
    * `TaskOutputUnavailableError` when there is nothing it may read. */
-  taskOutput(taskId: string): Promise<TaskOutputResult>;
+  taskOutput(taskId: string, range?: OutputRange): Promise<TaskOutputResult>;
+  /** SetModel. Rejects with the kernel's `SessionSettingsError`. */
+  setModel(model: string): Promise<AppliedSettings>;
+  /** ListModels. Rejects with the kernel's `SessionSettingsError`. */
+  listModels(): Promise<{ models: ModelOption[]; applied: AppliedSettings }>;
+  /** ApplyEffort. Rejects with the kernel's `SessionSettingsError`. */
+  applyEffort(effort: string): Promise<AppliedSettings>;
   /** The route this session's structured questions take to the host; `undefined` for a session that
    * offers none. */
   interactions(): InteractionPort | undefined;
+  /** The calls to the tools this session's host declared; `undefined` when it declared none. */
+  clientTools(): ClientToolPort | undefined;
 }
 
 export type SessionEntry = {
@@ -52,7 +60,9 @@ export type SessionEntry = {
   readonly closeIdempotency: IdempotencyCache<Record<string, never>>;
   readonly setPermissionModeIdempotency: IdempotencyCache<{ permissionMode: string }>;
   readonly stopTaskIdempotency: IdempotencyCache<Record<string, never>>;
+  readonly settingsIdempotency: IdempotencyCache<AppliedSettings>;
   readonly resolveInteractionIdempotency: IdempotencyCache<{ outcome: InteractionOutcome }>;
+  readonly answerClientToolCallIdempotency: IdempotencyCache<Record<string, never>>;
   /** SetPermissionMode calls still waiting on the CLI, by command_id. The only async mutating RPC
    * whose outcome is recorded after an await, so a duplicate arriving in that window must join the
    * call in flight rather than run the switch a second time. */
@@ -60,6 +70,9 @@ export type SessionEntry = {
   /** The newest `commands_updated` this session emitted, as sequenced; set by PumpDriver and by a
    * watch that sends it again (see `reannounceCommands` in runtimeServiceImpl.ts). */
   latestCommands: SequencedEvent | undefined;
+  /** The newest `cli_mode_reported`, kept and sent again the same way: no read says the CLI's mode
+   * ahead of the next turn, so a watcher that missed it would otherwise be told nothing. */
+  latestCliMode: SequencedEvent | undefined;
 };
 
 /**
@@ -84,9 +97,12 @@ export class SessionRegistry {
       closeIdempotency: new IdempotencyCache(),
       setPermissionModeIdempotency: new IdempotencyCache(),
       stopTaskIdempotency: new IdempotencyCache(),
+      settingsIdempotency: new IdempotencyCache(),
       resolveInteractionIdempotency: new IdempotencyCache(),
+      answerClientToolCallIdempotency: new IdempotencyCache(),
       setPermissionModeInFlight: new Map(),
       latestCommands: undefined,
+      latestCliMode: undefined,
     };
     this.entries.set(sessionId, entry);
     return entry;

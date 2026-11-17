@@ -1,0 +1,115 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize",
+        "systemPrompt": [
+          ""
+        ]
+      },
+      "request_id": "57wtdo82q84",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize",
+          "systemPrompt": [
+            ""
+          ]
+        },
+        "request_id": "57wtdo82q84",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [],
+  "tool_results": {},
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [],
+      "images": [
+        {
+          "media_type": "image/png",
+          "sha256": "3a866bfa71fc39678d19d678812d7474c377d19f686b81c4f409511da4cc5769"
+        },
+        {
+          "media_type": "image/jpeg",
+          "sha256": "77463996a4ec50682e56684b80171802796f6f7b9c019181c5ee1af8232e16f7"
+        }
+      ]
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [],
+      "images": [
+        {
+          "media_type": "image/png",
+          "sha256": "3a866bfa71fc39678d19d678812d7474c377d19f686b81c4f409511da4cc5769"
+        },
+        {
+          "media_type": "image/jpeg",
+          "sha256": "77463996a4ec50682e56684b80171802796f6f7b9c019181c5ee1af8232e16f7"
+        }
+      ]
+    }
+  ],
+  "dropped_controls": 3
+}

@@ -1,4 +1,4 @@
-import type { AccountInfo, PermissionMode, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { AccountInfo, EffortLevel, ModelInfo, PermissionMode, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 
 /**
  * The subset of the real SDK's `Query` interface (sdk.d.ts:2522) this package's code actually
@@ -30,4 +30,15 @@ export type MinimalQuery = AsyncGenerator<SDKMessage, void> & {
    * Promise<void>`, a `stop_task` control request). The CLI then reports the task's end itself, as a
    * `task_notification` with status `stopped`. A workflow's id stops the whole run. */
   stopTask(taskId: string): Promise<void>;
+  /** Widened for SetModel: a `set_model` control request. Rejects with the CLI's own words for an id
+   * it does not know; an id it does not list costs it one small API request to check. */
+  setModel(model?: string): Promise<void>;
+  /** Widened for ListModels: from the CLI's answer to initialize, which needs no turn. */
+  supportedModels(): Promise<ModelInfo[]>;
+  /** Widened for ApplyEffort: only the one key this package sets. The CLI accepts any word. */
+  applyFlagSettings(settings: { effortLevel: EffortLevel | null }): Promise<void>;
+  /** What the CLI says it will use. The real `Query` has it, though its type does not list it (a
+   * `get_settings` control request, which the SDK's control types do list), so it may go away:
+   * callers check for it. `applied.effort` is `null` for a model that takes no level. */
+  getSettings?(): Promise<{ applied?: { model?: string | null; effort?: string | null } }>;
 };

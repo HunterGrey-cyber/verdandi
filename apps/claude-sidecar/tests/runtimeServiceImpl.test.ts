@@ -679,6 +679,18 @@ test('the advertised capability list is exactly this, in this order', async () =
     'session_notices',
     'conversation_reset',
     'structured_questions_v1',
+    // Added at protocol 3.23 by the change that makes it work: tools a host declares on CreateSession
+    // and answers through AnswerClientToolCall. Ahead of the executable pair.
+    'client_tools',
+    'set_model',
+    'list_models',
+    'apply_effort',
+    'session_effort_report',
+    'cli_mode_reports',
+    'task_output_range',
+    'text_block_start',
+    'plan_mode_v1',
+    'turn_content_v1',
     'executable_host_cli',
     'executable_sdk_bundled',
   ]);

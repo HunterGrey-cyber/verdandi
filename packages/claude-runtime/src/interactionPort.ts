@@ -1,7 +1,9 @@
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { PlanBroker } from './planBroker.js';
+import { planOffered } from './planOptions.js';
 import { QuestionBroker } from './questionBroker.js';
 import { questionsOffered } from './questionOptions.js';
-import type { ClaudeRuntimeEvent, ClaudeSessionConfig, InteractionRequestedEvent, InteractionResolvedEvent } from './types.js';
+import type { ClaudeRuntimeEvent, ClaudeSessionConfig, InteractionRequestedEvent, InteractionResolvedEvent, PlanExecutionMode } from './types.js';
 
 /** Why every interaction still open is being settled at once. */
 export type InteractionFailCause = 'interrupted' | 'session_closed' | 'provider_failed';
@@ -12,7 +14,11 @@ export type InteractionAnswerInput = { questionIndex: number; optionIndexes: num
 /** What the host answered to one open interaction. */
 export type InteractionResult =
   | { kind: 'answers'; answers: InteractionAnswerInput[] }
-  | { kind: 'decline'; decline: 'cancel' | 'chat'; soFar?: InteractionAnswerInput[] };
+  | { kind: 'decline'; decline: 'cancel' | 'chat'; soFar?: InteractionAnswerInput[] }
+  /** Approves a plan into `mode`; `planSha256` must name the plan that is waiting. */
+  | { kind: 'plan_approve'; mode: PlanExecutionMode; planSha256: string }
+  /** Keeps planning; `feedback` (may be empty) is what the person wants changed. */
+  | { kind: 'plan_keep'; feedback: string };
 
 /** The rule an answer broke, as the stable name a refusal carries. */
 export type InteractionAnswerRefusal =
@@ -25,7 +31,10 @@ export type InteractionAnswerRefusal =
   | 'answer_too_long'
   | 'answers_too_long'
   | 'notes_too_long'
-  | 'kind_mismatch';
+  | 'kind_mismatch'
+  | 'plan_digest_mismatch'
+  | 'plan_mode_unspecified'
+  | 'feedback_too_long';
 
 /** `resolve()` was given an id that names no open interaction of this session: never one, or one
  * already settled. Nothing changed. */
@@ -68,14 +77,74 @@ export interface InteractionPort {
   resolve(interactionId: string, result: InteractionResult): InteractionResolvedEvent;
 }
 
+/** The session state a port reads when a call arrives. */
+export type InteractionPortContext = {
+  /** The CLI's permission mode as the session knows it, `plan` when any account of it says so. A plan
+   * port without it treats the CLI as never in plan mode, so every plan is refused there. */
+  cliMode?: () => string | undefined;
+};
+
+/**
+ * One port over a question broker and a plan broker. A call goes to whichever takes it; an answer goes
+ * to the broker holding its interaction, which refuses an answer of the other kind (`kind_mismatch`).
+ */
+class InteractionRouter implements InteractionPort {
+  /** When each open interaction was announced, so the pending list of both brokers is oldest first. */
+  private readonly order = new Map<string, number>();
+  private announced = 0;
+  readonly questions: QuestionBroker;
+  readonly plans: PlanBroker;
+
+  constructor(emit: (event: ClaudeRuntimeEvent) => void, cliMode: () => string | undefined) {
+    const tracked = (event: ClaudeRuntimeEvent): void => {
+      if (event.type === 'interaction_requested') {
+        this.order.set(event.interactionId, this.announced++);
+      } else if (event.type === 'interaction_resolved') {
+        this.order.delete(event.interactionId);
+      }
+      emit(event);
+    };
+    this.questions = new QuestionBroker(tracked);
+    this.plans = new PlanBroker(tracked, cliMode);
+  }
+
+  route(toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; toolUseID?: string; agentID?: string }): Promise<PermissionResult> | undefined {
+    return this.questions.route(toolName, input, options) ?? this.plans.route(toolName, input, options);
+  }
+
+  failAll(cause: InteractionFailCause, spares?: (agentId: string) => boolean): void {
+    this.questions.failAll(cause, spares);
+    this.plans.failAll(cause, spares);
+  }
+
+  pending(): InteractionRequestedEvent[] {
+    const rank = (event: InteractionRequestedEvent): number => this.order.get(event.interactionId) ?? Number.MAX_SAFE_INTEGER;
+    return [...this.questions.pending(), ...this.plans.pending()].sort((a, b) => rank(a) - rank(b));
+  }
+
+  resolve(interactionId: string, result: InteractionResult): InteractionResolvedEvent {
+    return this.plans.holds(interactionId) ? this.plans.resolve(interactionId, result) : this.questions.resolve(interactionId, result);
+  }
+}
+
 /**
  * The port a session routes its interactions through, or `undefined` for a session that does not
- * offer any: only a session opted into structured questions has one, and its port carries those
- * questions to the host and nothing else.
+ * offer any. A session opted into structured questions carries them to the host; one opted into plan
+ * mode carries the model's `ExitPlanMode` plans; one opted into both gets a single port for both.
  */
 export function createInteractionPort(
   config: Pick<ClaudeSessionConfig, 'policy' | 'clientInteractions'>,
   emit: (event: ClaudeRuntimeEvent) => void,
+  context: InteractionPortContext = {},
 ): InteractionPort | undefined {
-  return questionsOffered(config) ? new QuestionBroker(emit) : undefined;
+  const questions = questionsOffered(config);
+  const plans = planOffered(config);
+  const cliMode = context.cliMode ?? (() => undefined);
+  if (questions && plans) {
+    return new InteractionRouter(emit, cliMode);
+  }
+  if (plans) {
+    return new PlanBroker(emit, cliMode);
+  }
+  return questions ? new QuestionBroker(emit) : undefined;
 }

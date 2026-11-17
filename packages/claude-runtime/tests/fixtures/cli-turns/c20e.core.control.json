@@ -1,0 +1,219 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize"
+      },
+      "request_id": "qt9twn0tj4a",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize"
+        },
+        "request_id": "qt9twn0tj4a",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "i": 36,
+      "from": "cli",
+      "message": {
+        "request": {
+          "display_name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Layout",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "C20E grid",
+                    "label": "Grid",
+                    "preview": "# Grid\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+                  },
+                  {
+                    "description": "C20E list",
+                    "label": "List",
+                    "preview": "# List\n\n- C20E-PREVIEW one\n- two"
+                  }
+                ],
+                "question": "Which C20E layout reads better?"
+              }
+            ]
+          },
+          "requires_user_interaction": true,
+          "subtype": "can_use_tool",
+          "tool_name": "AskUserQuestion",
+          "tool_use_id": "toolu_q1"
+        },
+        "request_id": "4e586fa6-5277-441a-b569-ae25a9d5ad59",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 37,
+      "from": "host",
+      "message": {
+        "response": {
+          "request_id": "4e586fa6-5277-441a-b569-ae25a9d5ad59",
+          "response": {
+            "behavior": "allow",
+            "toolUseID": "toolu_q1",
+            "updatedInput": {
+              "annotations": {
+                "Which C20E layout reads better?": {
+                  "notes": "C20E-NOTE keep it short",
+                  "preview": "# List\n\n- C20E-PREVIEW one\n- two"
+                }
+              },
+              "answers": {
+                "Which C20E layout reads better?": "List"
+              },
+              "questions": [
+                {
+                  "header": "Layout",
+                  "multiSelect": false,
+                  "options": [
+                    {
+                      "description": "C20E grid",
+                      "label": "Grid",
+                      "preview": "# Grid\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+                    },
+                    {
+                      "description": "C20E list",
+                      "label": "List",
+                      "preview": "# List\n\n- C20E-PREVIEW one\n- two"
+                    }
+                  ],
+                  "question": "Which C20E layout reads better?"
+                }
+              ]
+            }
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      }
+    }
+  ],
+  "tool_results": {
+    "toolu_q1": {
+      "content": "The user answered: \"Which C20E layout reads better?\"=\"List\" selected preview:\n# List\n\n- C20E-PREVIEW one\n- two notes: C20E-NOTE keep it short. Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.",
+      "tool_use_id": "toolu_q1",
+      "type": "tool_result"
+    }
+  },
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_q1"
+      ]
+    }
+  ],
+  "dropped_controls": 3
+}

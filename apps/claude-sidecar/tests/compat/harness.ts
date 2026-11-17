@@ -38,6 +38,8 @@ export type HarnessOptions = {
 
 export type Harness = {
   readonly client: old.RuntimeServiceClient;
+  /** A client on its own connection to the same sidecar: its own socket, not the harness client's channel. */
+  connect(): old.RuntimeServiceClient;
   readonly sdk: FakeSdk;
   readonly diagnostics: string[];
   handshake(clientProtocolMajor?: number): Promise<old.HandshakeResponse>;
@@ -161,6 +163,14 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   });
   const client = new old.RuntimeServiceClient(`unix://${socketPath}`, grpc.credentials.createInsecure());
 
+  const extraClients: old.RuntimeServiceClient[] = [];
+  const connect = (): old.RuntimeServiceClient => {
+    // A private subchannel pool, so this really is a second connection and not a second handle on the first.
+    const extra = new old.RuntimeServiceClient(`unix://${socketPath}`, grpc.credentials.createInsecure(), { 'grpc.use_local_subchannel_pool': 1 });
+    extraClients.push(extra);
+    return extra;
+  };
+
   let commands = 0;
   const commandId = (): string => `cmd-${(commands += 1)}`;
   const watchers: Watcher[] = [];
@@ -190,6 +200,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 
   return {
     client,
+    connect,
     sdk,
     diagnostics,
     handshake: (clientProtocolMajor = 3) =>
@@ -239,6 +250,9 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     },
     async stop() {
       client.close();
+      for (const extra of extraClients) {
+        extra.close();
+      }
       try {
         await sidecar.close();
       } finally {

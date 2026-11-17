@@ -1,7 +1,7 @@
-import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createSession, type ClaudeRuntimeSession } from '../../src/session.js';
 import { TaskNotFoundError } from '../../src/taskOutput.js';
-import type { ClaudeRuntimeEvent } from '../../src/types.js';
+import type { ClaudeRuntimeEvent, ClaudeSessionConfig } from '../../src/types.js';
 import { makeFakeQuery, type FakeQueryController } from '../fakeQuery.js';
 import { mapStrings, type Line, type Wire } from './recording.js';
 
@@ -13,16 +13,22 @@ export function remapUuids<T>(value: T, uuids: Map<string, string>): T {
 /** Lets a test act on the live session: after each step (its index in `messages`), and once more after
  * the last one, before the session is closed. */
 export type DriveHooks = {
+  /** The session's policy and interactions in place of the default policy, for a replay of a session that opted into
+   * plan mode or questions. */
+  config?: Pick<ClaudeSessionConfig, 'policy' | 'clientInteractions'>;
+  /** Called once with the options the session handed the SDK, so a test can call the callbacks the CLI would. */
+  onOptions?: (options: Options) => void;
   afterStep?: (index: number, session: ClaudeRuntimeSession, fake: FakeQueryController) => Promise<void>;
   beforeClose?: (session: ClaudeRuntimeSession, fake: FakeQueryController) => Promise<void>;
 };
 export async function drive(messages: Line[], cwd: string, hooks: DriveHooks = {}): Promise<Replay> {
   const { query, controller: fake } = makeFakeQuery();
   const log: string[] = [];
-  const session = createSession({ cwd, policy: {
+  const session = createSession({ cwd, ...(hooks.config ?? { policy: {
     configuration: 'native', permissions: 'interactive', persistence: 'ephemeral', executable: 'sdk_bundled', streaming: 'partial',
-  } }, params => {
+  } }) }, params => {
     fake.captureInput(params.prompt as AsyncIterable<SDKUserMessage>);
+    hooks.onOptions?.(params.options!);
     return query;
   }, { onDiagnostic: line => log.push(line) });
   const uuids = new Map<string, string>();

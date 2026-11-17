@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync, statSync } from 'n
 import { resolve, join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const read = (path) => {
   const text = readFileSync(path, 'utf8');
@@ -13,10 +14,13 @@ const read = (path) => {
 function files(root, prefix = '') {
   return readdirSync(join(root, prefix)).flatMap(name => {
     const path = join(prefix, name);
-    return statSync(join(root, path)).isDirectory() ? files(root, path) : [path];
+    return statSync(join(root, path)).isDirectory()
+      ? (readdirSync(join(root, path)).includes('manifest.json') ? [] : files(root, path)) : [path];
   });
 }
 const segment = /^[a-zA-Z0-9_-]+$/;
+/** The tools whose control exchanges (the host's permission callback and its answer) and model-visible results are kept. */
+const INTERACTION_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 /** The fixture name of a staged run: its path under the staging root, joined with dots. */
 export function fixtureName(rel) {
   const parts = rel.split(sep).filter(Boolean);
@@ -27,7 +31,7 @@ export function fixtureName(rel) {
 export function stagedRuns(root) {
   const runs = [];
   const visit = (path) => {
-    if (readdirSync(path).includes('manifest.json')) { runs.push(relative(root, path)); return; }
+    if (readdirSync(path).includes('manifest.json')) runs.push(relative(root, path));
     for (const entry of readdirSync(path)) if (statSync(join(path, entry)).isDirectory()) visit(join(path, entry));
   };
   visit(root);
@@ -56,10 +60,11 @@ export function convert(root, variant) {
   entries.sort((a, b) => shared ? a.index - b.index : a.time - b.time);
   // `i` is the tap's shared arrival index; when the tap numbered each direction on its own it is the merged position.
   entries.forEach((e, position) => { e.i = shared ? e.index : position; });
-  const questionIds = new Set(entries.filter(e => e.message.type === 'control_request' && e.message.request?.tool_name === 'AskUserQuestion').map(e => e.message.request_id));
+  const questionIds = new Set(entries.filter(e => e.message.type === 'control_request' && INTERACTION_TOOLS.includes(e.message.request?.tool_name)).map(e => e.message.request_id));
   const exchanges = [];
   const lines = [];
   let initialize = null;
+  const initializations = [];
   let droppedControls = 0;
   const uses = new Set();
   for (const e of entries) {
@@ -71,20 +76,31 @@ export function convert(root, variant) {
         if (m.request?.tool_use_id) uses.add(m.request.tool_use_id);
       } else if (e.direction === 'stdin' && ['interrupt', 'stop_task'].includes(m.request?.subtype)) {
         lines.push({ i: e.i, from, message: m });
-      } else if (e.direction === 'stdin' && m.request?.subtype === 'initialize' && !initialize) {
-        initialize = { i: e.i, from, message: m };
+      } else if (e.direction === 'stdin' && m.request?.subtype === 'initialize') {
+        const entry = { i: e.i, from, message: m };
+        initialize ??= entry;
+        initializations.push(entry);
       } else droppedControls++;
     } else if (e.direction === 'stdout' || m.type === 'user') {
       lines.push({ i: e.i, from, message: m });
       for (const block of m.message?.content ?? []) {
-        if (block?.type === 'tool_use' && block.name === 'AskUserQuestion') uses.add(block.id);
+        if (block?.type === 'tool_use' && INTERACTION_TOOLS.includes(block.name)) uses.add(block.id);
       }
     }
   }
   const results = {};
+  const modelRequests = [];
   // Request bodies are numbered by arrival; the first result for an id is its model-visible answer.
   for (const path of manifest.files.filter(p => /^body_\d+\.json$/.test(p)).sort((a,b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]))) {
     const body = read(join(root, path));
+    // The image blocks the model was sent, as type and digest of the decoded bytes, in message order.
+    const images = (body.messages ?? []).flatMap(message => Array.isArray(message.content)
+      ? message.content.filter(block => block.type === 'image' && typeof block.source?.data === 'string').map(block => ({
+        media_type: block.source.media_type, sha256: createHash('sha256').update(Buffer.from(block.source.data, 'base64')).digest('hex') })) : []);
+    modelRequests.push({ file: path, tools: (body.tools ?? []).map(tool => tool.name),
+      tool_use_ids: (body.messages ?? []).flatMap(message => Array.isArray(message.content)
+        ? message.content.filter(block => block.type === 'tool_use').map(block => block.id) : []),
+      ...(images.length > 0 ? { images } : {}) });
     const visit = value => {
       if (!value || typeof value !== 'object') return;
       if (value.type === 'tool_result' && uses.has(value.tool_use_id) && !(value.tool_use_id in results)) results[value.tool_use_id] = value;
@@ -98,8 +114,8 @@ export function convert(root, variant) {
   const stamped = manifest.stamped ?? (users.length > 0 && users.every(e => typeof e.message.uuid === 'string' && e.message.uuid !== ''));
   return {
     messages: { manifest: { ...copied, variant: variant ?? null, stamped }, lines },
-    // Only a run that went through AskUserQuestion has a control file.
-    control: exchanges.length > 0 ? { initialize, exchanges, tool_results: results, dropped_controls: droppedControls } : null,
+    // Keep initialization alongside question traffic so declarations remain independently verifiable.
+    control: initialize || exchanges.length > 0 ? { initialize, initializations, exchanges, tool_results: results, model_requests: modelRequests, dropped_controls: droppedControls } : null,
   };
 }
 export function importRuns({ from, out, variant, only, scan }) {

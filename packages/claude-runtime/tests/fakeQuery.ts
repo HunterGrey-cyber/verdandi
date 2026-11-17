@@ -1,4 +1,4 @@
-import type { AccountInfo, PermissionMode, SDKMessage, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { ModelInfo, AccountInfo, PermissionMode, SDKMessage, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type { MinimalQuery } from '../src/queryTypes.js';
 
 /** What the fake's accountInfo() answers unless a test supplies its own. */
@@ -24,6 +24,14 @@ export type FakeQueryOptions = {
   /** Replaces the default stopTask() answer (resolves) -- e.g. with one that rejects the way the CLI
    * does for a task it no longer runs. The call is recorded either way. */
   stopTask?: (taskId: string) => Promise<void>;
+  /** Replaces the default setModel() (resolves). */
+  setModel?: (model?: string) => Promise<void>;
+  /** Replaces the default supportedModels() (no models). */
+  supportedModels?: () => Promise<ModelInfo[]>;
+  /** Replaces the default applyFlagSettings() (resolves). */
+  applyFlagSettings?: (settings: { effortLevel: string | null }) => Promise<void>;
+  /** Gives the query a getSettings(), which a default fake does not have. */
+  getSettings?: () => Promise<{ applied?: { model?: string | null; effort?: string | null } }>;
 };
 
 export type FakeQueryController = {
@@ -143,6 +151,16 @@ export function makeFakeQuery(options: FakeQueryOptions = {}): { query: MinimalQ
     supportedCommands(): Promise<SlashCommand[]> {
       return options.supportedCommands !== undefined ? options.supportedCommands() : new Promise<SlashCommand[]>(() => {});
     },
+    setModel(model?: string): Promise<void> {
+      return options.setModel !== undefined ? options.setModel(model) : Promise.resolve();
+    },
+    supportedModels(): Promise<ModelInfo[]> {
+      return options.supportedModels !== undefined ? options.supportedModels() : Promise.resolve([]);
+    },
+    applyFlagSettings(settings: { effortLevel: string | null }): Promise<void> {
+      return options.applyFlagSettings !== undefined ? options.applyFlagSettings(settings) : Promise.resolve();
+    },
+    ...(options.getSettings === undefined ? {} : { getSettings: options.getSettings }),
     stopTask(taskId: string): Promise<void> {
       stopTaskCalls.push(taskId);
       return options.stopTask !== undefined ? options.stopTask(taskId) : Promise.resolve();

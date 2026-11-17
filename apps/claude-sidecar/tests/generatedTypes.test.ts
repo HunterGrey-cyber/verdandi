@@ -31,6 +31,7 @@ test('generated types: HandshakeResponse can be constructed and encoded/decoded 
     cliCompatibility: undefined,
     bundledCliCompatibility: undefined,
     effectiveClaudeConfigDir: '/home/probe/.claude-work',
+    turnContentLimits: undefined,
   };
 
   const bytes = HandshakeResponse.encode(original).finish();

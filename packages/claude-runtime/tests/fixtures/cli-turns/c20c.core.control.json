@@ -1,0 +1,212 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize"
+      },
+      "request_id": "bcjeaoaetkv",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize"
+        },
+        "request_id": "bcjeaoaetkv",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "i": 36,
+      "from": "cli",
+      "message": {
+        "request": {
+          "display_name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Colour",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "C20 calm",
+                    "label": "Blue"
+                  },
+                  {
+                    "description": "C20 fresh",
+                    "label": "Green"
+                  }
+                ],
+                "question": "Which colour should the C20 banner use?"
+              },
+              {
+                "header": "Checks",
+                "multiSelect": true,
+                "options": [
+                  {
+                    "description": "C20 style",
+                    "label": "Lint"
+                  },
+                  {
+                    "description": "C20 fast tests",
+                    "label": "Unit"
+                  },
+                  {
+                    "description": "C20 slow",
+                    "label": "Fuzz"
+                  },
+                  {
+                    "description": "C20 timing",
+                    "label": "Bench"
+                  }
+                ],
+                "question": "Which C20 checks should run?"
+              }
+            ]
+          },
+          "requires_user_interaction": true,
+          "subtype": "can_use_tool",
+          "tool_name": "AskUserQuestion",
+          "tool_use_id": "toolu_q1"
+        },
+        "request_id": "df5ba86f-4182-43af-9fc7-989c8cf1dc18",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 37,
+      "from": "host",
+      "message": {
+        "response": {
+          "request_id": "df5ba86f-4182-43af-9fc7-989c8cf1dc18",
+          "response": {
+            "behavior": "deny",
+            "message": "The user wants to clarify these questions.\n    This means they may have additional information, context or questions for you.\n    Take their response into account and then reformulate the questions if appropriate.\n    Start by asking them what they would like to clarify.\n\n    Questions asked:\n- \"Which colour should the C20 banner use?\"\n  Answer: Blue\n- \"Which C20 checks should run?\"\n  (No answer provided)",
+            "toolUseID": "toolu_q1"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      }
+    }
+  ],
+  "tool_results": {
+    "toolu_q1": {
+      "content": "The user wants to clarify these questions.\n    This means they may have additional information, context or questions for you.\n    Take their response into account and then reformulate the questions if appropriate.\n    Start by asking them what they would like to clarify.\n\n    Questions asked:\n- \"Which colour should the C20 banner use?\"\n  Answer: Blue\n- \"Which C20 checks should run?\"\n  (No answer provided)",
+      "is_error": true,
+      "tool_use_id": "toolu_q1",
+      "type": "tool_result"
+    }
+  },
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_q1"
+      ]
+    }
+  ],
+  "dropped_controls": 3
+}

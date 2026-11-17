@@ -104,7 +104,7 @@ test('real SDK, design-note test d (allow): an extra server\'s tool is asked abo
   const { events, callsAtRequest, calls } = await runOnce(true);
   const ready = events.find((event) => event.type === 'session_ready');
   assert.ok(ready?.type === 'session_ready');
-  assert.deepEqual(ready.initFingerprint?.mcpServers, [{ name: SERVER, status: 'connected' }], 'the verified session saw exactly the extra server, connected');
+  assert.deepEqual(ready.initFingerprint?.mcpServers.map(({ name, status }) => ({ name, status })), [{ name: SERVER, status: 'connected' }], 'the verified session saw exactly the extra server, connected');
   assert.equal(events.some((event) => event.type === 'session_closed'), false, `the init check closed a session it should pass: ${JSON.stringify(ready.initFingerprint)}`);
   assert.ok(requested(events).includes(TOOL), `no permission_requested for ${TOOL}: ${JSON.stringify(requested(events))}`);
   assert.ok(callsAtRequest.every((called) => !called), 'the server was called before the host was asked');

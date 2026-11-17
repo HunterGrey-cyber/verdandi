@@ -123,7 +123,7 @@ test('the task RPCs: the kernel\'s refusals and an unknown session as their wire
 
 test('GetTaskOutput: the tail as bytes, the whole size and the cut', async () => {
   const { impl, sessionId, controller } = await setup();
-  controller.answerTaskOutput(async () => ({ output: new Uint8Array([0x78, 0x0a]), totalBytes: 20000, truncated: true }));
+  controller.answerTaskOutput(async () => ({ output: new Uint8Array([0x78, 0x0a]), totalBytes: 20000, truncated: true, offset: 19998 }));
   const read = await rpc<{ output: Buffer; totalBytes: bigint; truncated: boolean }>(impl.getTaskOutput as Handler, GetTaskOutputRequest.fromPartial({ sessionId, taskId: 'b1' }));
   assert.deepEqual([...read.output], [0x78, 0x0a]);
   assert.equal(read.totalBytes, 20000n);

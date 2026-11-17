@@ -22,7 +22,8 @@
     "test:real": "npm run build && RUN_REAL_CLAUDE_TESTS=1 node --test 'dist/tests/realSdk.*.integration.test.js'"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -1,23 +1,29 @@
 import { ScheduleLedger } from './scheduleLedger.js';
 import { query as realQuery } from '@anthropic-ai/claude-agent-sdk';
-import type { HookCallbackMatcher, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { McpSdkServerConfigWithInstance, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { hasParent, translateMessage, turnFrameOf, type TranslationContext } from './eventTranslation.js';
 import { TurnTracker, type ResultFacts, type TrackerStep } from './turnTracker.js';
 import { BackgroundTasks } from './backgroundTasks.js';
-import type { AccountIdentity, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, ClientInteractions, EffectiveSessionOptions, EffectiveToolOptions, PermissionOutcome, SendTurnOptions, SessionCloseReason, SlashCommandInfo, SteerDropReason, SteerTurnOptions, TaskOutputResult, TurnOutcome } from './types.js';
-import type { PermissionMode as SdkPermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { AccountIdentity, AppliedSettings, ClaudeHostPolicy, ClaudeRuntimeEvent, ClaudeSessionConfig, ClientInteractions, EffectiveSessionOptions, EffectiveToolOptions, PermissionOutcome, SendTurnOptions as TextSendTurnOptions, SessionCloseReason, SlashCommandInfo, SteerDropReason, SteerTurnOptions, TaskOutputResult, TurnOutcome, ModelOption } from './types.js';
+import type { EffortLevel, ModelInfo, PermissionMode as SdkPermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { applyAccountEnv, type ClaudeAccount } from './account.js';
 import type { MinimalQuery } from './queryTypes.js';
 import { PermissionBroker, type GateDecision, type PermissionAnswer } from './permissionBroker.js';
 import { resultDetail } from './resultDetail.js';
 import { DEFAULT_ACCOUNT_INFO_TIMEOUT_MS, probeAccountIdentity, type AccountProbe } from './accountIdentity.js';
+import { createClientToolPort, type ClientToolPort } from './clientToolBroker.js';
+import { clientToolsProblem } from './clientTools.js';
 import { expectedInitMcpServers, initCheckProblem, initToolViolation, permittedInitTools, requiredInitTools, verifiesInitTools } from './toolInvariant.js';
 import { CONNECTOR_SWITCH_ENV, copyExtraMcpServers, type ExtraMcpServers } from './extraMcpServers.js';
 import { webFetchDenyFor } from './webFetchDeny.js';
 import { createInteractionPort, type InteractionFailCause, type InteractionPort } from './interactionPort.js';
 import { applyQuestionOptIn, gateAbstains } from './questionOptions.js';
-import { readOutputTail, TaskNotFoundError, TaskOutputUnavailableError } from './taskOutput.js';
+import { applyPlanOptIn, ENTER_PLAN_TOOL, planAllowAnswer, planGateAbstains, planOffered } from './planOptions.js';
+import { readOutput, TaskNotFoundError, TaskOutputUnavailableError, type OutputRange } from './taskOutput.js';
+import { userContent, type TurnImage } from './turnContent.js';
+
+export type SendTurnOptions = TextSendTurnOptions & { content?: TurnImage[] };
 
 /**
  * The real SDK's `query()` signature (sdk.d.ts:2839): `(params: { prompt: string |
@@ -93,11 +99,13 @@ export function usesDefaultBypassDeny(policy: ClaudeHostPolicy): boolean {
  * callback (t1) and 27 with it (t2), the extra three being exactly these.
  *
  * Disallowed on every session that gets the callback, so opting into provider prompts changes who
- * answers the CLI's own asks and nothing about what the model can call. Plan mode is a CLI-side
- * permission posture of its own and stays denied on all of them. AskUserQuestion is an interactive
- * dialog: it stays denied unless the session also opts into structured questions
+ * answers the CLI's own asks and nothing about what the model can call. AskUserQuestion is an
+ * interactive dialog: it stays denied unless the session also opts into structured questions
  * (`clientInteractions.questions`, applied by `applyQuestionOptIn`), which takes it off the applied
- * list and routes its call to the host's question card; a caller's own `toolPolicy.deny` of it still wins.
+ * list and routes its call to the host's question card. EnterPlanMode and ExitPlanMode stay denied
+ * unless the session opts into plan mode (`clientInteractions.planMode`, applied by `applyPlanOptIn`),
+ * which offers both and routes ExitPlanMode's plan to the host's plan review. A caller's own
+ * `toolPolicy.deny` of any of them still wins.
  *
  * Frozen for the reason CONSERVATIVE_BYPASS_DENY is: exported, so an unfrozen one is shared mutable
  * state that decides what a session's model can see.
@@ -133,9 +141,10 @@ export function usesProviderPermissionPrompts(policy: ClaudeHostPolicy): boolean
  *
  * `'auto'` needs `interactive`. Under `bypass` there is no gate and the CLI runs `bypassPermissions`, so
  * an auto classifier would decide nothing; under `verdandi_rules` the gate's answers come from rules
- * rather than a host that could defer. And it cannot be `permissionModeSwitchable`: a session created
- * in `auto` refuses every `setPermissionMode` (see there), so the flag would only launch the CLI with
- * `--allow-dangerously-skip-permissions` for a switch that can never happen.
+ * rather than a host that could defer. And it cannot be `permissionModeSwitchable`: this kernel's
+ * `setPermissionMode` refuses every switch on a session created in `auto` (see there; the CLI itself
+ * accepts `plan` and `auto` there, and plan mode goes through `setPlanning`), so the flag would only
+ * launch the CLI with `--allow-dangerously-skip-permissions` for a switch that can never happen.
  */
 export function cliPermissionModeProblem(policy: ClaudeHostPolicy): string | null {
   if (policy.cliPermissionMode !== 'auto') {
@@ -208,7 +217,7 @@ export const SESSION_STATE_EVENTS_ENV = 'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS';
 export function policyToBaseOptions(
   policy: ClaudeHostPolicy,
   cwd: string,
-  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string; extraMcpServers?: ExtraMcpServers; clientInteractions?: ClientInteractions } = {},
+  overrides: { account?: ClaudeAccount; baseEnv?: NodeJS.ProcessEnv; hostCliPath?: string; extraMcpServers?: ExtraMcpServers; clientToolServer?: McpSdkServerConfigWithInstance; clientInteractions?: ClientInteractions } = {},
 ): Options {
   const options: Options = {
     cwd,
@@ -314,19 +323,25 @@ export function policyToBaseOptions(
     envOverlay.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
   }
   // The servers the process that started this sidecar declared (VERDANDI_CLAUDE_EXTRA_MCP_SERVERS,
-  // extraMcpServers.ts), for NATIVE and ISOLATED alike: they are stated, not discovered, so an
-  // ISOLATED session keeps `strictMcpConfig` and now sees exactly these. Absent, nothing below runs
-  // and the options are byte-identical to a build without it.
+  // extraMcpServers.ts) and the session's own client tools, for NATIVE and ISOLATED alike: they are
+  // stated, not discovered, so an ISOLATED session keeps `strictMcpConfig` and now sees exactly these.
+  // Absent, nothing below runs and the options are byte-identical to a build without them.
   //
-  // An ISOLATED session that has them also turns the claude.ai connectors off, twice, through this
+  // An ISOLATED session that has either also turns the claude.ai connectors off, twice, through this
   // session's own settings and environment (never the process's, which a NATIVE session shares).
   // `strictMcpConfig` already keeps them out on CLI 2.1.288; these two are for a CLI that stops
   // doing so, since a connector would then sit beside the declared servers. Measured: each one alone
   // removes a connector a non-strict session loads, and `ENABLE_CLAUDEAI_MCP_SERVERS` disables on
   // 0/false/no/off (docs/measurements/2026-10-08-c0-extra-mcp-servers.md §2). A NATIVE session
   // keeps the user's connectors: they are part of the configuration it loads on purpose.
-  if (overrides.extraMcpServers !== undefined) {
-    options.mcpServers = { ...(options.mcpServers ?? {}), ...copyExtraMcpServers(overrides.extraMcpServers) };
+  if (overrides.extraMcpServers !== undefined || overrides.clientToolServer !== undefined) {
+    options.mcpServers = {
+      ...(options.mcpServers ?? {}),
+      ...(overrides.extraMcpServers === undefined ? {} : copyExtraMcpServers(overrides.extraMcpServers)),
+      // After the copy and never through it: the entry holds a live server, which a structured clone
+      // cannot carry.
+      ...(overrides.clientToolServer === undefined ? {} : { [overrides.clientToolServer.name]: overrides.clientToolServer }),
+    };
     if (policy.configuration === 'isolated') {
       options.settings = { autoMemoryEnabled: false, disableClaudeAiConnectors: true };
       envOverlay[CONNECTOR_SWITCH_ENV] = 'false';
@@ -358,6 +373,7 @@ export function policyToBaseOptions(
   }
   // Last, so whatever it adds sees the environment and the account binding as they are built above.
   applyQuestionOptIn(options, { policy, clientInteractions: overrides.clientInteractions, baseEnv: overrides.baseEnv });
+  applyPlanOptIn(options, { policy, clientInteractions: overrides.clientInteractions });
   return options;
 }
 
@@ -444,8 +460,9 @@ export function gateDecision(state: PermissionGateState, toolName: string): Gate
 /** The provider-level mode each host-level mode runs as. `policyToBaseOptions` sets exactly this at
  * creation (bypass -> `bypassPermissions`; the gated modes -> `default`, stated explicitly so no
  * settings tier's `permissions.defaultMode` can choose it; `interactive` with `cliPermissionMode`
- * `'auto'` -> `auto`), and `setPermissionMode` switches to it -- never with `'auto'`, since a session
- * created in auto refuses every switch. `cliPermissionMode` changes nothing for any other combination:
+ * `'auto'` -> `auto`), and `setPermissionMode` switches to it -- never with `'auto'`, since this
+ * kernel's `setPermissionMode` refuses every switch on a session created in auto; `setPlanning` leaves
+ * plan mode for the creation mode this gives. `cliPermissionMode` changes nothing for any other combination:
  * `cliPermissionModeProblem` refuses `'auto'` outside `interactive` before a session exists. */
 export function providerPermissionMode(permissions: ClaudeHostPolicy['permissions'], cliPermissionMode?: ClaudeHostPolicy['cliPermissionMode']): SdkPermissionMode {
   if (permissions === 'bypass') {
@@ -453,6 +470,33 @@ export function providerPermissionMode(permissions: ClaudeHostPolicy['permission
   }
   return permissions === 'interactive' && cliPermissionMode === 'auto' ? 'auto' : 'default';
 }
+
+/** Why `setModel`, `listModels` or `applyEffort` failed, for a host that maps failures to its own error
+ * codes. */
+export class SessionSettingsError extends Error {
+  constructor(
+    /** `refused`: the request itself is wrong, and the CLI was not asked. `provider_refused`: the CLI
+     * did not take it, and its own words are the message. `timed_out`: the CLI has not answered, so the
+     * change may still happen. `closed`: the session ended first. */
+    readonly kind: 'refused' | 'provider_refused' | 'timed_out' | 'closed',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SessionSettingsError';
+  }
+}
+
+/** The levels `applyEffort` takes. The CLI accepts any word and ignores what it does not know, so a
+ * typo would look like a success. */
+const EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'] satisfies EffortLevel[];
+/** An id is one token the CLI resolves; no model has a longer or a spaced one. */
+const MODEL_ID_MAX_CHARS = 256;
+/** A settings read is one control exchange the CLI answers at once. One that does not answer costs
+ * the host a blank, never a hang. */
+const SETTINGS_READ_TIMEOUT_MS = 5000;
+/** A change of model may wait for the API request the CLI checks an unlisted id with. One that outlasts
+ * this frees the changes queued behind it. */
+const SETTINGS_CHANGE_TIMEOUT_MS = 25_000;
 
 /** Why `setPermissionMode` refused, for a host that maps failures to its own error codes. */
 export class PermissionModeError extends Error {
@@ -462,9 +506,124 @@ export class PermissionModeError extends Error {
      * ended before or while switching. */
     readonly kind: 'refused' | 'provider_refused' | 'closed',
     message: string,
+    /** A stable code for a `refused` the wire names on its own: `plan_session` (a session that offers
+     * planning, whose mode moves only through setPlanning). Absent for every other refusal. */
+    readonly reason?: 'plan_session',
   ) {
     super(message);
     this.name = 'PermissionModeError';
+  }
+}
+
+/**
+ * What a plan session knows of the CLI's permission mode, kept per source because the sources arrive
+ * out of order: a PreToolUse hook call is answered as it arrives and carries the mode the CLI is in at
+ * that moment, a `system/status` or `system/init` frame waits in the message stream until `pump()` reads
+ * it (so it can be older than a hook call already answered), and a `setPlanning` switch is acknowledged
+ * before the CLI's own status frame for it. No source overwrites another. One object shared by the
+ * session and its gate, like `PermissionGateState`. Read for plan mode's decisions only; reports
+ * (`cli_mode_reported`) never come from it.
+ */
+export class CliModeEvidence {
+  /** The mode the last `system/status` or `system/init` read by `pump()` named. */
+  private reported: string | undefined;
+  /** The mode the last main-thread PreToolUse hook call carried. */
+  private hooked: string | undefined;
+  /** The model called `EnterPlanMode` (its main-thread hook was seen) and no hook since has named a mode.
+   * The hook fires before the CLI moves, and the CLI's status frame saying plan may sit unread, so the
+   * call itself is the earliest account of the move. */
+  private entered = false;
+  /** The targets of the `setPlanning` switches the CLI acknowledged and has not yet been read reporting,
+   * oldest first. The CLI reports its switches in the order it made them, each after its
+   * acknowledgement, so a frame can only be the report of the OLDEST of them, and only when it names
+   * that one's target; any other frame is older than them all and retires nothing. */
+  private readonly acknowledged: string[] = [];
+  /** How many accounts have come in, and the count at the latest one that said `plan`. */
+  private count = 0;
+  private planAt = -1;
+
+  constructor(initial: string | undefined) {
+    this.reported = initial;
+    this.note(initial);
+  }
+
+  fromReport(mode: string): void {
+    this.reported = mode;
+    if (this.acknowledged[0] === mode) this.acknowledged.shift();
+    this.note(mode);
+  }
+
+  fromHook(mode: string): void {
+    this.hooked = mode;
+    this.entered = false;
+    this.note(mode);
+  }
+
+  /** The model's own `EnterPlanMode` call, seen at its main-thread hook (after that hook's mode). */
+  fromModelEntry(): void {
+    this.entered = true;
+    this.note('plan');
+  }
+
+  fromAcknowledgement(mode: string): void {
+    this.acknowledged.push(mode);
+    this.note(mode);
+  }
+
+  /** A point to ask `mayBePlanning` about later: what has come in since. */
+  mark(): number {
+    return this.count;
+  }
+
+  /** True when any account says plan now (a pending acknowledgement among them), or one has said it
+   * since `since`: unsure, a plan session treats the CLI as planning, which only ever withholds an
+   * allow. A hook call that names no mode is no account at all. */
+  mayBePlanning(since?: number): boolean {
+    return (
+      this.acknowledged.includes('plan') ||
+      this.reported === 'plan' ||
+      this.hooked === 'plan' ||
+      this.entered ||
+      (since !== undefined && this.planAt > since)
+    );
+  }
+
+  /** The mode the CLI is in by what it acknowledged and reported: the newest acknowledged switch while
+   * any is still unreported, else the last report. */
+  current(): string | undefined {
+    return this.acknowledged.length > 0 ? this.acknowledged[this.acknowledged.length - 1] : this.reported;
+  }
+
+  private note(mode: string | undefined): void {
+    this.count += 1;
+    if (mode === 'plan') this.planAt = this.count;
+  }
+}
+
+/** The permission modes a CLI hook call can name that this kernel knows (the SDK's `PermissionMode`). A
+ * plan session reads any other value, or none, as possibly plan. */
+const KNOWN_CLI_MODES: readonly string[] = Object.freeze(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'] satisfies SdkPermissionMode[]);
+
+/** How long `setPlanning` waits for the CLI to acknowledge a switch. One it has not acknowledged by then
+ * may still happen; the CLI's own report of its mode says whether it did. */
+export const PLANNING_SWITCH_TIMEOUT_MS = 15_000;
+
+/** The stable reasons `setPlanning` refuses with before the CLI is asked (`PlanningError` kind `refused`). */
+export type PlanningRefusalReason = 'planning_not_offered' | 'planning_turn_running' | 'planning_interaction_pending' | 'planning_already';
+
+/** Why `setPlanning` failed, for a host that maps failures to its own error codes. */
+export class PlanningError extends Error {
+  constructor(
+    /** `refused`: the switch cannot be made now, and the CLI was not asked; `reason` is one of
+     * `PlanningRefusalReason`. `provider_refused`: the CLI rejected it, and `reason` is its own words.
+     * `timed_out`: the CLI did not acknowledge within `PLANNING_SWITCH_TIMEOUT_MS`, so it may still
+     * switch. `closed`: the session ended before or while switching. */
+    readonly kind: 'refused' | 'provider_refused' | 'timed_out' | 'closed',
+    readonly reason: string,
+    message: string = reason,
+  ) {
+    super(message);
+    this.name = 'PlanningError';
   }
 }
 
@@ -591,8 +750,18 @@ export type SessionGuards = {
   /** Translate `system/permission_denied` into `permission_denied` events (see
    * `permissionDeniedEventsFor`). Absent or false: the `provider_notice` it always was. */
   permissionDeniedEvents?: boolean;
-  /** The route this session's structured questions take to the host, when it offers any. */
+  /** The route this session's structured questions and plans take to the host, when it offers any. */
   interactionPort?: InteractionPort;
+  /** The session offers plan mode (`planOffered`): `setPlanning` moves it into and out of plan, and
+   * `setPermissionMode` refuses. Needs `permissionSwitch`, whose policy names the mode plan mode
+   * returns to. */
+  planOffered?: boolean;
+  /** What the session knows of the CLI's permission mode, shared with the session's gate, which adds
+   * the mode each main-thread hook call carries (see `CliModeEvidence`). Absent, the session keeps its
+   * own. */
+  cliModeEvidence?: CliModeEvidence;
+  /** The calls to the tools this session's host declared, when it declared any. */
+  clientToolPort?: ClientToolPort;
   /** Where the session's log lines go (each says once that the CLI did not report something the turn
    * rules use). Absent: standard error. */
   onDiagnostic?: (line: string) => void;
@@ -693,6 +862,12 @@ export class ClaudeRuntimeSession {
    * `pump()` itself non-blocking (a call with nothing ready still returns immediately) while never
    * having more than one outstanding call against `rawQuery` at a time. */
   private pendingNext: ReturnType<MinimalQuery['next']> | undefined;
+  /** How `pendingNext` ended, once it has: written by the one reaction `startNext()` attaches to it, read by
+   * every later `pump()`. A poll must not attach a reaction of its own to a call that stays pending for as
+   * long as the session is idle (a `Promise.race` against it does): V8 keeps every reaction on a pending
+   * promise until it settles, so a poll every 20 ms retains about 250 bytes each, for ever, with no garbage
+   * for a collector to find. */
+  private pendingNextOutcome: { ok: true; value: IteratorResult<SDKMessage, void> } | { ok: false; error: unknown } | undefined;
 
   constructor(
     private readonly rawQuery: MinimalQuery,
@@ -728,15 +903,23 @@ export class ClaudeRuntimeSession {
     });
     this.holdFirstTurnForAccount = guards.holdFirstTurnForAccount === true;
     this.permissionSwitch = guards.permissionSwitch;
+    this.planOffered = guards.planOffered === true && guards.permissionSwitch !== undefined;
     this.effectiveToolOptions = guards.effectiveToolOptions;
     this.effectiveSessionOptions = guards.effectiveSessionOptions;
     this.permissionDeniedEvents = guards.permissionDeniedEvents === true;
     this.interactionPort = guards.interactionPort;
+    this.clientToolPort = guards.clientToolPort;
     this.interruptSparesBackgroundTasks = guards.interruptSparesBackgroundTasks === true;
     this.onDiagnostic = guards.onDiagnostic ?? ((line) => console.warn(`claude-runtime: ${line}`));
     // The CLI reports membership changes only. Each new query begins with an explicit empty
     // roster, including a query created to resume a session after its earlier process ended.
     this.pushEarly({ type: 'background_tasks_changed', tasks: [] });
+    // What the session was created to run: a status frame saying the same moves nothing.
+    const created = guards.permissionSwitch?.policy;
+    if (created !== undefined) this.lastCliMode = providerPermissionMode(created.permissions, created.cliPermissionMode);
+    this.cliModeEvidence = guards.cliModeEvidence ?? new CliModeEvidence(undefined);
+    if (this.lastCliMode !== undefined) this.cliModeEvidence.fromReport(this.lastCliMode);
+    this.refreshEffort();
     // Asked at once: the answer needs only the SDK's initialize exchange, which every session makes
     // before its first turn, so a consumer has the list before it has typed anything. A failure says
     // so once and leaves the list to a later `system/commands_changed`. A query object without the
@@ -764,6 +947,26 @@ export class ClaudeRuntimeSession {
     );
   }
 
+  /** The effort the CLI last said it will use, for a `session_ready` whose `system/init` has none. */
+  private lastEffort: string | undefined;
+  /** The permission mode the CLI last reported, by `system/init` or by a `system/status` frame. */
+  private lastCliMode: string | undefined;
+  /** See `SessionGuards.cliModeEvidence`. */
+  private readonly cliModeEvidence: CliModeEvidence;
+  /** A slash command went in: it may have changed the effort, so the turn's end reads it again. */
+  private settingsMayHaveChanged = false;
+  /** Serialises the changes, so overlapping ones reach the CLI in call order and each reads back
+   * what it left. */
+  private settingsChain: Promise<unknown> = Promise.resolve();
+  /** The latest settings read begun: only its answer may set `lastEffort`, since an older one that
+   * arrives late says what held before a change. */
+  private settingsRead = 0;
+  private markEnded: () => void = () => {};
+  /** Settles when the session ends, so a control request the CLI will now never answer holds nothing. */
+  private readonly ended = new Promise<void>((resolve) => {
+    this.markEnded = resolve;
+  });
+
   /** Set by the first `system/commands_changed`: from then on the initialize answer is stale. */
   private commandsChangedSeen = false;
   /** Whether the latest `system/init` listed `CLI_MESSAGE_LIFECYCLE_CAPABILITY`. False until one has. */
@@ -779,6 +982,7 @@ export class ClaudeRuntimeSession {
 
   private readonly permissionDeniedEvents: boolean;
   private readonly interactionPort: InteractionPort | undefined;
+  private readonly clientToolPort: ClientToolPort | undefined;
   /** See `SessionGuards.interruptSparesBackgroundTasks`. */
   private readonly interruptSparesBackgroundTasks: boolean;
   private readonly onDiagnostic: (line: string) => void;
@@ -788,12 +992,17 @@ export class ClaudeRuntimeSession {
   private readonly effectiveSessionOptions: EffectiveSessionOptions | undefined;
 
   private readonly permissionSwitch: SessionGuards['permissionSwitch'];
+  /** See `SessionGuards.planOffered`. */
+  private readonly planOffered: boolean;
   /** Serialises `setPermissionMode` calls, so two overlapping switches apply in call order and the
    * gate never ends up describing the one the CLI did not end up in. */
   private permissionModeChain: Promise<unknown> = Promise.resolve();
   /** The API message id of the partial-streaming message in flight, per `parent_tool_use_id` (''
    * for the main thread), from each stream's `message_start`. See TranslationContext.streamMessageId. */
   private readonly streamMessageIds = new Map<string, string>();
+  /** The block index of the last text block that streamed a delta, per stream like `streamMessageIds`,
+   * cleared at each `message_start`. See TranslationContext.streamTextBlockIndex. */
+  private readonly streamTextBlockIndexes = new Map<string, number | null>();
   /** The child streams (by `streamMessageIds` key) that produced a text or thinking delta since their
    * own last complete message, bounded like `parentTurns`. */
   private readonly childStreamed = new Set<string>();
@@ -902,11 +1111,11 @@ export class ClaudeRuntimeSession {
       while (true) {
         this.drainPendingPermissionEvents(drained);
         if (this.pendingNext === undefined) {
-          this.pendingNext = this.rawQuery.next();
+          this.startNext();
         }
         let next: IteratorResult<SDKMessage, void> | typeof TIMEOUT;
         try {
-          next = await raceWithImmediateTimeout(this.pendingNext);
+          next = await this.settledNextOrTimeout();
         } catch (err) {
           // The provider's own words about WHY, recovered rather than discarded. This catch used to
           // bind nothing at all (`} catch {`), which threw away the single string that
@@ -930,6 +1139,7 @@ export class ClaudeRuntimeSession {
         // This call settled -- clear it so the next loop iteration (or the next pump() call, if
         // this iteration's drain ends here) starts a fresh one instead of re-awaiting a done promise.
         this.pendingNext = undefined;
+        this.pendingNextOutcome = undefined;
         // What happened while this call waited, and must come before what it read: a turn_started
         // from sendTurn (the message just read may already be that turn's), the initial command list
         // (older than a commands_changed just read). See `pushEarly`.
@@ -972,6 +1182,40 @@ export class ClaudeRuntimeSession {
     } finally {
       this.pumping = false;
     }
+  }
+
+  /** Starts the one outstanding `rawQuery.next()` call and records how it ends. The only reaction ever
+   * attached to it; a call that `terminate()` has dropped records nothing. */
+  private startNext(): void {
+    const call = this.rawQuery.next();
+    this.pendingNext = call;
+    this.pendingNextOutcome = undefined;
+    call.then(
+      (value) => {
+        if (this.pendingNext === call) {
+          this.pendingNextOutcome = { ok: true, value };
+        }
+      },
+      (error: unknown) => {
+        if (this.pendingNext === call) {
+          this.pendingNextOutcome = { ok: false, error };
+        }
+      },
+    );
+  }
+
+  /** What `pendingNext` has produced if it has settled, `TIMEOUT` if it has not, and its rejection thrown.
+   * One turn of the microtask queue passes first, so a call that settled just before this poll is seen. */
+  private async settledNextOrTimeout(): Promise<IteratorResult<SDKMessage, void> | typeof TIMEOUT> {
+    await undefined;
+    const outcome = this.pendingNextOutcome;
+    if (outcome === undefined) {
+      return TIMEOUT;
+    }
+    if (!outcome.ok) {
+      throw outcome.error;
+    }
+    return outcome.value;
   }
 
   /**
@@ -1020,12 +1264,16 @@ export class ClaudeRuntimeSession {
       return;
     }
     this.terminal = true;
+    this.markEnded();
     this.terminalReason = reason;
     this.pendingNext = undefined;
+    this.pendingNextOutcome = undefined;
     this.parentTurns.clear();
     this.childStreamed.clear();
     this.permissionBroker.failAllPending(permissionOutcome);
     this.interactionPort?.failAll(INTERACTION_FAIL_CAUSE[permissionOutcome]);
+    // Before the drain, so every settled event precedes `session_closed`.
+    this.clientToolPort?.failAll(INTERACTION_FAIL_CAUSE[permissionOutcome]);
     this.drainPendingPermissionEvents(sink);
     // A first turn still held for the account probe is never delivered now; the turnInProgress
     // branch below reports it failed like any other turn this termination cut short. The probe
@@ -1136,6 +1384,10 @@ export class ClaudeRuntimeSession {
       const resultText = message.subtype === 'success' ? message.result : '';
       // Everything else the result message says about how the turn ended (subtype, terminal reason,
       // API error status, errors, structured output) rides along unmapped -- see resultDetail().
+      if (this.settingsMayHaveChanged) {
+        this.settingsMayHaveChanged = false;
+        this.refreshEffort();
+      }
       events.push({
         type: 'turn_completed',
         turnId: step.closes,
@@ -1229,6 +1481,8 @@ export class ClaudeRuntimeSession {
         // not suppress this one's complete text when it arrives without deltas of its own.
         if (child) this.childStreamed.delete(streamKey);
         else this.streamedSinceLastAssistant = false;
+        // Block indexes count from 0 in every message, so the last message's must not carry over.
+        this.streamTextBlockIndexes.delete(streamKey);
         const id = stream.event.message?.id;
         if (typeof id === 'string' && id !== '') {
           this.streamMessageIds.set(streamKey, id);
@@ -1246,12 +1500,25 @@ export class ClaudeRuntimeSession {
       partialStreaming: this.partialStreaming,
       streamedSinceLastAssistant: child ? this.childStreamed.has(streamKey) : this.mainStreamTurnId === this.currentTurnId && this.streamedSinceLastAssistant,
       streamMessageId: this.streamMessageIds.get(streamKey),
+      streamTextBlockIndex: this.streamTextBlockIndexes.get(streamKey),
       // Only when true, so a session that did not opt in builds exactly the context it always did.
       ...(this.permissionDeniedEvents ? { permissionDeniedEvents: true } : {}),
     };
     const events = translateMessage(message, ctx);
+    if (!child && message.type === 'system' && raw.subtype === 'status' && typeof raw.permissionMode === 'string' && raw.permissionMode !== '') {
+      this.cliModeEvidence.fromReport(raw.permissionMode);
+      if (raw.permissionMode !== this.lastCliMode) {
+        this.lastCliMode = raw.permissionMode;
+        events.push({ type: 'cli_mode_reported', permissionMode: raw.permissionMode });
+      }
+    }
     for (const event of events) {
       if (event.type === 'conversation_reset') this.resetConversationId = event.newConversationId;
+      if (event.type === 'session_ready') {
+        this.lastCliMode = event.permissionMode;
+        this.cliModeEvidence.fromReport(event.permissionMode);
+        if (event.effort !== undefined) this.lastEffort = event.effort;
+      }
       if (event.type === 'session_ready' && this.resetConversationId !== undefined) {
         if (event.providerSessionId !== this.resetConversationId) this.onDiagnostic('conversation reset id differs from the next init session id');
         this.resetConversationId = undefined;
@@ -1259,6 +1526,17 @@ export class ClaudeRuntimeSession {
       if (event.type === 'tool_call_started' && (event.name === 'Agent' || event.name === 'Task') && !this.parentTurns.has(event.toolUseId)) {
         this.parentTurns.set(event.toolUseId, event.turnId);
         if (this.parentTurns.size > 1024) this.parentTurns.delete(this.parentTurns.keys().next().value!);
+      }
+    }
+    if (message.type === 'stream_event' && events.some((event) => event.type === 'text_delta')) {
+      const index = (message as { event?: { index?: unknown } }).event?.index;
+      {
+        // Deleted first so the entry moves to the end: the bound evicts the stream silent longest, never one
+        // mid-message (an evicted entry would make its next delta claim a block start and split a block).
+        // Text without a numeric index is recorded as null, so the next indexed delta claims no start.
+        this.streamTextBlockIndexes.delete(streamKey);
+        this.streamTextBlockIndexes.set(streamKey, typeof index === 'number' ? index : null);
+        if (this.streamTextBlockIndexes.size > 1024) this.streamTextBlockIndexes.delete(this.streamTextBlockIndexes.keys().next().value!);
       }
     }
     // Each stream arms and consumes only its own suppression flag. Child messages can interleave
@@ -1295,6 +1573,9 @@ export class ClaudeRuntimeSession {
         // answer if it is in (later turns' inits will carry it if not); the fallback covers an
         // init that arrives without one, and says so rather than leaving the field out.
         ready.accountIdentity = this.settledAccountIdentity ?? { status: 'unavailable', error: 'accountInfo() had not answered when system/init arrived' };
+      }
+      if (ready.effort === undefined && this.lastEffort !== undefined && this.lastEffort !== '') {
+        ready.effort = this.lastEffort;
       }
       if (this.effectiveToolOptions !== undefined) {
         // A fresh copy per event: each one goes to its own consumers, none of which may change what
@@ -1339,6 +1620,7 @@ export class ClaudeRuntimeSession {
     if (this.turnInProgress) {
       throw new Error('a turn is already in progress on this session');
     }
+    if (text.trimStart().startsWith('/')) this.settingsMayHaveChanged = true;
     const uuid = randomUUID();
     this.sentUuids.add(uuid);
     if (this.sentUuids.size > 256) {
@@ -1350,7 +1632,7 @@ export class ClaudeRuntimeSession {
     const userMessage: SDKUserMessage = {
       type: 'user',
       uuid,
-      message: { role: 'user', content: text },
+      message: { role: 'user', content: userContent(text, options?.content ?? []) },
       parent_tool_use_id: null,
       ...(options?.typedByPerson === true ? { origin: { kind: 'human' as const } } : {}),
     };
@@ -1430,6 +1712,7 @@ export class ClaudeRuntimeSession {
         'cli_lifecycle_not_reported',
       );
     }
+    if (text.trimStart().startsWith('/')) this.settingsMayHaveChanged = true;
     const turnId = this.currentTurnId;
     // The session's own uuid, not the client's id: the CLI keys lifecycle frames, interrupt receipts
     // and its transcript by it, and the client's id has no format the CLI promises to keep.
@@ -1572,10 +1855,13 @@ export class ClaudeRuntimeSession {
    *   CLI refusal restores the gate as it was.
    * - Pending permission requests are left pending.
    * - A session created with `cliPermissionMode: 'auto'` refuses every switch (kind `refused`), before
-   *   the CLI is asked. Its CLI runs `auto`, and no target maps back to it: switching to a gated mode
-   *   would put the CLI in `default` and silently drop the mode the host created the session in, and
-   *   the CLI's own `auto` -> `bypassPermissions` transition is unmeasured. A host that wants another
-   *   mode creates another session.
+   *   the CLI is asked. The refusal is this kernel's, not the CLI's (CLI 2.1.311 accepts `plan` and
+   *   `auto` on such a session): its CLI runs `auto`, and no host mode maps back to it, so switching to a
+   *   gated mode would put the CLI in `default` and silently drop the mode the host created the session
+   *   in, and the CLI's own `auto` -> `bypassPermissions` transition is unmeasured. A host that wants
+   *   another mode creates another session.
+   * - A plan session (one that offers plan mode) refuses every switch too (kind `refused`): its mode
+   *   moves only into and out of plan, through `setPlanning`, and back to the mode it was created in.
    */
   setPermissionMode(mode: ClaudeHostPolicy['permissions']): Promise<{ permissionMode: string; bypassDefaultDenyApplied: boolean }> {
     const run = () => this.applyPermissionMode(mode);
@@ -1587,6 +1873,9 @@ export class ClaudeRuntimeSession {
   private async applyPermissionMode(mode: ClaudeHostPolicy['permissions']): Promise<{ permissionMode: string; bypassDefaultDenyApplied: boolean }> {
     if (this.terminal) {
       throw new PermissionModeError('closed', 'session is closed');
+    }
+    if (this.planOffered) {
+      throw new PermissionModeError('refused', 'this session uses planning; its permission mode is not switchable', 'plan_session');
     }
     const sw = this.permissionSwitch;
     if (sw === undefined) {
@@ -1616,6 +1905,9 @@ export class ClaudeRuntimeSession {
     // `disallowedTools` (and was announced at creation), so it is only REPORTED here, never re-announced.
     const floor = mode === 'bypass' && usesDefaultBypassDeny({ ...sw.policy, permissions: 'bypass' });
     const previous = { ...sw.state };
+    // Ahead of the call: the CLI reports this move in a status frame too, and that one is the host's own.
+    const cliModeBefore = this.lastCliMode;
+    this.lastCliMode = providerMode;
     if (mode !== 'bypass') {
       sw.state.permissions = mode;
       sw.state.bypassFloor = false;
@@ -1624,6 +1916,7 @@ export class ClaudeRuntimeSession {
       await this.rawQuery.setPermissionMode(providerMode);
     } catch (err) {
       Object.assign(sw.state, previous);
+      this.lastCliMode = cliModeBefore;
       if (this.terminal) {
         throw new PermissionModeError('closed', 'session is closed');
       }
@@ -1648,19 +1941,78 @@ export class ClaudeRuntimeSession {
   }
 
   /**
-   * NOT the production install point. `createSession` builds the matcher directly from the broker,
-   * because `options.hooks` must be set before `queryFn` is called and therefore before this object
-   * exists. Nothing in this repository calls this method.
+   * Moves a plan session's CLI into plan mode (`enter`) or back out of it, to the mode the session was
+   * created in, as the person's own choice. Resolves once the CLI acknowledged, with the mode it
+   * acknowledged. Serialised with `setPermissionMode` on one chain.
    *
-   * It takes `timeoutSeconds` explicitly rather than reading a field so that it CANNOT silently
-   * build a different matcher than the one production installs: a caller must state the same thing
-   * `ClaudeSessionConfig.permissionHookTimeoutSeconds` states. A no-argument version of this method
-   * would quietly produce the CLI-default timeout while the real session ran with a configured one,
-   * which is the same shape as every advertised-but-unimplemented defect this protocol has already
-   * shipped once.
+   * Nothing here says the move happened: the CLI reports it itself, in the status frame that follows
+   * its acknowledgement, which the session passes on as `cli_mode_reported` like any move of its own.
+   * So the session's last known mode is not set ahead of the CLI, the gate is not touched (the host's
+   * policy does not change), and no `permission_mode_changed` goes out.
+   *
+   * Refused (`PlanningError` kind `refused`) before the CLI is asked, with a stable reason:
+   * `planning_not_offered` (not a plan session), `planning_turn_running` (a turn is open, or held for
+   * the account probe), `planning_interaction_pending` (a question or plan is waiting for the person),
+   * `planning_already` (entering while the CLI is in plan, or leaving while it is not). A CLI that
+   * rejects the switch is `provider_refused` with its own words and nothing changed; one that does not
+   * answer within `PLANNING_SWITCH_TIMEOUT_MS` is `timed_out`, and may still switch.
    */
-  hookMatcher(timeoutSeconds?: number): HookCallbackMatcher {
-    return this.permissionBroker.buildHookMatcher(timeoutSeconds);
+  setPlanning(enter: boolean): Promise<{ permissionMode: string }> {
+    const run = () => this.applyPlanning(enter);
+    const result = this.permissionModeChain.then(run, run);
+    this.permissionModeChain = result.catch(() => undefined);
+    return result;
+  }
+
+  private async applyPlanning(enter: boolean): Promise<{ permissionMode: string }> {
+    if (this.terminal) {
+      throw new PlanningError('closed', 'session is closed');
+    }
+    const created = this.permissionSwitch?.policy;
+    if (!this.planOffered || created === undefined) {
+      throw new PlanningError('refused', 'planning_not_offered', 'this session does not offer plan mode');
+    }
+    if (this.turnInProgress || this.heldFirstTurn !== undefined) {
+      throw new PlanningError('refused', 'planning_turn_running', 'a turn is running; plan mode can be entered or left once it ends');
+    }
+    if ((this.interactionPort?.pending().length ?? 0) > 0) {
+      throw new PlanningError('refused', 'planning_interaction_pending', 'a question or plan is waiting for an answer');
+    }
+    // By the CLI's reports, with a switch it acknowledged ahead of its report of it: a leave queued
+    // behind an enter is judged by the enter, whose status frame may not have been read yet.
+    const inPlan = this.cliModeEvidence.current() === 'plan';
+    if (enter === inPlan) {
+      throw new PlanningError('refused', 'planning_already', enter ? 'the CLI is already in plan mode' : 'the CLI is not in plan mode');
+    }
+    const target: SdkPermissionMode = enter ? 'plan' : providerPermissionMode(created.permissions, created.cliPermissionMode);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.rawQuery.setPermissionMode(target),
+        this.ended.then(() => {
+          throw new PlanningError('closed', 'session is closed');
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new PlanningError('timed_out', 'the CLI has not acknowledged the switch: it may still happen')),
+            PLANNING_SWITCH_TIMEOUT_MS,
+          );
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
+    } catch (err) {
+      if (err instanceof PlanningError) throw err;
+      if (this.terminal) throw new PlanningError('closed', 'session is closed');
+      throw new PlanningError('provider_refused', describeError(err));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (this.terminal) {
+      throw new PlanningError('closed', 'session is closed');
+    }
+    // Known, not reported: the report still comes from the CLI's own status frame.
+    this.cliModeEvidence.fromAcknowledgement(target);
+    return { permissionMode: target };
   }
 
   /** Global Constraint: fail closed -- an interrupted turn must never leave a pending permission
@@ -1689,12 +2041,16 @@ export class ClaudeRuntimeSession {
     // agents and workflows running, and a call one of them is waiting on is still that task's: it
     // stays open for the host, and ends when the host answers it, the CLI withdraws it (the task is
     // stopped) or the session closes. A request from a subagent this session cannot place in a
-    // running background task, and every main-thread request, is settled as before.
+    // running background task, and every main-thread request, is settled as before. A client tool call
+    // is placed by the agent the PreToolUse hook named for its id, so one the session cannot place
+    // (every call of a session with no hook, and an id the hook never saw) settles, and that agent
+    // reads an error and may retry.
     const spares = this.interruptSparesBackgroundTasks ? (agentId: string) => this.backgroundTasks.runsInBackground(agentId) : undefined;
-    // An open question ends as interrupted before the CLI hears of the interrupt: the CLI cancels a
-    // callback it is waiting on as part of interrupting, which would otherwise report the question as
+    // An open question or client tool call ends as interrupted before the CLI hears of the interrupt:
+    // the CLI cancels what it is waiting on as part of interrupting, which would otherwise report it as
     // withdrawn by the CLI rather than interrupted by the person.
     this.interactionPort?.failAll('interrupted', spares);
+    this.clientToolPort?.failAll('interrupted', spares);
     // The CLI's receipt (`still_queued`) is not needed: a steered message it still holds is pending
     // here, and the interrupted turn's result opens the turn it will run in (see translateOne).
     try {
@@ -1702,6 +2058,8 @@ export class ClaudeRuntimeSession {
     } finally {
       this.permissionBroker.failAllPending('cancelled_by_interrupt', spares);
       this.interactionPort?.failAll('interrupted', spares);
+      // Again, for a call that arrived while the CLI took the interrupt in.
+      this.clientToolPort?.failAll('interrupted', spares);
     }
   }
 
@@ -1738,9 +2096,135 @@ export class ClaudeRuntimeSession {
     return this.events;
   }
 
-  /** The route this session's structured questions take to the host; `undefined` when it offers none. */
+  /** The route this session's structured questions and plans take to the host; `undefined` when it
+   * offers neither. */
   interactions(): InteractionPort | undefined {
     return this.interactionPort;
+  }
+
+  /** The calls to the tools this session's host declared; `undefined` when it declared none. */
+  clientTools(): ClientToolPort | undefined {
+    return this.clientToolPort;
+  }
+
+  /** Reads what the CLI says it will use, and keeps the effort when this is still the latest read.
+   * Never rejects: a read that fails or does not answer says nothing, leaves what was known, and
+   * whoever changed something has its change regardless. */
+  private async readApplied(): Promise<AppliedSettings> {
+    this.settingsRead += 1;
+    const read = this.settingsRead;
+    const applied = await this.askApplied();
+    if (applied !== undefined && read === this.settingsRead) this.lastEffort = applied.effort;
+    return applied ?? { model: '', effort: '' };
+  }
+
+  private async askApplied(): Promise<AppliedSettings | undefined> {
+    if (typeof this.rawQuery.getSettings !== 'function') return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const read = await Promise.race([
+        this.rawQuery.getSettings(),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(resolve, SETTINGS_READ_TIMEOUT_MS, undefined);
+          timer.unref?.();
+        }),
+      ]);
+      if (read === undefined) return undefined;
+      const applied = read.applied;
+      return { model: typeof applied?.model === 'string' ? applied.model : '', effort: typeof applied?.effort === 'string' ? applied.effort : '' };
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private refreshEffort(): void {
+    void this.readApplied();
+  }
+
+  /** `call`, bounded by the session's end and by `SETTINGS_CHANGE_TIMEOUT_MS`, in `SessionSettingsError`s.
+   * The SDK puts no limit on a control request. */
+  private async answered<T>(call: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const closed = () => new SessionSettingsError('closed', 'session is closed');
+    try {
+      const value = await Promise.race([
+        call,
+        this.ended.then(() => {
+          throw closed();
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new SessionSettingsError('timed_out', 'the CLI has not answered: the change may still happen')), SETTINGS_CHANGE_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+      if (this.terminal) throw closed();
+      return value;
+    } catch (err) {
+      if (err instanceof SessionSettingsError) throw err;
+      // The SDK rejects what is pending when the process goes, a moment before the pump sees it end.
+      if (this.terminal || describeError(err).includes('Query closed')) throw closed();
+      throw new SessionSettingsError('provider_refused', describeError(err));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private changeSettings(change: () => Promise<void>): Promise<AppliedSettings> {
+    const run = async (): Promise<AppliedSettings> => {
+      if (this.terminal) throw new SessionSettingsError('closed', 'session is closed');
+      await this.answered(change());
+      const applied = await this.answered(this.readApplied());
+      return applied;
+    };
+    const result = this.settingsChain.then(run, run);
+    this.settingsChain = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Changes the model of the running CLI: a control request, so it needs no turn and takes effect at
+   * the session's next API request, also inside a running turn. The response being generated finishes
+   * on the old model. A pending permission request stays pending. An id the CLI does not know rejects
+   * and leaves the model alone. A model that cannot run `auto` moves the CLI to `default` at once,
+   * reported as `cli_mode_reported`, and the CLI does not move back.
+   */
+  setModel(model: string): Promise<AppliedSettings> {
+    if (model === '' || model.length > MODEL_ID_MAX_CHARS || /[\s\p{Cc}]/u.test(model)) {
+      return Promise.reject(new SessionSettingsError('refused', 'a model id is one word of at most 256 characters'));
+    }
+    return this.changeSettings(() => this.rawQuery.setModel(model));
+  }
+
+  /** The models the CLI offers, and what it says it will use. */
+  async listModels(): Promise<{ models: ModelOption[]; applied: AppliedSettings }> {
+    if (this.terminal) throw new SessionSettingsError('closed', 'session is closed');
+    const raw: ModelInfo[] = await this.answered(this.rawQuery.supportedModels());
+    return {
+      models: raw.map((model) => ({
+        value: model.value,
+        resolvedModel: model.resolvedModel ?? '',
+        displayName: model.displayName,
+        description: model.description,
+        supportsEffort: model.supportsEffort === true,
+        supportedEffortLevels: [...(model.supportedEffortLevels ?? [])],
+        supportsAutoMode: model.supportsAutoMode === true,
+      })),
+      applied: await this.answered(this.readApplied()),
+    };
+  }
+
+  /**
+   * Sets the session's effort, or with `''` goes back to what the settings say. Holds from the
+   * session's next API request, also inside a running turn. A level is refused here, ahead of the CLI,
+   * which takes any word and ignores what it does not know.
+   */
+  applyEffort(effort: string): Promise<AppliedSettings> {
+    if (effort !== '' && !EFFORT_LEVELS.includes(effort)) {
+      return Promise.reject(new SessionSettingsError('refused', 'an effort is one of low, medium, high, xhigh and max'));
+    }
+    return this.changeSettings(() => this.rawQuery.applyFlagSettings({ effortLevel: effort === '' ? null : (effort as EffortLevel) }));
   }
 
   /**
@@ -1763,19 +2247,20 @@ export class ClaudeRuntimeSession {
   }
 
   /**
-   * The last `TASK_OUTPUT_TAIL_BYTES` of a shell's or a Monitor's output, read from the file the CLI
+   * The last `TASK_OUTPUT_TAIL_BYTES` of a shell's or a Monitor's output, or the `range` of it a
+   * caller names, read from the file the CLI
    * named for that task in this session's own frames (see `BackgroundTasks.toolResult` and the path
    * rules in taskOutput.ts); the caller never supplies a path. A workflow or local agent has none and
    * is refused without looking for one. Refusals reject with `TaskOutputUnavailableError` and are
    * logged by rule name; file content never reaches the log.
    */
-  async taskOutput(taskId: string): Promise<TaskOutputResult> {
+  async taskOutput(taskId: string, range?: OutputRange): Promise<TaskOutputResult> {
     const task = this.backgroundTasks.control(taskId);
     if (task === undefined) throw new TaskNotFoundError(taskId);
     if (task.kind === 'workflow' || task.kind === 'local_agent') throw new TaskOutputUnavailableError(taskId, 'task_kind_has_no_output');
     const path = this.backgroundTasks.outputPath(taskId);
     if (path === undefined) throw new TaskOutputUnavailableError(taskId, 'no_output_path');
-    const read = await readOutputTail(path);
+    const read = await readOutput(path, range);
     if ('refused' in read) {
       this.onDiagnostic(`background task ${taskId}: output not read (${read.refused})`);
       throw new TaskOutputUnavailableError(taskId, read.refused);
@@ -1791,14 +2276,11 @@ const INTERACTION_FAIL_CAUSE: Record<'cancelled_by_interrupt' | 'cancelled_by_se
   provider_failed: 'provider_failed',
 };
 
+/** What a poll gets when the provider has produced nothing yet. `pump()` must be non-blocking (mirrors the
+ * Rust sibling's own documented deadlock history -- see neovibe's agent/MANUAL_VERIFICATION.md -- where a
+ * blocking read hung for hours), so a poll with nothing queued returns at once instead of waiting for the
+ * next real message. */
 const TIMEOUT = Symbol('pump-timeout');
-/** `pump()` must be non-blocking (mirrors the Rust sibling's own documented deadlock history --
- * see neovibe's agent/MANUAL_VERIFICATION.md -- where a blocking read hung for hours): races the
- * real generator's `next()` against an already-resolved promise so a call with nothing queued
- * returns immediately instead of waiting for the next real message. */
-async function raceWithImmediateTimeout<T>(promise: Promise<T>): Promise<T | typeof TIMEOUT> {
-  return Promise.race([promise, Promise.resolve(TIMEOUT)]);
-}
 
 /**
  * Maps the real SDK's `SDKResultMessage` (sdk.d.ts:4770-4844) to this package's `TurnOutcome`.
@@ -1860,7 +2342,7 @@ function classifyResumeFailure(err: unknown): 'rejected' | 'initialization_faile
  * would be told -- without a fake query, and without a second copy of these lines that could drift
  * from the real ones. `createSession` calls this and nothing else to build its options.
  */
-export function buildSessionOptions(config: ClaudeSessionConfig): Options {
+export function buildSessionOptions(config: ClaudeSessionConfig, clientToolPort?: ClientToolPort): Options {
   if (config.systemPrompt !== undefined && config.systemPromptPreset !== undefined) {
     throw new Error('systemPrompt and systemPromptPreset cannot both be set');
   }
@@ -1868,6 +2350,9 @@ export function buildSessionOptions(config: ClaudeSessionConfig): Options {
     account: config.account,
     hostCliPath: config.hostCliPath,
     extraMcpServers: config.extraMcpServers,
+    // Without a port, one that nothing listens to, so that this function stays pure for a caller that
+    // only reads the options.
+    clientToolServer: config.clientTools === undefined ? undefined : (clientToolPort ?? createClientToolPort(config.clientTools, () => undefined)).sdkServer(),
     clientInteractions: config.clientInteractions,
   });
   if (config.resume) {
@@ -1917,27 +2402,48 @@ export function createSession(
   if (cliMode !== null) {
     throw new Error(cliMode);
   }
-  const options = buildSessionOptions(config);
+  if (config.clientTools !== undefined) {
+    const clientToolsRefusal = clientToolsProblem(config.clientTools, Object.keys(config.extraMcpServers ?? {}));
+    if (clientToolsRefusal !== null) {
+      throw new Error(clientToolsRefusal.message);
+    }
+  }
+  const events: ClaudeRuntimeEvent[] = [];
+  const pendingPermissionEvents: ClaudeRuntimeEvent[] = [];
+  // Plain `push` for the reason the permission broker's events use it: a tool call belongs to an
+  // assistant message a read may be about to return.
+  const clientToolPort = config.clientTools === undefined ? undefined : createClientToolPort(config.clientTools, (event) => pendingPermissionEvents.push(event));
+  const options = buildSessionOptions(config, clientToolPort);
   const inputQueue = makeInputQueue();
-  // A placeholder session instance whose only job is to hold the PermissionBroker that
-  // `hookMatcher()` needs before the real query() call can happen -- options.hooks must be set
-  // BEFORE queryFn(...) is called, but the broker's `emit` closure needs somewhere to push into
-  // that only exists once the real ClaudeRuntimeSession is constructed. Building the broker
-  // directly (not via a session instance) breaks this chicken-and-egg problem cleanly: `emit`
+  // The matcher from `broker.buildHookMatcher()` must exist before the real query() call can
+  // happen -- options.hooks must be set BEFORE queryFn(...) is called, but the broker's `emit`
+  // closure needs somewhere to push into that only exists once the real ClaudeRuntimeSession is
+  // constructed. Building the broker directly (not via a session instance) breaks this
+  // chicken-and-egg problem cleanly: `emit`
   // pushes into `pendingPermissionEvents`, a plain array handed to the constructor below the same
   // way `events` is, and `pump()` (not this closure) is what later drains it into `this.events`
   // and its own return value -- see `pump()`'s own comment for why that indirection through a
   // dedicated buffer, rather than pushing straight into `events`/`initialEvents`, is required.
-  const events: ClaudeRuntimeEvent[] = [];
-  const pendingPermissionEvents: ClaudeRuntimeEvent[] = [];
   const gateState: PermissionGateState = { permissions: config.policy.permissions, bypassFloor: false };
   // The facts that decide who may switch to bypass and who may defer, read once: the caller keeps its
   // own policy object, and a later edit to it must not let one session both defer and switch.
   const creationPolicy: Readonly<ClaudeHostPolicy> = Object.freeze({ ...config.policy });
-  const interactionPort = createInteractionPort(config, (event) => pendingPermissionEvents.push(event));
+  // What the session offers, read once like the policy: a later edit to the caller's config must not
+  // turn the question or plan path, or the plan guard, on or off for a live session.
+  const offered: Pick<ClaudeSessionConfig, 'policy' | 'clientInteractions'> = Object.freeze({
+    policy: creationPolicy,
+    ...(config.clientInteractions === undefined ? {} : { clientInteractions: Object.freeze({ ...config.clientInteractions }) }),
+  });
+  // What the session knows of the CLI's mode, kept by the session and added to by the gate's hook
+  // calls; read by the plan broker (a plan is only taken in plan mode) and the plan guard below.
+  const cliModeEvidence = new CliModeEvidence(undefined);
+  const offersPlan = planOffered(offered);
+  const interactionPort = createInteractionPort(offered, (event) => pendingPermissionEvents.push(event), {
+    cliMode: () => (cliModeEvidence.mayBePlanning() ? 'plan' : cliModeEvidence.current()),
+  });
   const broker = new PermissionBroker(
     (event) => pendingPermissionEvents.push(event),
-    (toolName): GateDecision => (gateAbstains(config, toolName) ? { kind: 'abstain' } : gateDecision(gateState, toolName)),
+    (toolName): GateDecision => (gateAbstains(offered, toolName) || planGateAbstains(offered, toolName) ? { kind: 'abstain' } : gateDecision(gateState, toolName)),
     // A session that can be switched to bypass refuses every deferral: see PermissionBroker.resolve.
     // Decided from the policy it was created with, which is also what decides whether it can switch.
     () =>
@@ -1945,6 +2451,27 @@ export function createSession(
         ? 'this session was created with permission_mode_switchable, and a host that can switch a session to bypass cannot also leave decisions to the CLI\'s mode (a switch can reach the CLI before it acts on the deferral)'
         : null,
     interactionPort,
+    clientToolPort,
+    offersPlan
+      ? {
+          observeHook: (toolName, hookMode, mainThread) => {
+            if (!mainThread) return;
+            // A mode this kernel does not know, or none, says nothing about the others.
+            if (hookMode !== undefined && KNOWN_CLI_MODES.includes(hookMode)) cliModeEvidence.fromHook(hookMode);
+            // After the hook's own mode, which is the mode before the move.
+            if (toolName === ENTER_PLAN_TOOL) cliModeEvidence.fromModelEntry();
+          },
+          mark: () => cliModeEvidence.mark(),
+          // Plan mode by any account of it when the host answered: the call's own hook, a main-thread
+          // hook that named no mode this kernel knows, any source now, or any account since the call was
+          // raised. Unsure, the allow is withheld, which is never looser than sending it.
+          answerAllow: (toolName, hookMode, raisedAt, mainThread) => {
+            const unknownMode = mainThread && (hookMode === undefined || !KNOWN_CLI_MODES.includes(hookMode));
+            const planning = hookMode === 'plan' || unknownMode || cliModeEvidence.mayBePlanning(raisedAt);
+            return planAllowAnswer(offered, toolName, planning ? 'plan' : cliModeEvidence.current());
+          },
+        }
+      : undefined,
   );
   // Announced, never silent. `policyToBaseOptions` above has just narrowed this session's tools in a
   // way the caller did not ask for, and under `bypass` there is no PreToolUse hook to surface it
@@ -2002,6 +2529,9 @@ export function createSession(
         : {}),
       permissionSwitch: { state: gateState, policy: creationPolicy },
       interactionPort,
+      planOffered: offersPlan,
+      cliModeEvidence,
+      clientToolPort,
       // Read from the options the SDK was handed, so it is exactly what the CLI was told.
       interruptSparesBackgroundTasks: options.perTaskStopAffordance === true,
       ...(hooks.onDiagnostic === undefined ? {} : { onDiagnostic: hooks.onDiagnostic }),

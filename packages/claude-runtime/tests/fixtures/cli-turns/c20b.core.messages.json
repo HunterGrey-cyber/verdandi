@@ -1,0 +1,1215 @@
+{
+  "manifest": {
+    "scenario": "c20b",
+    "cli_version": "2.1.311",
+    "sdk_version": "0.3.252",
+    "verdandi_revision": "f5fab31a706b8fd830a9e02f757918dbec60ff03",
+    "env_names": [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "BASH_MAX_TIMEOUT_MS",
+      "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+      "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
+      "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+      "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
+      "CLAUDE_CODE_ENABLE_AWAY_SUMMARY",
+      "CLAUDE_CODE_ENTRYPOINT",
+      "CLAUDE_CODE_GZIP_REQUEST_BODIES",
+      "CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL",
+      "CLAUDE_CODE_MAX_RETRIES",
+      "CLAUDE_CODE_QUESTION_PREVIEW_FORMAT",
+      "CLAUDE_CODE_TMPDIR",
+      "CLAUDE_CONFIG_DIR"
+    ],
+    "variant": "core",
+    "stamped": true
+  },
+  "lines": [
+    {
+      "i": 1,
+      "from": "host",
+      "message": {
+        "message": {
+          "content": "C20B-OPEN",
+          "role": "user"
+        },
+        "parent_tool_use_id": null,
+        "type": "user",
+        "uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9"
+      }
+    },
+    {
+      "i": 3,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "running",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "4eae546c-6b36-4ca7-9f72-069793c754b7"
+      }
+    },
+    {
+      "i": 4,
+      "from": "cli",
+      "message": {
+        "command_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "queued",
+        "type": "command_lifecycle",
+        "uuid": "87afbadd-d706-4317-8698-2638632d9efb"
+      }
+    },
+    {
+      "i": 5,
+      "from": "cli",
+      "message": {
+        "command_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "started",
+        "type": "command_lifecycle",
+        "uuid": "a5138dcf-6d70-4067-8ca0-cc6ef053b470"
+      }
+    },
+    {
+      "i": 6,
+      "from": "cli",
+      "message": {
+        "additional_directories": [],
+        "agents": [
+          "claude",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "analytics_disabled": true,
+        "apiKeySource": "ANTHROPIC_API_KEY",
+        "capabilities": [
+          "interrupt_receipt_v1",
+          "interrupt_cancel_queued_v1",
+          "interrupt_send_now_v1",
+          "interrupt_requeue_taken_v1",
+          "msg_lifecycle_v1",
+          "request_marker_lists_v1",
+          "lifecycle_wakeup_source_v1",
+          "sdk_mcp_tools_list_changed",
+          "sdk_mcp_manifests",
+          "mcp_read_resource_v1",
+          "mcp_tool_ui_meta_v1",
+          "ui_surface_v1",
+          "mcp_call_result_not_for_model_v1"
+        ],
+        "claude_code_version": "2.1.311",
+        "cwd": "$RUN/project",
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "fast_mode_state": "off",
+        "mcp_servers": [],
+        "memory_paths": {
+          "auto": "$RUN/claude/projects/-RUN-project/memory/"
+        },
+        "messaging_socket_path": "$RUN/r/cc-socks/21.sock",
+        "model": "claude-opus-5-5",
+        "original_cwd": "$RUN/project",
+        "output_style": "default",
+        "per_turn_effort_active": true,
+        "permissionMode": "auto",
+        "plugins": [
+          {
+            "name": "cc-plugin-agents-md",
+            "path": "builtin",
+            "source": "cc-plugin-agents-md@builtin"
+          },
+          {
+            "name": "cc-plugin-plugin-authoring",
+            "path": "builtin",
+            "source": "cc-plugin-plugin-authoring@builtin"
+          }
+        ],
+        "product_feedback_disabled": true,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "skills": [
+          "deep-research",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "slash_commands": [
+          "deep-research",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring",
+          "agents",
+          "auto-mode-setup",
+          "autocompact",
+          "clear",
+          "color",
+          "compact",
+          "config",
+          "output-style",
+          "context",
+          "effort",
+          "fast",
+          "focus",
+          "heapdump",
+          "init",
+          "mcp",
+          "model",
+          "__remote-workflow",
+          "workflow-launch-exec",
+          "reload-plugins",
+          "reload-skills",
+          "rename",
+          "security-review",
+          "usage",
+          "insights",
+          "recap",
+          "goal",
+          "list-agents",
+          "team-onboarding"
+        ],
+        "subtype": "init",
+        "terminal_slash_commands": [
+          "doctor",
+          "color",
+          "focus",
+          "reload-plugins"
+        ],
+        "tools": [
+          "Task",
+          "AskUserQuestion",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "ListAgents",
+          "Monitor",
+          "NotebookEdit",
+          "Read",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "TaskStop",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "type": "system",
+        "user_message_uuids": [
+          "c8d2fe17-62fb-4158-814c-3679847df2a9"
+        ],
+        "uuid": "9df6f086-1d9a-4f34-91ef-443c932f913c",
+        "view_mode": "default"
+      }
+    },
+    {
+      "i": 7,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "status": "requesting",
+        "subtype": "status",
+        "type": "system",
+        "user_message_uuids": [
+          "c8d2fe17-62fb-4158-814c-3679847df2a9"
+        ],
+        "uuid": "370d123e-83c0-48e0-a5ea-8e8ab3d02423"
+      }
+    },
+    {
+      "i": 8,
+      "from": "cli",
+      "message": {
+        "content": "We're changing auto mode to no longer charge for classifier requests in Claude Code. However, this session isn't eligible because your requests go through 127.0.0.1:4141, which isn't compatible with this update. Nothing breaks: auto mode keeps working, and its classifier requests are billed as before. To fix it and access the new version of auto mode, ask your gateway to implement: https://code.claude.com/docs/en/auto-mode-classifier-billing",
+        "isMeta": false,
+        "level": "warning",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "subtype": "informational",
+        "timestamp": "2026-10-28T21:47:04.810Z",
+        "type": "system",
+        "uuid": "578e44f6-170e-432d-81fd-2ddc47a041a1"
+      }
+    },
+    {
+      "i": 9,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "message": {
+            "content": [],
+            "id": "msg_scripted_2",
+            "model": "claude-opus-5-5",
+            "role": "assistant",
+            "stop_reason": null,
+            "stop_sequence": null,
+            "type": "message",
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 0
+            }
+          },
+          "type": "message_start"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "thinking_display": "updates",
+        "ttft_ms": 11,
+        "type": "stream_event",
+        "user_message_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "user_message_uuids": [
+          "c8d2fe17-62fb-4158-814c-3679847df2a9"
+        ],
+        "uuid": "5f858113-3e42-4d21-a7cc-22143cfd58de"
+      }
+    },
+    {
+      "i": 10,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "content_block": {
+            "text": "",
+            "type": "text"
+          },
+          "index": 0,
+          "type": "content_block_start"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "eda3103b-48fe-4a52-85ed-0ebee1fc45e4"
+      }
+    },
+    {
+      "i": 11,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "delta": {
+            "text": "C20B-OPEN-DONE",
+            "type": "text_delta"
+          },
+          "index": 0,
+          "type": "content_block_delta"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "eba3115f-7536-4783-a078-0a6e9214f106"
+      }
+    },
+    {
+      "i": 12,
+      "from": "cli",
+      "message": {
+        "message": {
+          "content": [
+            {
+              "text": "C20B-OPEN-DONE",
+              "type": "text"
+            }
+          ],
+          "context_management": null,
+          "id": "msg_scripted_2",
+          "model": "claude-opus-5-5",
+          "role": "assistant",
+          "stop_reason": null,
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 1000,
+            "output_tokens": 0
+          }
+        },
+        "parent_tool_use_id": null,
+        "request_id": "req_scripted_2",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "timestamp": "2026-10-28T21:47:04.810Z",
+        "type": "assistant",
+        "user_message_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "user_message_uuids": [
+          "c8d2fe17-62fb-4158-814c-3679847df2a9"
+        ],
+        "uuid": "ce6b41d4-4f12-4b0b-ac63-692c8edc0db2"
+      }
+    },
+    {
+      "i": 13,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "index": 0,
+          "type": "content_block_stop"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "44ecbf8f-de5f-4cce-9dd0-c6f17893ceb6"
+      }
+    },
+    {
+      "i": 14,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "delta": {
+            "stop_reason": "end_turn",
+            "stop_sequence": null
+          },
+          "type": "message_delta",
+          "usage": {
+            "output_tokens": 10
+          }
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "74cb22a4-99cf-4ff4-b5e8-468c8e6db297"
+      }
+    },
+    {
+      "i": 15,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_2",
+        "event": {
+          "type": "message_stop"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "7a8dd064-7476-42f1-81a9-f8ed03ceef82"
+      }
+    },
+    {
+      "i": 16,
+      "from": "cli",
+      "message": {
+        "api_error_status": null,
+        "duration_api_ms": 28,
+        "duration_ms": 57,
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "fast_mode_state": "off",
+        "first_content_frame_ms": 53,
+        "first_request_input_tokens": 1000,
+        "is_error": false,
+        "modelUsage": {
+          "claude-opus-5-5": {
+            "cacheCreationEphemeral1hInputTokens": 0,
+            "cacheCreationEphemeral5mInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-opus-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.0042,
+            "inputTokens": 1000,
+            "maxOutputTokens": 128000,
+            "outputTokens": 10,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "model_usage_since_last_result": {
+          "claude-opus-5-5": {
+            "cacheCreationEphemeral1hInputTokens": 0,
+            "cacheCreationEphemeral5mInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-opus-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.0042,
+            "inputTokens": 1000,
+            "maxOutputTokens": 128000,
+            "outputTokens": 10,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "num_turns": 1,
+        "permission_denials": [],
+        "queued_turn_count": 0,
+        "request_sent_wall_ms": 1793224024787,
+        "result": "C20B-OPEN-DONE",
+        "result_index": 0,
+        "safety_stops": 0,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "stop_reason": "end_turn",
+        "subagent_stats": {
+          "by_type": {},
+          "completed": 0,
+          "failed": 0,
+          "killed": {
+            "parent": 0,
+            "system": 0,
+            "user": 0
+          },
+          "max_depth": 0,
+          "refused": {
+            "budget": 0,
+            "concurrency_limit": 0,
+            "depth_limit": 0
+          },
+          "requested": {
+            "background": 0,
+            "foreground": 0,
+            "unset": 0
+          },
+          "spawned": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0
+        },
+        "subtype": "success",
+        "terminal_reason": "completed",
+        "time_to_request_ms": 30,
+        "total_cost_usd": 0.0042,
+        "ttft_ms": 53,
+        "ttft_stream_ms": 52,
+        "type": "result",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "fallback_credit": null,
+          "inference_geo": "",
+          "input_tokens": 1000,
+          "iterations": [],
+          "output_tokens": 10,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_fetch_requests": 0,
+            "web_search_requests": 0
+          },
+          "service_tier": "standard",
+          "speed": "standard"
+        },
+        "user_message_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "user_message_uuids": [
+          "c8d2fe17-62fb-4158-814c-3679847df2a9"
+        ],
+        "uuid": "7eddef44-5c95-4e8e-b9cb-1e06696a6009"
+      }
+    },
+    {
+      "i": 17,
+      "from": "cli",
+      "message": {
+        "command_uuid": "c8d2fe17-62fb-4158-814c-3679847df2a9",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "completed",
+        "type": "command_lifecycle",
+        "uuid": "1ef3376c-1619-419b-832b-fa34929cd929"
+      }
+    },
+    {
+      "i": 18,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "idle",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "68f8f1cc-2916-4cb2-a04d-8bfc3cd057f4"
+      }
+    },
+    {
+      "i": 19,
+      "from": "host",
+      "message": {
+        "message": {
+          "content": "C20B-START",
+          "role": "user"
+        },
+        "parent_tool_use_id": null,
+        "type": "user",
+        "uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+      }
+    },
+    {
+      "i": 20,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "running",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "72e19284-735b-436d-bbb1-fd3a85ac2eab"
+      }
+    },
+    {
+      "i": 21,
+      "from": "cli",
+      "message": {
+        "command_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "queued",
+        "type": "command_lifecycle",
+        "uuid": "01764758-1703-41f4-bf8b-fbb122160dd7"
+      }
+    },
+    {
+      "i": 22,
+      "from": "cli",
+      "message": {
+        "command_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "started",
+        "type": "command_lifecycle",
+        "uuid": "06ba22f2-15dc-4d5b-97f4-9685d26dd837"
+      }
+    },
+    {
+      "i": 23,
+      "from": "cli",
+      "message": {
+        "additional_directories": [],
+        "agents": [
+          "claude",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "analytics_disabled": true,
+        "apiKeySource": "ANTHROPIC_API_KEY",
+        "capabilities": [
+          "interrupt_receipt_v1",
+          "interrupt_cancel_queued_v1",
+          "interrupt_send_now_v1",
+          "interrupt_requeue_taken_v1",
+          "msg_lifecycle_v1",
+          "request_marker_lists_v1",
+          "lifecycle_wakeup_source_v1",
+          "sdk_mcp_tools_list_changed",
+          "sdk_mcp_manifests",
+          "mcp_read_resource_v1",
+          "mcp_tool_ui_meta_v1",
+          "ui_surface_v1",
+          "mcp_call_result_not_for_model_v1"
+        ],
+        "claude_code_version": "2.1.311",
+        "cwd": "$RUN/project",
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "fast_mode_state": "off",
+        "mcp_servers": [],
+        "memory_paths": {
+          "auto": "$RUN/claude/projects/-RUN-project/memory/"
+        },
+        "messaging_socket_path": "$RUN/r/cc-socks/21.sock",
+        "model": "claude-opus-5-5",
+        "original_cwd": "$RUN/project",
+        "output_style": "default",
+        "per_turn_effort_active": true,
+        "permissionMode": "auto",
+        "plugins": [
+          {
+            "name": "cc-plugin-agents-md",
+            "path": "builtin",
+            "source": "cc-plugin-agents-md@builtin"
+          },
+          {
+            "name": "cc-plugin-plugin-authoring",
+            "path": "builtin",
+            "source": "cc-plugin-plugin-authoring@builtin"
+          }
+        ],
+        "product_feedback_disabled": true,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "skills": [
+          "deep-research",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "slash_commands": [
+          "deep-research",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring",
+          "agents",
+          "auto-mode-setup",
+          "autocompact",
+          "clear",
+          "color",
+          "compact",
+          "config",
+          "output-style",
+          "context",
+          "effort",
+          "fast",
+          "focus",
+          "heapdump",
+          "init",
+          "mcp",
+          "model",
+          "__remote-workflow",
+          "workflow-launch-exec",
+          "reload-plugins",
+          "reload-skills",
+          "rename",
+          "security-review",
+          "usage",
+          "insights",
+          "recap",
+          "goal",
+          "list-agents",
+          "team-onboarding"
+        ],
+        "subtype": "init",
+        "terminal_slash_commands": [
+          "doctor",
+          "color",
+          "focus",
+          "reload-plugins"
+        ],
+        "tools": [
+          "Task",
+          "AskUserQuestion",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "ListAgents",
+          "Monitor",
+          "NotebookEdit",
+          "Read",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "TaskStop",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "type": "system",
+        "user_message_uuids": [
+          "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+        ],
+        "uuid": "c4d08c24-e8da-4a23-aaeb-f2d8d25490b4",
+        "view_mode": "default"
+      }
+    },
+    {
+      "i": 24,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "status": "requesting",
+        "subtype": "status",
+        "type": "system",
+        "user_message_uuids": [
+          "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+        ],
+        "uuid": "884a168b-ed84-405d-9548-b2b29031e1ca"
+      }
+    },
+    {
+      "i": 25,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "message": {
+            "content": [],
+            "id": "msg_scripted_3",
+            "model": "claude-opus-5-5",
+            "role": "assistant",
+            "stop_reason": null,
+            "stop_sequence": null,
+            "type": "message",
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 0
+            }
+          },
+          "type": "message_start"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "thinking_display": "updates",
+        "ttft_ms": 13,
+        "type": "stream_event",
+        "user_message_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "user_message_uuids": [
+          "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+        ],
+        "uuid": "85731505-cc1d-476f-9afc-fb8e47f43ef2"
+      }
+    },
+    {
+      "i": 26,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "content_block": {
+            "id": "toolu_q1",
+            "input": {},
+            "name": "AskUserQuestion",
+            "type": "tool_use"
+          },
+          "index": 0,
+          "type": "content_block_start"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "ce93e12d-0d09-4f9d-ad00-4ac2a2ac4e4b"
+      }
+    },
+    {
+      "i": 27,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "delta": {
+            "partial_json": "{\"questions\":[{\"header\":\"Go\",\"multiSelect\":false,\"options\":[{\"description\":\"C20 go ahead\",\"label\":\"",
+            "type": "input_json_delta"
+          },
+          "index": 0,
+          "type": "content_block_delta"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "684364a4-9745-4bd2-a2fe-822cecaa3ad1"
+      }
+    },
+    {
+      "i": 28,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "delta": {
+            "partial_json": "Yes\"},{\"description\":\"C20 stop here\",\"label\":\"No\"}],\"question\":\"Should the C20 change go ahead?\"}]}",
+            "type": "input_json_delta"
+          },
+          "index": 0,
+          "type": "content_block_delta"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "bfc286ba-a26a-42fb-8ea7-818e39384707"
+      }
+    },
+    {
+      "i": 29,
+      "from": "cli",
+      "message": {
+        "message": {
+          "content": [
+            {
+              "id": "toolu_q1",
+              "input": {
+                "questions": [
+                  {
+                    "header": "Go",
+                    "multiSelect": false,
+                    "options": [
+                      {
+                        "description": "C20 go ahead",
+                        "label": "Yes"
+                      },
+                      {
+                        "description": "C20 stop here",
+                        "label": "No"
+                      }
+                    ],
+                    "question": "Should the C20 change go ahead?"
+                  }
+                ]
+              },
+              "name": "AskUserQuestion",
+              "type": "tool_use"
+            }
+          ],
+          "context_management": null,
+          "id": "msg_scripted_3",
+          "model": "claude-opus-5-5",
+          "role": "assistant",
+          "stop_reason": null,
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 1000,
+            "output_tokens": 0
+          }
+        },
+        "parent_tool_use_id": null,
+        "request_id": "req_scripted_3",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "timestamp": "2026-10-28T21:47:05.065Z",
+        "type": "assistant",
+        "user_message_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "user_message_uuids": [
+          "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+        ],
+        "uuid": "f3148156-d5c7-4a81-a471-49e5dc14eecd"
+      }
+    },
+    {
+      "i": 31,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "index": 0,
+          "type": "content_block_stop"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "860a1ebf-e2c7-4c6b-bd3e-fc94b962a07e"
+      }
+    },
+    {
+      "i": 32,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "delta": {
+            "stop_reason": "tool_use",
+            "stop_sequence": null
+          },
+          "type": "message_delta",
+          "usage": {
+            "output_tokens": 10
+          }
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "cf948a9c-5081-4336-be28-9879357969bf"
+      }
+    },
+    {
+      "i": 34,
+      "from": "cli",
+      "message": {
+        "api_message_id": "msg_scripted_3",
+        "event": {
+          "type": "message_stop"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "type": "stream_event",
+        "uuid": "dfbf0af7-1c6e-49ac-8a4c-e8f2c7c1156d"
+      }
+    },
+    {
+      "i": 35,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "requires_action",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "09df3aea-43a5-4e44-a404-66108b833a3a"
+      }
+    },
+    {
+      "i": 38,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "running",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "9d0a473e-7abf-465e-875c-ac10e830b8fb"
+      }
+    },
+    {
+      "i": 39,
+      "from": "cli",
+      "message": {
+        "message": {
+          "content": [
+            {
+              "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+              "is_error": true,
+              "tool_use_id": "toolu_q1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "timestamp": "2026-10-28T21:47:07.122Z",
+        "tool_result_meta": [
+          {
+            "id": "toolu_q1",
+            "non_execution_kind": "user-rejected"
+          }
+        ],
+        "tool_use_result": "User rejected tool use",
+        "type": "user",
+        "uuid": "ea142957-8563-4c84-99c4-83911c0cae27"
+      }
+    },
+    {
+      "i": 40,
+      "from": "cli",
+      "message": {
+        "message": {
+          "content": [
+            {
+              "text": "[Request interrupted by user for tool use]",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        "parent_tool_use_id": null,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "timestamp": "2026-10-28T21:47:07.123Z",
+        "type": "user",
+        "uuid": "244a6d9c-ffca-44e0-9bf9-2c0539956bf9"
+      }
+    },
+    {
+      "i": 41,
+      "from": "cli",
+      "message": {
+        "duration_api_ms": 47,
+        "duration_ms": 2080,
+        "errors": [
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+        ],
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "fast_mode_state": "off",
+        "is_error": true,
+        "modelUsage": {
+          "claude-opus-5-5": {
+            "cacheCreationEphemeral1hInputTokens": 0,
+            "cacheCreationEphemeral5mInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-opus-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.0084,
+            "inputTokens": 2000,
+            "maxOutputTokens": 128000,
+            "outputTokens": 20,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "model_usage_since_last_result": {
+          "claude-opus-5-5": {
+            "cacheCreationEphemeral1hInputTokens": 0,
+            "cacheCreationEphemeral5mInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-opus-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.0042,
+            "inputTokens": 1000,
+            "maxOutputTokens": 128000,
+            "outputTokens": 10,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "num_turns": 3,
+        "permission_denials": [
+          {
+            "tool_input": {
+              "questions": [
+                {
+                  "header": "Go",
+                  "multiSelect": false,
+                  "options": [
+                    {
+                      "description": "C20 go ahead",
+                      "label": "Yes"
+                    },
+                    {
+                      "description": "C20 stop here",
+                      "label": "No"
+                    }
+                  ],
+                  "question": "Should the C20 change go ahead?"
+                }
+              ]
+            },
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": "toolu_q1"
+          }
+        ],
+        "queued_turn_count": 0,
+        "result_index": 1,
+        "safety_stops": 0,
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "stop_reason": "tool_use",
+        "subagent_stats": {
+          "by_type": {},
+          "completed": 0,
+          "failed": 0,
+          "killed": {
+            "parent": 0,
+            "system": 0,
+            "user": 0
+          },
+          "max_depth": 0,
+          "refused": {
+            "budget": 0,
+            "concurrency_limit": 0,
+            "depth_limit": 0
+          },
+          "requested": {
+            "background": 0,
+            "foreground": 0,
+            "unset": 0
+          },
+          "spawned": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0
+        },
+        "subtype": "error_during_execution",
+        "terminal_reason": "aborted_tools",
+        "total_cost_usd": 0.0084,
+        "type": "result",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "fallback_credit": null,
+          "inference_geo": "",
+          "input_tokens": 1000,
+          "iterations": [],
+          "output_tokens": 10,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_fetch_requests": 0,
+            "web_search_requests": 0
+          },
+          "service_tier": "standard",
+          "speed": "standard"
+        },
+        "user_message_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "user_message_uuids": [
+          "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f"
+        ],
+        "uuid": "3844f2b9-350e-499a-9b3d-131df0ab4c63"
+      }
+    },
+    {
+      "i": 42,
+      "from": "cli",
+      "message": {
+        "command_uuid": "5ac9f57d-8165-4b43-93a7-ec9eb0a3387f",
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "cancelled",
+        "type": "command_lifecycle",
+        "uuid": "1682c644-1e69-44ce-8ab4-709245bc8e48"
+      }
+    },
+    {
+      "i": 43,
+      "from": "cli",
+      "message": {
+        "session_id": "f6a88425-7488-4dce-97f6-8a0da334d03c",
+        "state": "idle",
+        "subtype": "session_state_changed",
+        "type": "system",
+        "uuid": "278efa41-8ef4-4b0c-95f8-979f1ab17053"
+      }
+    }
+  ]
+}

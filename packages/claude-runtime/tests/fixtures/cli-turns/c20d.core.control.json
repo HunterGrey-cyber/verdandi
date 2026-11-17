@@ -1,0 +1,218 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize"
+      },
+      "request_id": "041s4mpsk36o",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize"
+        },
+        "request_id": "041s4mpsk36o",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "i": 36,
+      "from": "cli",
+      "message": {
+        "request": {
+          "display_name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Cache",
+                "multiSelect": true,
+                "options": [
+                  {
+                    "description": "C20D quoted",
+                    "label": "say \"hi\""
+                  },
+                  {
+                    "description": "C20D bidi",
+                    "label": "Mem‮cached"
+                  },
+                  {
+                    "description": "C20D plain",
+                    "label": "Plain"
+                  }
+                ],
+                "question": "Which C20D cache notes apply?"
+              }
+            ]
+          },
+          "requires_user_interaction": true,
+          "subtype": "can_use_tool",
+          "tool_name": "AskUserQuestion",
+          "tool_use_id": "toolu_q1"
+        },
+        "request_id": "15fd5ef2-408a-4c48-a726-4265162e86fb",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 37,
+      "from": "host",
+      "message": {
+        "response": {
+          "request_id": "15fd5ef2-408a-4c48-a726-4265162e86fb",
+          "response": {
+            "behavior": "allow",
+            "toolUseID": "toolu_q1",
+            "updatedInput": {
+              "annotations": {},
+              "answers": {
+                "Which C20D cache notes apply?": "\"say \\\"hi\\\"\", \"Redis, not Memcached\""
+              },
+              "questions": [
+                {
+                  "header": "Cache",
+                  "multiSelect": true,
+                  "options": [
+                    {
+                      "description": "C20D quoted",
+                      "label": "say \"hi\""
+                    },
+                    {
+                      "description": "C20D bidi",
+                      "label": "Mem‮cached"
+                    },
+                    {
+                      "description": "C20D plain",
+                      "label": "Plain"
+                    }
+                  ],
+                  "question": "Which C20D cache notes apply?"
+                }
+              ]
+            }
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      }
+    }
+  ],
+  "tool_results": {
+    "toolu_q1": {
+      "content": "The user answered: \"Which C20D cache notes apply?\"=\"\"say \\\"hi\\\"\", \"Redis, not Memcached\"\". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.",
+      "tool_use_id": "toolu_q1",
+      "type": "tool_result"
+    }
+  },
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_q1"
+      ]
+    }
+  ],
+  "dropped_controls": 3
+}

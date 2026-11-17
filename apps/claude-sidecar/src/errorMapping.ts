@@ -39,6 +39,10 @@ const STATUS_CODE_MAP: Record<number, grpc.status> = {
   [ErrorCode.ERROR_CODE_TASK_OUTPUT_UNAVAILABLE]: grpc.status.FAILED_PRECONDITION,
   [ErrorCode.ERROR_CODE_INTERACTION_NOT_FOUND]: grpc.status.NOT_FOUND,
   [ErrorCode.ERROR_CODE_INTERACTION_ANSWER_REFUSED]: grpc.status.INVALID_ARGUMENT,
+  // As for tasks and interactions, an unknown id is NOT_FOUND. A call that has settled is a state of the
+  // call, not a bad argument, as a resolved permission is.
+  [ErrorCode.ERROR_CODE_CLIENT_TOOL_CALL_NOT_FOUND]: grpc.status.NOT_FOUND,
+  [ErrorCode.ERROR_CODE_CLIENT_TOOL_CALL_ALREADY_ANSWERED]: grpc.status.FAILED_PRECONDITION,
   [ErrorCode.UNRECOGNIZED]: grpc.status.INTERNAL,
 };
 

@@ -177,7 +177,7 @@ test('the Claude Code preset is always advertised after list_commands and before
     const preset = response.capabilities.indexOf('system_prompt_preset');
     const hostCli = response.capabilities.indexOf('executable_host_cli');
     assert.ok(commands >= 0 && commands < preset && preset < hostCli, `list_commands ${commands}, system_prompt_preset ${preset}, executable_host_cli ${hostCli}`);
-    assert.equal(response.protocolMinor, 22);
+    assert.equal(response.protocolMinor, 26);
   }
   const preset = source.capabilities.find((c) => c.name === 'system_prompt_preset');
   assert.equal(preset?.since_minor, 21);

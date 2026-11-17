@@ -101,10 +101,11 @@ test('real sidecar: a plain-text turn completes with outcome completed, observed
         awaitAccountIdentity: false,
         systemPromptPreset: undefined,
         clientInteractions: undefined,
+        clientTools: undefined,
       };
       const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 
-      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'write a very long story, at least 2000 words, about a journey' });
+      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'write a very long story, at least 2000 words, about a journey', content: [] });
 
       // Design spec §8 calls for exercising all 7 RPCs -- this suite previously exercised 6, missing
       // InterruptTurn (final whole-branch review, Finding 3). Mirrors the kernel's own real-CLI
@@ -150,7 +151,7 @@ test('real sidecar: a plain-text turn completes with outcome completed, observed
 
       // Session must still be usable after an interrupt (distinct from close) -- mirrors the same
       // real-CLI assertion in the kernel's own interrupt test.
-      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-2', text: 'reply with exactly the word: pong' });
+      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-2', text: 'reply with exactly the word: pong', content: [] });
 
       await promisify(client.closeSession.bind(client), { sessionId, commandId: 'cmd-close' });
     } finally {
@@ -185,10 +186,11 @@ test('real sidecar: a denied real tool call is genuinely blocked, and CloseSessi
         awaitAccountIdentity: false,
         systemPromptPreset: undefined,
         clientInteractions: undefined,
+        clientTools: undefined,
       };
       const { sessionId } = await promisify<CreateSessionRequest, { sessionId: string }>(client.createSession.bind(client), request);
 
-      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'run: echo hello, and tell me the output' });
+      await promisify(client.sendTurn.bind(client), { sessionId, commandId: 'cmd-1', text: 'run: echo hello, and tell me the output', content: [] });
 
       const denyReason = 'sidecar integration test policy: shell commands are not permitted';
       let sawSessionClosed = false;

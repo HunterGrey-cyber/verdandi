@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createSession } from '../src/session.js';
-import { outputPathRefusal, readOutputTail, TASK_OUTPUT_TAIL_BYTES, TaskNotFoundError, TaskOutputUnavailableError, type TaskOutputUnavailableReason } from '../src/taskOutput.js';
+import { outputPathRefusal, readOutput, TASK_OUTPUT_RANGE_MAX_BYTES, TASK_OUTPUT_TAIL_BYTES, TaskNotFoundError, TaskOutputUnavailableError, type TaskOutputUnavailableReason } from '../src/taskOutput.js';
 import type { ClaudeHostPolicy } from '../src/types.js';
 import { makeFakeQuery } from './fakeQuery.js';
 
@@ -56,6 +56,38 @@ function unavailable(reason: TaskOutputUnavailableReason) {
   return (error: unknown) => error instanceof TaskOutputUnavailableError && error.reason === reason;
 }
 
+test('a range reads those bytes, none past the end, and says where they start', async () => {
+  await withSession(async ({ tasks, feed, session }) => {
+    const path = join(tasks, 'b1.output');
+    const bytes = Buffer.from(Array.from({ length: 20000 }, (_, i) => i % 251));
+    writeFileSync(path, bytes);
+    await feed(...shell('b1', 'toolu_b'), notified('b1', path));
+    const middle = await session.taskOutput('b1', { offset: 100, maxBytes: 50 });
+    assert.deepEqual(Buffer.from(middle.output), bytes.subarray(100, 150));
+    assert.deepEqual([middle.totalBytes, middle.truncated, middle.offset], [20000, true, 100]);
+    const whole = await session.taskOutput('b1', { offset: 0, maxBytes: 0 });
+    assert.deepEqual(Buffer.from(whole.output), bytes);
+    assert.deepEqual([whole.truncated, whole.offset], [false, 0]);
+    const end = await session.taskOutput('b1', { offset: 19990, maxBytes: 1000 });
+    assert.equal(end.output.length, 10);
+    const past = await session.taskOutput('b1', { offset: 30000, maxBytes: 10 });
+    assert.deepEqual([past.output.length, past.offset, past.truncated], [0, 20000, true]);
+  });
+});
+
+test('one range read stops at 1 MiB, whatever it asked for', async () => {
+  await withSession(async ({ tasks, feed, session }) => {
+    const path = join(tasks, 'b1.output');
+    writeFileSync(path, Buffer.alloc(TASK_OUTPUT_RANGE_MAX_BYTES + 10, 7));
+    await feed(...shell('b1', 'toolu_b'), notified('b1', path));
+    for (const maxBytes of [0, 0xffffffff]) {
+      const read = await session.taskOutput('b1', { offset: 0, maxBytes });
+      assert.equal(read.output.length, TASK_OUTPUT_RANGE_MAX_BYTES);
+      assert.equal(read.truncated, true);
+    }
+  });
+});
+
 test('the last 8192 bytes of a 20000-byte file, with the whole size and the cut', async () => {
   await withSession(async ({ tasks, feed, session }) => {
     const path = join(tasks, 'b1.output');
@@ -66,6 +98,7 @@ test('the last 8192 bytes of a 20000-byte file, with the whole size and the cut'
     assert.equal(TASK_OUTPUT_TAIL_BYTES, 8192);
     assert.equal(read.totalBytes, 20000);
     assert.equal(read.truncated, true);
+    assert.equal(read.offset, 20000 - 8192);
     assert.deepEqual(Buffer.from(read.output), bytes.subarray(20000 - 8192));
   });
 });
@@ -76,7 +109,7 @@ test('a 100-byte file whole, from the launch template in the launching call\'s r
     writeFileSync(path, 'x'.repeat(99) + '\n');
     await feed(...shell('b1', 'toolu_b'), result('toolu_b', template('b1', path)));
     const read = await session.taskOutput('b1');
-    assert.deepEqual(read, { output: new Uint8Array(Buffer.from('x'.repeat(99) + '\n')), totalBytes: 100, truncated: false });
+    assert.deepEqual(read, { output: new Uint8Array(Buffer.from('x'.repeat(99) + '\n')), totalBytes: 100, truncated: false, offset: 0 });
   });
 });
 
@@ -108,8 +141,8 @@ test('a file owned by another uid is refused', async () => {
     const path = join(dir, 'b1.output');
     writeFileSync(path, 'output');
     // The owner rule itself, against a uid this file is not owned by.
-    assert.deepEqual(await readOutputTail(path, process.getuid!() + 1), { refused: 'foreign_owner' });
-    assert.ok('output' in (await readOutputTail(path)), 'the same file, against its real owner, is read');
+    assert.deepEqual(await readOutput(path, undefined, process.getuid!() + 1), { refused: 'foreign_owner' });
+    assert.ok('output' in (await readOutput(path)), 'the same file, against its real owner, is read');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -130,7 +163,7 @@ test('a real file owned by another uid is refused', async (t) => {
       t.skip('cannot create a file owned by another uid without privilege');
       return;
     }
-    assert.deepEqual(await readOutputTail(path), { refused: 'foreign_owner' });
+    assert.deepEqual(await readOutput(path), { refused: 'foreign_owner' });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

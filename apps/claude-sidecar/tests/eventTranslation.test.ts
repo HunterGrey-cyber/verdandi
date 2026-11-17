@@ -1,8 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ClaudeRuntimeEvent } from '@verdandi/claude-runtime';
-import { translateEvent, extractTurnId } from '../src/eventTranslation.js';
+import { translateEvent, extractTurnId, wireEnum } from '../src/eventTranslation.js';
 import { CliPermissionModeKind, ConfigurationProfile, PermissionOutcome, SessionEvent, TurnOutcome, SessionCloseReason } from '../src/generated/verdandi/claude/runtime/v1/runtime.js';
+
+test('wireEnum maps kernel words and defaults unknown words to UNSPECIFIED', () => {
+  const outcome: TurnOutcome = wireEnum(TurnOutcome, 'TURN_OUTCOME', 'completed');
+  assert.equal(outcome, TurnOutcome.TURN_OUTCOME_COMPLETED);
+  for (const word of ['missing', 'constructor', '__proto__', 'unrecognized', '0']) {
+    assert.equal(wireEnum(TurnOutcome, 'TURN_OUTCOME', word as 'completed'), TurnOutcome.TURN_OUTCOME_UNSPECIFIED);
+  }
+  // @ts-expect-error Every kernel word requires a prefixed wire member.
+  wireEnum(TurnOutcome, 'TURN_OUTCOME', 'missing');
+});
 
 test('subagent parent ids survive the wire and are bounded on character boundaries for all four content events', () => {
   const content: ClaudeRuntimeEvent[] = [
@@ -26,7 +36,7 @@ test('subagent parent ids survive the wire and are bounded on character boundari
 test('translateEvent: session_ready maps to a sessionReady oneof member', () => {
   const event: ClaudeRuntimeEvent = { type: 'session_ready', sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions' };
   assert.deepEqual(translateEvent(event), {
-    sessionReady: { sessionId: 's1', providerSessionId: 'p1', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined, effectiveDisallowedTools: [], effectiveTools: undefined, effectiveSettingSources: [], effectiveConfiguration: ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED, cliPermissionModeKind: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_BYPASS_PERMISSIONS },
+    sessionReady: { sessionId: 's1', providerSessionId: 'p1', effort: '', model: 'claude-sonnet-5', cwd: '/tmp', permissionMode: 'bypassPermissions', accountIdentity: undefined, initFingerprint: undefined, effectiveDisallowedTools: [], effectiveTools: undefined, effectiveSettingSources: [], effectiveConfiguration: ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED, cliPermissionModeKind: CliPermissionModeKind.CLI_PERMISSION_MODE_KIND_BYPASS_PERMISSIONS },
   });
 });
 
@@ -56,7 +66,21 @@ test('translateEvent: session_ready carries a DOWNGRADED permission mode through
 
 test('translateEvent: text_delta maps to a textDelta oneof member', () => {
   const event: ClaudeRuntimeEvent = { type: 'text_delta', turnId: 't1', text: 'hi' };
-  assert.deepEqual(translateEvent(event), { textDelta: { turnId: 't1', text: 'hi' } });
+  assert.deepEqual(translateEvent(event), { textDelta: { turnId: 't1', text: 'hi', startsBlock: false } });
+});
+
+test('translateEvent: a text_delta that starts a block says so on the wire, and one that continues a block encodes as before', () => {
+  const first: ClaudeRuntimeEvent = { type: 'text_delta', turnId: 't1', text: '| a |', messageId: 'msg_1', startsBlock: true };
+  const member = translateEvent(first);
+  assert.deepEqual(member, { textDelta: { turnId: 't1', text: '| a |', messageId: 'msg_1', startsBlock: true } });
+  const decoded = SessionEvent.decode(SessionEvent.encode(SessionEvent.fromPartial(member)).finish());
+  assert.equal(decoded.textDelta?.startsBlock, true);
+  for (const startsBlock of [false, undefined]) {
+    const rest: ClaudeRuntimeEvent = { type: 'text_delta', turnId: 't1', text: 'more', ...(startsBlock === undefined ? {} : { startsBlock }) };
+    assert.deepEqual(translateEvent(rest), { textDelta: { turnId: 't1', text: 'more', startsBlock: false } }, String(startsBlock));
+    const bytes = SessionEvent.encode(SessionEvent.fromPartial(translateEvent(rest))).finish();
+    assert.equal(SessionEvent.decode(bytes).textDelta?.startsBlock, false);
+  }
 });
 
 test('translateEvent: tool_call_started serializes input as JSON', () => {

@@ -1,0 +1,162 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize"
+      },
+      "request_id": "2p4eh5io6uy",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize"
+        },
+        "request_id": "2p4eh5io6uy",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "i": 36,
+      "from": "cli",
+      "message": {
+        "request": {
+          "display_name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Go",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "C20 go ahead",
+                    "label": "Yes"
+                  },
+                  {
+                    "description": "C20 stop here",
+                    "label": "No"
+                  }
+                ],
+                "question": "Should the C20 change go ahead?"
+              }
+            ]
+          },
+          "requires_user_interaction": true,
+          "subtype": "can_use_tool",
+          "tool_name": "AskUserQuestion",
+          "tool_use_id": "toolu_q1"
+        },
+        "request_id": "91e26ef7-8ce1-4fb0-9028-b3b3fb7ecc40",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 37,
+      "from": "host",
+      "message": {
+        "response": {
+          "request_id": "91e26ef7-8ce1-4fb0-9028-b3b3fb7ecc40",
+          "response": {
+            "behavior": "deny",
+            "interrupt": true,
+            "message": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+            "toolUseID": "toolu_q1"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      }
+    }
+  ],
+  "tool_results": {},
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    }
+  ],
+  "dropped_controls": 3
+}

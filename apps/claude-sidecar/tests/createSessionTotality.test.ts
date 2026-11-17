@@ -77,6 +77,17 @@ const TABLE: Record<string, Row> = {
     b: { outputFormat: { jsonSchemaJson: '{"type":"object"}' } },
     observe: (o) => o.outputFormat,
   },
+  clientTools: {
+    a: { clientTools: undefined },
+    b: {
+      clientTools: {
+        serverName: 'eitri',
+        timeoutMs: 900000,
+        tools: [{ name: 'open_file', description: 'd', inputSchemaJson: '{"type":"object"}', alwaysLoad: true }],
+      },
+    },
+    observe: (o) => Object.entries(o.mcpServers ?? {}).map(([name, server]) => [name, server.type, (server as { timeout?: number }).timeout]),
+  },
 };
 
 /**
@@ -146,4 +157,36 @@ test('buildKernelSessionConfig forwards the extra MCP servers to the session, an
     JSON.stringify(buildSessionOptions(buildKernelSessionConfig(request, { hostCliPath: '/usr/local/bin/claude', extraMcpServers: undefined }))),
     JSON.stringify(buildSessionOptions(plain)),
   );
+});
+
+/**
+ * The table above sees `client_tools` in the SDK Options only as a server under `mcpServers`, which says
+ * nothing of what the server was built from: this pins the mapping itself, field by field, each tool
+ * copied, and absent staying absent. A field dropped here would leave a session with tools the host
+ * declared and none of the limits it set.
+ */
+test('buildKernelSessionConfig maps client_tools field by field, and absent stays absent', () => {
+  const request: ClaudeSessionConfigLike = {
+    ...BASE,
+    clientTools: {
+      serverName: 'editor',
+      timeoutMs: 45_000,
+      tools: [
+        { name: 'open_file', description: 'Open a file', inputSchemaJson: '{"type":"object"}', alwaysLoad: true },
+        { name: 'goto', description: '', inputSchemaJson: '{"type":"object","properties":{}}', alwaysLoad: false },
+      ],
+    },
+  };
+  const config = buildKernelSessionConfig(request, { hostCliPath: '/usr/local/bin/claude' });
+  assert.deepEqual(config.clientTools, {
+    serverName: 'editor',
+    timeoutMs: 45_000,
+    tools: [
+      { name: 'open_file', description: 'Open a file', inputSchemaJson: '{"type":"object"}', alwaysLoad: true },
+      { name: 'goto', description: '', inputSchemaJson: '{"type":"object","properties":{}}', alwaysLoad: false },
+    ],
+  });
+  assert.notEqual(config.clientTools?.tools[0], request.clientTools?.tools[0], 'each tool is copied');
+  const plain = buildKernelSessionConfig({ ...BASE }, { hostCliPath: '/usr/local/bin/claude' });
+  assert.equal('clientTools' in plain, false);
 });

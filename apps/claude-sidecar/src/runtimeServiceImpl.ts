@@ -5,12 +5,15 @@ import * as grpc from '@grpc/grpc-js';
 import {
   cliPermissionModeProblem,
   interactionOptInProblem,
+  planOptInProblem,
   PermissionAnswerError,
   PermissionModeError,
   SteerError,
   effectiveClaudeConfigDir,
   PROVIDER_PROMPT_TOOL_DENY,
   STRUCTURED_OUTPUT_CARRIER_TOOLS,
+  clientToolsProblem,
+  TURN_CONTENT_LIMITS,
   usesProviderPermissionPrompts,
   type AccountIdentity as KernelAccountIdentity,
   type ClaudeHostPolicy,
@@ -56,7 +59,11 @@ import type { ReplayRequest, SequencedEvent } from './ringBuffer.js';
 import { translateEvent, extractTurnId, accountIdentityToProto } from './eventTranslation.js';
 import { SidecarError, toGrpcStatusCode, toGrpcMetadata } from './errorMapping.js';
 import { createTaskRpc } from './taskRpc.js';
+import { createSettingsRpc } from './settingsRpc.js';
 import { createInteractionRpc } from './interactionRpc.js';
+import { createPlanningRpc } from './planningRpc.js';
+import { createClientToolRpc } from './clientToolRpc.js';
+import { turnContentFromRpc } from './turnContentRpc.js';
 import {
   ErrorCode,
   ConfigurationProfile,
@@ -73,6 +80,7 @@ import {
   type CliCompatibility as CliCompatibilityProto,
   SettingSource as SettingSourceProto,
   type ClaudeHostPolicy as ClaudeHostPolicyProto,
+  type SendTurnRequest,
 } from './generated/verdandi/claude/runtime/v1/runtime.js';
 
 /** Default only. The effective capacity is a constructor option -- see `RuntimeServiceOptions`. */
@@ -271,8 +279,11 @@ export type ClaudeSessionConfigLike = {
   /** Not a session option: whether CreateSession waits for the account probe and returns its answer.
    * `false` and absent mean the same thing (a proto3 bool), and both answer at once. */
   awaitAccountIdentity?: boolean;
-  /** The interactions the host opts into; absent and every member false mean the same thing. */
-  clientInteractions?: { questions: boolean };
+  /** The interactions the host opts into; absent and every member false mean the same thing. `planMode`
+   * is absent only where a caller builds this by hand: the wire always carries it, false by default. */
+  clientInteractions?: { questions: boolean; planMode?: boolean };
+  /** Tools the host answers itself. A message field: absent means the session has none. */
+  clientTools?: { serverName: string; timeoutMs: number; tools: Array<{ name: string; description: string; inputSchemaJson: string; alwaysLoad: boolean }> };
 };
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -386,23 +397,36 @@ export function validateResumeRequest(config: ClaudeSessionConfigLike): void {
   }
 }
 
-/**
- * Refuses an interaction opt-in this sidecar cannot honour, before any session exists, by the kernel's
- * own rule (`interactionOptInProblem`) on the mapped policy. Refused rather than ignored: a host that
- * asked for questions and silently did not get them would wait for interactions that never come,
- * while the model's question has nobody to answer it.
- */
+/** Refuses opt-ins the kernel cannot honour before any session exists. A client must be able to
+ * receive the CLI's questions or plans, and a plan session must state the execution mode it returns to. */
 export function validateClientInteractions(config: ClaudeSessionConfigLike): void {
-  const problem = interactionOptInProblem({
+  const input = {
     policy: mapClaudeHostPolicy(config.policy as ClaudeHostPolicyProto | undefined),
     clientInteractions: config.clientInteractions,
-  });
+  };
+  const problem = interactionOptInProblem(input) ?? planOptInProblem(input);
   if (problem !== null) {
     throw new SidecarError(
       ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
-      `client_interactions cannot be honoured on this sidecar (${problem}) -- send it only when the handshake lists structured_questions_v1`,
+      `client_interactions cannot be honoured on this sidecar (${problem})`,
       problem,
     );
+  }
+}
+
+/**
+ * Refuses a `client_tools` declaration the kernel could not serve, by the kernel's own rule
+ * (`clientToolsProblem`), before any session exists. `extraServerNames` are the MCP servers this process
+ * declared (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`): the client's server may not take one of their names.
+ * Absent is fine.
+ */
+export function validateClientTools(config: ClaudeSessionConfigLike, extraServerNames: readonly string[]): void {
+  if (config.clientTools === undefined) {
+    return;
+  }
+  const problem = clientToolsProblem(config.clientTools, extraServerNames);
+  if (problem !== null) {
+    throw new SidecarError(ErrorCode.ERROR_CODE_INVALID_CONFIGURATION, problem.message, problem.reason);
   }
 }
 
@@ -429,9 +453,9 @@ export const DEFAULT_CLAUDE_HOST_POLICY: ClaudeHostPolicy = {
 };
 
 // ts-proto's default output keeps a proto enum's declared member names unchanged (unlike message
-// fields, which get camelCased) -- these *_MAP lookups mirror eventTranslation.ts's existing pattern
-// rather than inventing a new mapping style. Each map covers exactly the members the proto declares;
-// UNSPECIFIED (0, what a sender that never set the field sends) keeps its default meaning.
+// fields, which get camelCased) -- these *_MAP lookups translate wire members back to kernel words.
+// Each map covers exactly the members the proto declares; UNSPECIFIED (0, what a sender that never
+// set the field sends) keeps its default meaning.
 //
 // Anything else is refused, never defaulted (see declaredValue). The binary decoder keeps any number
 // it reads as it is, so a value from a newer protocol arrives as itself, and every default would
@@ -825,7 +849,27 @@ export function buildKernelSessionConfig(
       ? { outputFormat: { type: 'json_schema' as const, schema: parseOutputSchema(config.outputFormat) } }
       : {}),
     // Presence, as the request had it: a message field, absent from every client that predates it.
-    ...(config.clientInteractions !== undefined ? { clientInteractions: { questions: config.clientInteractions.questions === true } } : {}),
+    ...(config.clientInteractions !== undefined
+      ? { clientInteractions: {
+          questions: config.clientInteractions.questions === true,
+          ...(config.clientInteractions.planMode === true ? { planMode: true } : {}),
+        } }
+      : {}),
+    // Presence too: a message field. Each tool is copied, so the session holds nothing the request object owns.
+    ...(config.clientTools !== undefined
+      ? {
+          clientTools: {
+            serverName: config.clientTools.serverName,
+            timeoutMs: config.clientTools.timeoutMs,
+            tools: config.clientTools.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchemaJson: tool.inputSchemaJson,
+              alwaysLoad: tool.alwaysLoad === true,
+            })),
+          },
+        }
+      : {}),
   };
 }
 
@@ -885,6 +929,9 @@ function toServiceError(err: unknown): grpc.ServiceError {
  * existing three-argument call site keeps working unchanged. */
 export type RuntimeServiceOptions = {
   ringBufferCapacity?: number;
+  /** The names of the MCP servers this process declared (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`): a request's
+   *  `client_tools` may not take one. Defaults to none. */
+  extraMcpServerNames?: readonly string[];
   /** A test seam; see `replayConfig.ts`. Absent in production. */
   watchFault?: WatchFaultInjection;
   /** A diagnostic seam; see `replayConfig.ts`. Absent in production, and absent means no timer and
@@ -1061,6 +1108,7 @@ export function createRuntimeServiceImpl(
   options: RuntimeServiceOptions = {},
 ) {
   const canRunSdkBundled = options.sdkBundledAvailable ?? sdkBundledAvailable();
+  const extraServerNames = options.extraMcpServerNames ?? [];
   const boundAccount = options.account;
   // Once, at construction, like the account itself: where the CLI reads its configuration is a property
   // of this process, not of a handshake.
@@ -1121,22 +1169,33 @@ export function createRuntimeServiceImpl(
    * replaces with itself.
    */
   function reannounceCommands(entry: SessionEntry, request: ReplayRequest, replayed: readonly SequencedEvent[]): void {
-    const latest = entry.latestCommands;
+    const again = reannounced(entry, entry.latestCommands, request, replayed);
+    if (again !== undefined) entry.latestCommands = again;
+  }
+
+  /** The CLI's last report of its own mode, by the same rule. A later `session_ready` says the same and
+   * more, so one the watcher will read makes this one say nothing it does not know. */
+  function reannounceCliMode(entry: SessionEntry, request: ReplayRequest, replayed: readonly SequencedEvent[]): void {
+    const again = reannounced(entry, entry.latestCliMode, request, replayed);
+    if (again !== undefined) entry.latestCliMode = again;
+  }
+
+  function reannounced(entry: SessionEntry, latest: SequencedEvent | undefined, request: ReplayRequest, replayed: readonly SequencedEvent[]): SequencedEvent | undefined {
     // Nothing after a session's last event: an ended session's stream stops at SessionClosed.
     if (latest === undefined || entry.session.closeReason() !== undefined) {
-      return;
+      return undefined;
     }
     if (replayed.some((event) => event.sequence === latest.sequence)) {
-      return;
+      return undefined;
     }
     if (request.mode === 'after_sequence' && request.afterSequence >= latest.sequence) {
-      return;
+      return undefined;
     }
     entry.sequence += 1n;
     const again: SequencedEvent = { sequence: entry.sequence, occurredAt: BigInt(Date.now()), event: latest.event };
     entry.ringBuffer.push(again);
-    entry.latestCommands = again;
     broadcastFor(entry.sessionId)(again);
+    return again;
   }
 
   /**
@@ -1293,11 +1352,17 @@ export function createRuntimeServiceImpl(
   }
 
   const taskRpc = createTaskRpc({ requireEntry });
+  const settingsRpc = createSettingsRpc({ requireEntry });
   const interactionRpc = createInteractionRpc({ requireEntry });
+  const planningRpc = createPlanningRpc({ requireEntry });
+  const clientToolRpc = createClientToolRpc({ requireEntry });
 
   return {
     ...taskRpc,
+    ...settingsRpc,
     ...interactionRpc,
+    ...planningRpc,
+    ...clientToolRpc,
 
     handshake(call: { request: { clientProtocolMajor: number } }, callback: (err: grpc.ServiceError | null, res?: unknown) => void) {
       try {
@@ -1335,6 +1400,12 @@ export function createRuntimeServiceImpl(
           configurationProfiles: ['native', 'isolated'],
           permissionModes: [...PERMISSION_MODES],
           maxMessageBytes: BigInt(4 * 1024 * 1024),
+          turnContentLimits: {
+            imageMediaTypes: [...TURN_CONTENT_LIMITS.imageMediaTypes],
+            maxImagesPerTurn: TURN_CONTENT_LIMITS.maxImagesPerTurn,
+            maxImageBytes: BigInt(TURN_CONTENT_LIMITS.maxImageBytes),
+            maxContentBytes: BigInt(TURN_CONTENT_LIMITS.maxContentBytes),
+          },
           // Built from the RESOLVED capacity, never the default constant: a handshake advertising a
           // capacity the sessions do not actually have lets a client assert on the wrong number and
           // pass, which is worse than not advertising it at all.
@@ -1379,6 +1450,7 @@ export function createRuntimeServiceImpl(
         validatePolicy(call.request.policy as ClaudeHostPolicyProto | undefined, { sdkBundledAvailable: canRunSdkBundled });
         // After validatePolicy, which has refused any policy value the mapping below cannot read.
         validateClientInteractions(call.request);
+        validateClientTools(call.request, extraServerNames);
         // After validatePolicy, which settles the executable this session would spawn, and before the
         // factory: a refused CLI must not have a session, and so no subprocess, behind the refusal.
         requireCliAllowed(call.request.policy as ClaudeHostPolicyProto | undefined);
@@ -1485,17 +1557,18 @@ export function createRuntimeServiceImpl(
     },
 
     sendTurn(
-      call: { request: { sessionId: string; commandId: string; text: string; clientMessageId?: string; typedByPerson?: boolean } },
+      call: { request: Omit<SendTurnRequest, 'content'> & { content?: SendTurnRequest['content'] } },
       callback: (err: grpc.ServiceError | null, res?: unknown) => void,
     ) {
       try {
         const entry = requireEntry(call.request.sessionId);
+        const { images, payload: contentPayload } = turnContentFromRpc(call.request.content);
         const { clientMessageId } = call.request;
         // False and absent mean the same unstamped message and retain older clients' payload hashes.
         const humanOrigin = call.request.typedByPerson === true ? { typedByPerson: true } : {};
         // `clientMessageId` joins the hashed payload only when present, so a request without it hashes
         // exactly as before the field existed, and the same command_id reused with another id conflicts.
-        const payloadHash = hashPayload({ text: call.request.text, ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin });
+        const payloadHash = hashPayload({ text: call.request.text, ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin, ...contentPayload });
         const cached = entry.sendTurnIdempotency.check(call.request.commandId, payloadHash);
         if (cached.kind === 'conflict') {
           throw new SidecarError(ErrorCode.ERROR_CODE_IDEMPOTENCY_CONFLICT, `command_id ${call.request.commandId} reused with a different payload`);
@@ -1517,7 +1590,7 @@ export function createRuntimeServiceImpl(
         // would then wait forever for a turn_completed that can never arrive.
         let turnId: string;
         try {
-          ({ turnId } = entry.session.sendTurn(call.request.text, { ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin }));
+          ({ turnId } = entry.session.sendTurn(call.request.text, { ...(clientMessageId !== undefined ? { clientMessageId } : {}), ...humanOrigin, ...(images.length > 0 ? { content: images } : {}) }));
         } catch (kernelErr) {
           const message = kernelErr instanceof Error ? kernelErr.message : String(kernelErr);
           throw new SidecarError(message === 'session is closed' ? ErrorCode.ERROR_CODE_SESSION_NOT_FOUND : ErrorCode.ERROR_CODE_TURN_ALREADY_ACTIVE, message);
@@ -1698,10 +1771,14 @@ export function createRuntimeServiceImpl(
             return done;
           } catch (kernelErr) {
             if (kernelErr instanceof PermissionModeError) {
+              let reason = kernelErr.kind === 'closed' ? '' : `permission_mode_${kernelErr.kind}`;
+              if (kernelErr.kind === 'refused' && kernelErr.reason === 'plan_session') {
+                reason = 'set_permission_mode_plan_session';
+              }
               throw new SidecarError(
                 kernelErr.kind === 'closed' ? ErrorCode.ERROR_CODE_SESSION_NOT_FOUND : ErrorCode.ERROR_CODE_INVALID_CONFIGURATION,
                 kernelErr.kind === 'provider_refused' ? `the provider refused the permission mode: ${kernelErr.message}` : kernelErr.message,
-                kernelErr.kind === 'closed' ? '' : `permission_mode_${kernelErr.kind}`,
+                reason,
               );
             }
             throw new SidecarError(ErrorCode.ERROR_CODE_PROVIDER_UNAVAILABLE, kernelErr instanceof Error ? kernelErr.message : String(kernelErr));
@@ -1856,6 +1933,7 @@ export function createRuntimeServiceImpl(
         }
         subscribers.add(sub);
         reannounceCommands(entry, replayRequest, replay.events);
+        reannounceCliMode(entry, replayRequest, replay.events);
         const cleanup = () => {
           finished = true;
           subscribers.delete(sub);

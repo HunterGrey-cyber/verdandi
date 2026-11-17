@@ -94,8 +94,9 @@ export function createTaskRpc(deps: TaskRpcDeps) {
     },
 
     /**
-     * The tail of a shell's or a Monitor's output, read by the kernel from the file the CLI named for
-     * that task; the request carries no path. A read, so there is no command id. TASK_NOT_FOUND for a
+     * The tail of a shell's or a Monitor's output, or the range the request names, read by the kernel
+     * from the file the CLI named for that task; the request carries no path. A read, so there is no
+     * command id. TASK_NOT_FOUND for a
      * task the session never saw; TASK_OUTPUT_UNAVAILABLE when there is nothing it may read (always
      * for a workflow or a local agent).
      */
@@ -103,9 +104,13 @@ export function createTaskRpc(deps: TaskRpcDeps) {
       try {
         const entry = deps.requireEntry(call.request.sessionId);
         Promise.resolve()
-          .then(() => entry.session.taskOutput(call.request.taskId))
+          .then(() =>
+            call.request.offset === undefined
+              ? entry.session.taskOutput(call.request.taskId)
+              : entry.session.taskOutput(call.request.taskId, { offset: Number(call.request.offset), maxBytes: call.request.maxBytes }),
+          )
           .then(
-            (read) => callback(null, { output: Buffer.from(read.output), totalBytes: BigInt(read.totalBytes), truncated: read.truncated }),
+            (read) => callback(null, { output: Buffer.from(read.output), totalBytes: BigInt(read.totalBytes), truncated: read.truncated, offset: BigInt(read.offset) }),
             (err: unknown) => callback(toServiceError(err)),
           );
       } catch (err) {

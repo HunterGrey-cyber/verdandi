@@ -94,6 +94,7 @@ test('a question is announced with exactly its parsed set, its tool use id and a
     type: 'interaction_requested',
     interactionId: event.interactionId,
     toolUseId: 'toolu_q',
+    kind: 'question',
     questions: [
       { question: 'Which database?', header: 'Pick', multiSelect: false, options: [{ label: 'Postgres', description: 'about Postgres' }, { label: 'SQLite', description: 'about SQLite' }, { label: 'Redis, not Memcached', description: 'about Redis, not Memcached' }] },
       { question: 'Which layout?', header: 'Pick', multiSelect: false, options: [{ label: 'Grid', description: 'about Grid', preview: '# Grid\n\n| a | b |' }, { label: 'List', description: 'about List', preview: '' }, { label: 'Cards', description: 'about Cards' }] },
@@ -177,7 +178,7 @@ for (const [name, atLimit, over, reason] of BOUND_ROWS) {
     const [requested] = refused.requested();
     assert.equal(requested.questions, undefined, 'a refused question carries no payload');
     assert.match(requested.unsupportedReason!, reason);
-    assert.deepEqual(refused.resolved(), [{ type: 'interaction_resolved', interactionId: requested.interactionId, outcome: 'host_refused', reason: requested.unsupportedReason }]);
+    assert.deepEqual(refused.resolved(), [{ type: 'interaction_resolved', interactionId: requested.interactionId, kind: 'question', outcome: 'host_refused', reason: requested.unsupportedReason }]);
     assert.deepEqual(result, { behavior: 'deny', message: questionRefusedText(requested.unsupportedReason!) });
     assert.deepEqual(refused.broker.pending(), []);
   });
@@ -245,7 +246,7 @@ async function answerWith(questions: Q[], answers: InteractionAnswerInput[], ext
 test('single select: the picked label, or the typed text', async () => {
   const picked = await answerWith([SINGLE], [{ questionIndex: 0, optionIndexes: [1] }]);
   assert.deepEqual(picked.result, { behavior: 'allow', updatedInput: { questions: [SINGLE], answers: { 'Which database?': 'SQLite' }, annotations: {} } });
-  assert.deepEqual(picked.event, { type: 'interaction_resolved', interactionId: picked.event.interactionId, outcome: 'answered', answers: [{ questionIndex: 0, answer: 'SQLite' }] });
+  assert.deepEqual(picked.event, { type: 'interaction_resolved', interactionId: picked.event.interactionId, kind: 'question', outcome: 'answered', answers: [{ questionIndex: 0, answer: 'SQLite' }] });
   const typed = await answerWith([SINGLE], [{ questionIndex: 0, optionIndexes: [], otherText: 'MariaDB' }]);
   assert.deepEqual(typed.result.updatedInput!.answers, { 'Which database?': 'MariaDB' });
   // A single-select label goes back exactly as the model wrote it, separator and all: only a
@@ -396,7 +397,7 @@ test('cancel: deny with the CLI\'s rejection text and interrupt, outcome decline
   // Answers so far are not part of a cancel; an empty list is not answers.
   const event = broker.resolve(interactionId, { kind: 'decline', decline: 'cancel', soFar: [] });
   assert.deepEqual(await pending, { behavior: 'deny', message: CLI_REJECT_TEXT, interrupt: true });
-  assert.deepEqual(event, { type: 'interaction_resolved', interactionId, outcome: 'declined' });
+  assert.deepEqual(event, { type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'declined' });
   assert.deepEqual(resolved(), [event]);
 });
 
@@ -430,6 +431,7 @@ test('chat: deny with the CLI\'s clarify text listing every question, its answer
   assert.deepEqual(event, {
     type: 'interaction_resolved',
     interactionId,
+    kind: 'question',
     outcome: 'chat_requested',
     answers: [{ questionIndex: 0, answer: 'Redis, not Memcached' }, { questionIndex: 2, answer: 'Grid', notes: 'wider' }],
   });

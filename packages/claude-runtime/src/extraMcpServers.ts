@@ -6,9 +6,12 @@ import { ACCOUNT_ENV_VARS, IDENTITY_SEED_ENV_VARS } from './account.js';
  * MCP servers the process that starts the sidecar declares for every session it runs (the extra-MCP-servers
  * design note, extended with `type: "http"`).
  *
- * An environment variable of a process the host itself starts, never a field a remote client could
- * send, the same as the sidecar's account variable. Read once per process, before the socket is bound,
- * and a value that is set but unusable refuses to start rather than being ignored.
+ * Servers the sidecar starts or dials (a command line, a URL with headers) come only from this variable of
+ * a process the host itself starts, never from a field a remote client could send, the same as the
+ * sidecar's account variable. Read once per process, before the socket is bound, and a value that is set
+ * but unusable refuses to start rather than being ignored. `client_tools` on `CreateSession` is not such
+ * a server: it starts nothing and opens no connection, and the client answers its own tools on its own
+ * session.
  */
 export const EXTRA_MCP_SERVERS_VARIABLE = 'VERDANDI_CLAUDE_EXTRA_MCP_SERVERS';
 
@@ -24,7 +27,7 @@ export const MAX_EXTRA_MCP_SERVERS = 8;
  */
 const SERVER_NAME = /^[a-z][a-z0-9_]{0,40}$/;
 
-function serverNameProblem(name: string): boolean {
+export function serverNameProblem(name: string): boolean {
   return !SERVER_NAME.test(name) || name.includes('__') || name.endsWith('_');
 }
 

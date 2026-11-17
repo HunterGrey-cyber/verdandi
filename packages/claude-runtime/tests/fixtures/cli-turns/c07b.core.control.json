@@ -1,0 +1,326 @@
+{
+  "initialize": {
+    "i": 0,
+    "from": "host",
+    "message": {
+      "request": {
+        "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+        "hooks": {
+          "PreToolUse": [
+            {
+              "hookCallbackIds": [
+                "hook_0"
+              ],
+              "matcher": "*"
+            }
+          ]
+        },
+        "subtype": "initialize"
+      },
+      "request_id": "sctdr4q09m",
+      "type": "control_request"
+    }
+  },
+  "initializations": [
+    {
+      "i": 0,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "subtype": "initialize"
+        },
+        "request_id": "sctdr4q09m",
+        "type": "control_request"
+      }
+    },
+    {
+      "i": 72,
+      "from": "host",
+      "message": {
+        "request": {
+          "appendSystemPrompt": "This session was started by Eitri, a desktop IDE built around Neovim. While the conversation is shown in Eitri's agent panel, the user edits code in Neovim beside it, and the panel renders your replies as GitHub-flavored Markdown, not in a terminal (images appear as links and are not loaded), shows each tool call with edits drawn as diffs, and asks the user with a card when a tool call needs approval. A file path relative to the project root that you write in a reply, optionally with `:line` (for example `src/main.rs:42`), can be opened in the editor from the panel. A tool call can also be denied by Eitri itself, for example when a permission request expires, a session closes or a turn is interrupted. Those denial messages say what happened; a denial without a reason does not identify who denied it.",
+          "hooks": {
+            "PreToolUse": [
+              {
+                "hookCallbackIds": [
+                  "hook_0"
+                ],
+                "matcher": "*"
+              }
+            ]
+          },
+          "perTaskStopAffordance": true,
+          "subtype": "initialize"
+        },
+        "request_id": "hanc32bcmgc",
+        "type": "control_request"
+      }
+    }
+  ],
+  "exchanges": [],
+  "tool_results": {},
+  "model_requests": [
+    {
+      "file": "body_1.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_2.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_3.json",
+      "tools": [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Read",
+        "Skill",
+        "ToolSearch",
+        "Write",
+        "DeferredToolPlaceholder",
+        "SubagentHandback"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_4.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka"
+      ]
+    },
+    {
+      "file": "body_5.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka"
+      ]
+    },
+    {
+      "file": "body_6.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka"
+      ]
+    },
+    {
+      "file": "body_7.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka"
+      ]
+    },
+    {
+      "file": "body_8.json",
+      "tools": [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Read",
+        "Skill",
+        "ToolSearch",
+        "Write",
+        "DeferredToolPlaceholder",
+        "SubagentHandback"
+      ],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_9.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka",
+        "toolu_k3",
+        "toolu_kb"
+      ]
+    },
+    {
+      "file": "body_10.json",
+      "tools": [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Read",
+        "Skill",
+        "ToolSearch",
+        "Write",
+        "DeferredToolPlaceholder",
+        "SubagentHandback"
+      ],
+      "tool_use_ids": [
+        "toolu_sk2"
+      ]
+    },
+    {
+      "file": "body_11.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka",
+        "toolu_k3",
+        "toolu_kb"
+      ]
+    },
+    {
+      "file": "body_12.json",
+      "tools": [],
+      "tool_use_ids": []
+    },
+    {
+      "file": "body_13.json",
+      "tools": [
+        "Agent",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "tool_use_ids": [
+        "toolu_k1",
+        "toolu_ka",
+        "toolu_k3",
+        "toolu_kb"
+      ]
+    }
+  ],
+  "dropped_controls": 18
+}

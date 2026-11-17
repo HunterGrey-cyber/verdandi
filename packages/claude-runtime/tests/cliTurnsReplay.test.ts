@@ -35,6 +35,10 @@ for (const name of new Set([...required, ...recorded, ...handbuilt])) {
         const key = `${name}${variant === 'recorded' ? '' : `.${variant}`}`;
         assert.ok(key in ledger, `${key}: missing ledger entry`);
         assertGapLedger(key, ledger[key], holdingGaps(replay));
+        if (name.endsWith('.core') && variant === 'recorded') {
+          t.diagnostic(`turn order: ${replay.events.flatMap(e => e.type === 'turn_started' ? [e.origin] : []).join(', ')}; CLI cycles announced: ${replay.events.filter(e => e.type === 'cli_cycle_started').length}`);
+          assert.deepEqual(replay.events.filter(e => e.type === 'cli_cycle_started'), [], 'no host send preceded a CLI cycle');
+        }
       } finally { recording.cleanup(); }
     });
   }
@@ -123,6 +127,7 @@ for (const [name, variants] of Object.entries(TURN_REPLAYS)) {
         assertBalanced(`${name} ${variant}`, replay.events);
         assert.deepEqual(replay.events.flatMap(e => e.type === 'turn_started' ? [e.origin] : []), origins);
         assert.deepEqual(replay.events.filter(e => e.type === 'cli_cycle_started'), []);
+        t.diagnostic(`turn order: ${origins.join(', ')}; no host send preceded a CLI cycle`);
         // A CLI turn's frames carry its id; nothing produced while it ran is labelled with another turn.
         let open: string | undefined;
         for (const event of replay.events) {
@@ -304,6 +309,10 @@ test('import merges directions, routes question controls and rejects unsafe stag
     assert.ok(existsSync(join(directory, 'selective', 'many.run2.core.messages.json')));
     assert.ok(existsSync(join(directory, 'selective', 'many.run2.control.json')));
     rmSync(broken, { recursive: true });
+    const typed = join(run, 'typed'); mkdirSync(typed); write(typed, { scenario: 'sample' });
+    importRuns({ from: staging, out: join(directory, 'selective'), scan, only: ['sample', 'many'], variant: 'core' });
+    assert.ok(existsSync(join(directory, 'selective', 'sample.core.messages.json')));
+    assert.ok(existsSync(join(directory, 'selective', 'sample.typed.core.messages.json')));
     importRuns({ from: staging, out: join(directory, 'output'), scan });
     assert.throws(() => importRuns({ from: run, out: join(directory, 'run-root'), scan }), /staging root/);
     // A run with no AskUserQuestion traffic gets no control file.
@@ -452,5 +461,136 @@ test('task control replay c16w_stop.run2: a stop on the running workflow reaches
     });
     assert.deepEqual(before, [workflow]);
     assert.deepEqual(endings(replay.events), [[workflow, 'updated', 'killed'], [workflow, 'notified', 'stopped']]);
+  } finally { recording.cleanup(); }
+});
+
+const CORE_RUNS = ['c07b', 'c16', 'c16w_stop.run1', 'c16w_stop.run2', 'c16w_stop.run3', 'c17', 'c17.typed', 'c17.steer',
+  'c20', 'c20_auto', 'c20_manual', 'c20b', 'c20c', 'c20d', 'c20e', 'c20f', 'c20g', 'c20w', 'c20s', 'c20x', 'c20_off'];
+test('all post-implementation recordings are present and every ledger entry is empty', t => {
+  for (const name of CORE_RUNS) fixtureOrSkip(`${name}.core`, t);
+  for (const [name, gaps] of Object.entries(ledger)) assert.deepEqual(gaps, [], name);
+});
+
+for (const name of ['c16.core']) {
+  test(`task stop replay ${name}: exactly the selected shell leaves the level and is notified stopped`, async t => {
+    if (!fixtureOrSkip(name, t)) return;
+    const recording = loadRecording(name);
+    try {
+      const stop = recording.messages.find(l => l.from === 'host' && l.message.request?.subtype === 'stop_task')!;
+      assert.ok(stop);
+      const id = stop.message.request.task_id;
+      const replay = await drive(recording.messages, recording.directory, {
+        beforeClose: async (_session, fake) => assert.deepEqual(fake.stopTaskCalls, [id]),
+      });
+      const index = replay.steps.findIndex(s => s.line === stop);
+      const before = replay.steps.slice(0, index).flatMap(s => s.events).filter(e => e.type === 'background_tasks_changed').at(-1)!;
+      const after = replay.steps.slice(index).flatMap(s => s.events).find(e => e.type === 'background_tasks_changed')!;
+      assert.equal(before.type, 'background_tasks_changed');
+      assert.equal(after.type, 'background_tasks_changed');
+      if (before.type !== 'background_tasks_changed' || after.type !== 'background_tasks_changed') return;
+      assert.equal(before.tasks.length, 2);
+      assert.deepEqual(after.tasks.map(t => t.taskId), before.tasks.filter(t => t.taskId !== id).map(t => t.taskId));
+      assert.ok(endings(replay.events).some(([task, edge, status]) => task === id && edge === 'notified' && status === 'stopped'));
+    } finally { recording.cleanup(); }
+  });
+}
+
+for (const [label, derive] of [['recorded', (m: Line[]) => m], ['launch template only', withoutOutputFile], ['output_file only', withoutLaunchTemplate]] as const) {
+  test(`task output replay c16.core ${label}: both shell files are accepted`, async t => {
+    if (!fixtureOrSkip('c16.core', t)) return;
+    const recording = loadRecording('c16.core');
+    try {
+      const shells = [...recordedTasks(recording.messages)].filter(([, kind]) => kind === 'local_bash');
+      assert.equal(shells.length, 2);
+      const files = recordedOutputFiles(recording.messages);
+      await drive(derive(recording.messages), recording.directory, { beforeClose: async session => {
+        for (const [id] of shells) {
+          const file = files.get(id)!;
+          assert.ok(file.startsWith(`${recording.directory}/`));
+          mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${id}\n`);
+          assert.equal(Buffer.from((await session.taskOutput(id)).output).toString(), `${id}\n`);
+        }
+      } });
+    } finally { recording.cleanup(); }
+  });
+}
+
+for (const name of ['c07b.core', 'c16w_stop.run3.core']) {
+  test(`interrupt replay ${name}: declared per-task stop preserves background tasks`, async t => {
+    if (!fixtureOrSkip(name, t)) return;
+    const controls = JSON.parse(readFileSync(new URL(`${name}.control.json`, fixtureRoot), 'utf8'));
+    const declaration = controls.initializations.find((l: Line) => l.message.request.perTaskStopAffordance === true);
+    assert.ok(declaration, 'initialize declares perTaskStopAffordance');
+    const recording = loadRecording(name);
+    try {
+      const replay = await drive(recording.messages, recording.directory);
+      const interrupts = replay.steps.filter(s => s.line.from === 'host' && s.line.message.request?.subtype === 'interrupt' && s.line.i! > declaration.i);
+      assert.ok(interrupts.length > 0);
+      for (const interrupt of interrupts) {
+        const index = replay.steps.indexOf(interrupt);
+        const prior = replay.steps.slice(0, index).flatMap(s => s.events).filter(e => e.type === 'background_tasks_changed').at(-1)!;
+        assert.ok(prior.type === 'background_tasks_changed' && prior.tasks.length > 0);
+        if (prior.type !== 'background_tasks_changed') continue;
+        t.diagnostic(`spared kinds: ${prior.tasks.map(task => task.kind).join(', ')}`);
+        for (const task of prior.tasks) {
+          const tail = replay.steps.slice(index).flatMap(s => s.events);
+          assert.equal(endings(tail).some(([id, , status]) => id === task.taskId && ['killed', 'stopped'].includes(status!)), false, task.taskId);
+          const levels = tail.filter(e => e.type === 'background_tasks_changed');
+          const ending = tail.findIndex(e => e.type === 'task_event' && e.taskId === task.taskId && e.status === 'completed');
+          for (const level of levels) {
+            if (ending >= 0 && tail.indexOf(level) > ending) break;
+            assert.ok(level.tasks.some(t => t.taskId === task.taskId), task.taskId);
+          }
+        }
+      }
+    } finally { recording.cleanup(); }
+  });
+}
+
+for (const name of ['c16w_stop.run1.core', 'c16w_stop.run2.core', 'c16w_stop.run2']) {
+  test(`workflow stop replay ${name}: recorded stop produces a stopped notification`, async t => {
+    if (!fixtureOrSkip(name, t)) return;
+    const recording = loadRecording(name);
+    try {
+      const workflow = [...recordedTasks(recording.messages)].find(([, kind]) => kind === 'local_workflow')![0];
+      const replay = await drive(recording.messages, recording.directory);
+      assert.deepEqual(endings(replay.events), [[workflow, 'updated', 'killed'], [workflow, 'notified', 'stopped']]);
+      assert.ok(recording.messages.some(l => l.message.subtype === 'task_notification' && l.message.task_id === workflow && l.message.status === 'stopped'));
+    } finally { recording.cleanup(); }
+  });
+}
+
+for (const [name, origins] of [['c17.core', [undefined]], ['c17.typed.core', [{ kind: 'human' }]], ['c17.steer.core', [undefined, { kind: 'human' }]]] as const) {
+  test(`human origin replay ${name}: recorded and pushed host stamps agree`, async t => {
+    if (!fixtureOrSkip(name, t)) return;
+    const recording = loadRecording(name);
+    try {
+      const host = recording.messages.filter(l => l.from === 'host' && l.message.type === 'user');
+      assert.deepEqual(host.map(l => l.message.origin), origins);
+      const replay = await drive(recording.messages, recording.directory);
+      assert.deepEqual(replay.pushed.map(m => (m as unknown as { origin?: unknown }).origin), origins);
+      if (name === 'c17.steer.core') {
+        assert.ok(replay.steps.find(s => s.line === host[1])?.activeTurn, 'second host message is a steer');
+      }
+    } finally { recording.cleanup(); }
+  });
+}
+
+test('Monitor output replay c02b: the notification output_file is accepted', async t => {
+  if (!fixtureOrSkip('c02b', t)) return;
+  const recording = loadRecording('c02b');
+  try {
+    const launch = recording.messages.flatMap(l => l.from === 'cli' && l.message.type === 'assistant'
+      ? l.message.message.content : []).find(b => b.type === 'tool_use' && b.name === 'Monitor');
+    assert.ok(launch);
+    const started = recording.messages.find(l => l.message.subtype === 'task_started' && l.message.tool_use_id === launch.id)!;
+    assert.ok(started);
+    const id = started.message.task_id;
+    const file = recordedOutputFiles(recording.messages).get(id)!;
+    assert.ok(file.startsWith(`${recording.directory}/`));
+    await drive(recording.messages, recording.directory, { beforeClose: async session => {
+      mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, 'monitor output\n');
+      assert.equal(Buffer.from((await session.taskOutput(id)).output).toString(), 'monitor output\n');
+    } });
   } finally { recording.cleanup(); }
 });

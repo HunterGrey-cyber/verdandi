@@ -67,7 +67,7 @@ test('translateMessage: an assistant message with text and tool_use blocks produ
 
   const events = translateMessage(message, { currentTurnId: 'turn-1' });
   assert.deepEqual(events, [
-    { type: 'text_delta', turnId: 'turn-1', text: 'checking now' },
+    { type: 'text_delta', turnId: 'turn-1', text: 'checking now', startsBlock: true },
     { type: 'tool_call_started', turnId: 'turn-1', toolUseId: 'toolu_1', name: 'Bash', input: { command: 'echo hi' } },
   ]);
 });
@@ -112,7 +112,7 @@ test('translateMessage: an unrecognized top-level message type produces exactly 
 test('translateMessage: an assistant message with no attributed turn keeps its text under an empty turn id', () => {
   const message = { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } } as unknown as SDKMessage;
   const events = translateMessage(message, { currentTurnId: undefined });
-  assert.deepEqual(events, [{ type: 'text_delta', turnId: '', text: 'hi' }]);
+  assert.deepEqual(events, [{ type: 'text_delta', turnId: '', text: 'hi', startsBlock: true }]);
 });
 
 // --- partial streaming (2026-09-12) --------------------------------------------------------------
@@ -130,7 +130,7 @@ function streamEvent(delta: unknown): SDKMessage {
 
 test('partial streaming: a text content_block_delta becomes one text_delta', () => {
   assert.deepEqual(translateMessage(streamEvent({ type: 'text_delta', text: 'Hel' }), PARTIAL_CTX), [
-    { type: 'text_delta', turnId: 't1', text: 'Hel' },
+    { type: 'text_delta', turnId: 't1', text: 'Hel', startsBlock: true },
   ]);
 });
 
@@ -181,7 +181,7 @@ test('partial streaming: the completed assistant message no longer re-emits text
 test('partial streaming: a stream event with no attributed turn keeps its text under an empty turn id', () => {
   assert.deepEqual(
     translateMessage(streamEvent({ type: 'text_delta', text: 'x' }), { currentTurnId: undefined, partialStreaming: true }),
-    [{ type: 'text_delta', turnId: '', text: 'x' }],
+    [{ type: 'text_delta', turnId: '', text: 'x', startsBlock: true }],
   );
 });
 
@@ -209,7 +209,7 @@ test('partial streaming: an assistant message whose deltas never arrived still y
     message: { message: { content: [{ type: 'text', text: 'Hello there' }] }, content: [{ type: 'text', text: 'Hello there' }] },
   } as never;
   assert.deepEqual(translateMessage(assistant, { currentTurnId: 't1', partialStreaming: true, streamedSinceLastAssistant: false }), [
-    { type: 'text_delta', turnId: 't1', text: 'Hello there' },
+    { type: 'text_delta', turnId: 't1', text: 'Hello there', startsBlock: true },
   ]);
 });
 

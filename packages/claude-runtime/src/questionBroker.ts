@@ -73,10 +73,10 @@ export function questionRefusedText(reason: string): string {
   return `This client could not show the question: ${reason}. Ask in plain text instead.`;
 }
 
-/** How each way of failing every open question at once reads to the model: the text a pending
+/** How each way of failing every open interaction at once reads to the model: the text a pending
  * permission request gets for the same cause, so the two cannot drift. Read when it is needed, not at
  * load: the permission broker's module imports this one. */
-function failText(cause: InteractionFailCause): string {
+export function interactionFailText(cause: InteractionFailCause): string {
   switch (cause) {
     case 'interrupted':
       return HOST_SETTLEMENT_MESSAGES.cancelled_by_interrupt;
@@ -384,18 +384,18 @@ export class QuestionBroker implements InteractionPort {
         : undefined;
     if (refusal !== undefined || !parsed.ok) {
       const reason = refusal ?? 'the question could not be read';
-      this.emit({ type: 'interaction_requested', interactionId, toolUseId, unsupportedReason: reason });
-      this.emit({ type: 'interaction_resolved', interactionId, outcome: 'host_refused', reason });
+      this.emit({ type: 'interaction_requested', interactionId, toolUseId, kind: 'question', unsupportedReason: reason });
+      this.emit({ type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'host_refused', reason });
       return Promise.resolve({ behavior: 'deny', message: questionRefusedText(reason) });
     }
-    const requested: InteractionRequestedEvent = { type: 'interaction_requested', interactionId, toolUseId, questions: parsed.questions };
+    const requested: InteractionRequestedEvent = { type: 'interaction_requested', interactionId, toolUseId, kind: 'question', questions: parsed.questions };
     const signal = options.signal;
     return new Promise<PermissionResult>((answer) => {
       const onAbort = (): void => {
         // The CLI gave up on the callback: the question is gone, and a later answer for this id
         // finds nothing to settle.
         if (this.open.delete(interactionId)) {
-          this.emit({ type: 'interaction_resolved', interactionId, outcome: 'expired' });
+          this.emit({ type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'expired' });
         }
         answer({ behavior: 'deny', message: QUESTION_WITHDRAWN_TEXT });
       };
@@ -421,6 +421,9 @@ export class QuestionBroker implements InteractionPort {
     // question waiting exactly as it was.
     let permission: PermissionResult;
     let resolved: InteractionResolvedEvent;
+    if (result.kind === 'plan_approve' || result.kind === 'plan_keep') {
+      refuseAnswer('kind_mismatch', 'a question is answered or declined; a plan answer does not fit it');
+    }
     if (result.kind === 'answers') {
       const built = buildAnswers(entry.questions, result.answers);
       const answers: Record<string, string> = {};
@@ -436,17 +439,17 @@ export class QuestionBroker implements InteractionPort {
         }
       }
       permission = { behavior: 'allow', updatedInput: { ...entry.input, answers, annotations } };
-      resolved = { type: 'interaction_resolved', interactionId, outcome: 'answered', answers: shown(built) };
+      resolved = { type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'answered', answers: shown(built) };
     } else if (result.decline === 'cancel') {
       if ((result.soFar ?? []).length > 0) {
         refuseAnswer('kind_mismatch', 'a cancel carries no answers; only a request to chat does');
       }
       permission = { behavior: 'deny', message: CLI_REJECT_TEXT, interrupt: true };
-      resolved = { type: 'interaction_resolved', interactionId, outcome: 'declined' };
+      resolved = { type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'declined' };
     } else {
       const soFar = shown(buildAnswers(entry.questions, result.soFar ?? []));
       permission = { behavior: 'deny', message: clarifyText(entry.questions, soFar) };
-      resolved = { type: 'interaction_resolved', interactionId, outcome: 'chat_requested', answers: soFar };
+      resolved = { type: 'interaction_resolved', interactionId, kind: 'question', outcome: 'chat_requested', answers: soFar };
     }
     this.settle(interactionId, entry, permission, resolved);
     return resolved;
@@ -457,7 +460,7 @@ export class QuestionBroker implements InteractionPort {
       if (entry.agentId !== undefined && spares?.(entry.agentId) === true) {
         continue;
       }
-      this.settle(interactionId, entry, { behavior: 'deny', message: failText(cause) }, { type: 'interaction_resolved', interactionId, outcome: cause });
+      this.settle(interactionId, entry, { behavior: 'deny', message: interactionFailText(cause) }, { type: 'interaction_resolved', interactionId, kind: 'question', outcome: cause });
     }
   }
 

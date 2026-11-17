@@ -322,7 +322,7 @@ test('a subagent\'s frame with no turn open opens nothing and keeps its parent a
   const { session, controller } = await afterFirstTurn(true);
   controller.emit({ type: 'assistant', parent_tool_use_id: 'toolu_agent', message: { id: 'sub', content: [{ type: 'text', text: 'sub' }] } } as never);
   const events = await drain(session);
-  assert.deepEqual(events, [{ type: 'text_delta', turnId: '', text: 'sub', messageId: 'sub', parentToolUseId: 'toolu_agent' }]);
+  assert.deepEqual(events, [{ type: 'text_delta', turnId: '', text: 'sub', messageId: 'sub', parentToolUseId: 'toolu_agent', startsBlock: true }]);
   assert.doesNotThrow(() => session.sendTurn('free'));
 });
 

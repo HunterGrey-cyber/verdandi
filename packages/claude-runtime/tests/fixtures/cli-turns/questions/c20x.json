@@ -1,0 +1,108 @@
+{
+  "questions": [
+    {
+      "question": "Which colour should the C20 banner use?",
+      "header": "Colour",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Blue",
+          "description": "C20 calm"
+        },
+        {
+          "label": "Green",
+          "description": "C20 fresh"
+        }
+      ]
+    },
+    {
+      "question": "Which C20 checks should run?",
+      "header": "Checks",
+      "multiSelect": true,
+      "options": [
+        {
+          "label": "Lint",
+          "description": "C20 style"
+        },
+        {
+          "label": "Unit",
+          "description": "C20 fast tests"
+        },
+        {
+          "label": "Fuzz",
+          "description": "C20 slow"
+        },
+        {
+          "label": "Bench",
+          "description": "C20 timing"
+        }
+      ]
+    }
+  ],
+  "answer": {
+    "kind": "answers",
+    "answers": [
+      {
+        "questionIndex": 0,
+        "optionIndexes": [
+          0
+        ]
+      },
+      {
+        "questionIndex": 1,
+        "optionIndexes": [
+          0,
+          2
+        ]
+      }
+    ]
+  },
+  "outcome": "answered",
+  "updatedInput": {
+    "questions": [
+      {
+        "question": "Which colour should the C20 banner use?",
+        "header": "Colour",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "Blue",
+            "description": "C20 calm"
+          },
+          {
+            "label": "Green",
+            "description": "C20 fresh"
+          }
+        ]
+      },
+      {
+        "question": "Which C20 checks should run?",
+        "header": "Checks",
+        "multiSelect": true,
+        "options": [
+          {
+            "label": "Lint",
+            "description": "C20 style"
+          },
+          {
+            "label": "Unit",
+            "description": "C20 fast tests"
+          },
+          {
+            "label": "Fuzz",
+            "description": "C20 slow"
+          },
+          {
+            "label": "Bench",
+            "description": "C20 timing"
+          }
+        ]
+      }
+    ],
+    "answers": {
+      "Which colour should the C20 banner use?": "Blue",
+      "Which C20 checks should run?": "Lint, Fuzz"
+    },
+    "annotations": {}
+  }
+}

@@ -200,7 +200,7 @@ test('a watcher that stops reading the socket is ended with EVENT_GAP at the rin
 
   // The session was never touched: a turn still runs to completion, and both readers see it.
   const turnId = await new Promise<string>((resolve, reject) => {
-    client.sendTurn({ sessionId, commandId: 'wq-turn', text: 'go on' } as never, (err, res) =>
+    client.sendTurn({ sessionId, commandId: 'wq-turn', text: 'go on', content: [] } as never, (err, res) =>
       err ? reject(err) : resolve((res as { turnId: string }).turnId),
     );
   });

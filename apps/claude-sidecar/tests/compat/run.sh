@@ -22,6 +22,11 @@
 #                        (SDK options, the first turn held for accountInfo(), SessionReady identity and fingerprint,
 #                        TurnCompleted), the web completion (every WebFetch deny rule, the init check both ways),
 #                        the pipeline (no bypass floor, no policy notice), and the error codes both clients map
+#     hostReliance.conformance, hostReliance.process   what a host relies on past the wire, which no message
+#                        states (COMPATIBILITY.md, "What a host relies on past the wire"): several watchers per
+#                        session, ResolvePermission from any connection, replay out of a ring of at least 1,000
+#                        events, steered messages queued in answer order, exit on stdin EOF, SIGTERM and SIGINT
+#                        and on nothing else, and the variables a host sets and removes on the process
 #   Rust (cargo test, rust-client/):
 #     the types Eitri links (prost, from the frozen proto): its requests encode to the golden bytes, and an
 #     unknown error code / event arm / field decodes the way Eitri depends on

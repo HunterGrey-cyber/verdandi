@@ -77,12 +77,16 @@ export function requiredInitTools(config: Pick<ClaudeSessionConfig, 'policy'>): 
 
 /**
  * The MCP servers system/init must report for this session, exactly: the extra servers merged into
- * it (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`), sorted. Read only for a session whose allow list is
+ * it (`VERDANDI_CLAUDE_EXTRA_MCP_SERVERS`) and the server of its `clientTools`, sorted. Read only for a session whose allow list is
  * verified (see `verifiesInitTools`); a session without an allow list -- an interactive one that
  * loads the user's own servers, where an extra server is optional -- is not checked at all.
  */
-export function expectedInitMcpServers(config: Pick<ClaudeSessionConfig, 'extraMcpServers'>): readonly string[] {
-  return Object.freeze(Object.keys(config.extraMcpServers ?? {}).sort());
+export function expectedInitMcpServers(config: Pick<ClaudeSessionConfig, 'extraMcpServers' | 'clientTools'>): readonly string[] {
+  const names = Object.keys(config.extraMcpServers ?? {});
+  if (config.clientTools !== undefined) {
+    names.push(config.clientTools.serverName);
+  }
+  return Object.freeze(names.sort());
 }
 
 const MCP_TOOL_PREFIX = 'mcp__';

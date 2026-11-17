@@ -1,0 +1,63 @@
+{
+  "questions": [
+    {
+      "question": "Which C20D cache notes apply?",
+      "header": "Cache",
+      "multiSelect": true,
+      "options": [
+        {
+          "label": "say \"hi\"",
+          "description": "C20D quoted"
+        },
+        {
+          "label": "Mem‮cached",
+          "description": "C20D bidi"
+        },
+        {
+          "label": "Plain",
+          "description": "C20D plain"
+        }
+      ]
+    }
+  ],
+  "answer": {
+    "kind": "answers",
+    "answers": [
+      {
+        "questionIndex": 0,
+        "optionIndexes": [
+          0
+        ],
+        "otherText": "Redis, not Memcached"
+      }
+    ]
+  },
+  "outcome": "answered",
+  "updatedInput": {
+    "questions": [
+      {
+        "question": "Which C20D cache notes apply?",
+        "header": "Cache",
+        "multiSelect": true,
+        "options": [
+          {
+            "label": "say \"hi\"",
+            "description": "C20D quoted"
+          },
+          {
+            "label": "Mem‮cached",
+            "description": "C20D bidi"
+          },
+          {
+            "label": "Plain",
+            "description": "C20D plain"
+          }
+        ]
+      }
+    ],
+    "answers": {
+      "Which C20D cache notes apply?": "\"say \\\"hi\\\"\", \"Redis, not Memcached\""
+    },
+    "annotations": {}
+  }
+}

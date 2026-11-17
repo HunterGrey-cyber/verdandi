@@ -1,4 +1,5 @@
 import type { ClaudeAccount } from './account.js';
+import type { ClientTools } from './clientTools.js';
 import type { ExtraMcpServers } from './extraMcpServers.js';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 
@@ -200,15 +201,24 @@ export type ClaudeSessionConfig = {
   accountInfoTimeoutMs?: number;
   /**
    * Interactions the host shows and answers itself. `questions: true` asks for the model's
-   * structured questions (AskUserQuestion) as interactions only the user answers; the sidecar refuses
-   * it until that path exists (`interactionOptInProblem`). `undefined` -- what every caller that
-   * predates the field passes -- changes nothing.
+   * structured questions (AskUserQuestion) as interactions only the user answers
+   * (`interactionOptInProblem`); `planMode: true` asks for plan mode, with the model's proposed plan as
+   * an interaction of its own (`planOptInProblem`). `undefined` -- what every caller that predates the
+   * field passes -- changes nothing.
    */
   clientInteractions?: ClientInteractions;
+  /**
+   * Tools the host answers itself, served to the CLI as one in-process MCP server. Taken on a fresh
+   * session, a resume and a fork alike, and checked by `clientToolsProblem` before a session exists.
+   * `undefined` changes nothing.
+   */
+  clientTools?: ClientTools;
 };
 
-/** See `ClaudeSessionConfig.clientInteractions` and the proto message of the same name. */
-export type ClientInteractions = { questions: boolean };
+/** See `ClaudeSessionConfig.clientInteractions` and the proto message of the same name. `planMode: true`
+ * asks for plan mode: the model's `EnterPlanMode` and `ExitPlanMode` are offered, and a plan it proposes
+ * reaches the host as an interaction only the person settles (`planOffered`, `planOptInProblem`). */
+export type ClientInteractions = { questions: boolean; planMode?: boolean };
 
 /** What `sendTurn` is told about its message beside the text. */
 export type SendTurnOptions = {
@@ -329,7 +339,7 @@ export type SessionCloseReason = 'closed_by_host' | 'provider_exited' | 'provide
  */
 export type InitFingerprint = {
   tools: string[];
-  mcpServers: Array<{ name: string; status: string }>;
+  mcpServers: Array<{ name: string; status: string; source?: string }>;
   /** Set when system/init's `mcp_servers` was missing, not an array, or held an entry without a string
    * name: `mcpServers` then lists only what could be read, and a verified session's server check
    * fails rather than trusting it. Not on the wire; the sidecar's own check is where it counts. */
@@ -376,14 +386,18 @@ export type ClaudeRuntimeEvent =
       effectiveToolOptions?: EffectiveToolOptions;
       /** Set by the session, like `effectiveToolOptions`, and on the same events. */
       effectiveSessionOptions?: EffectiveSessionOptions;
+      /** The CLI's own report when its system/init carried one, else the session's last read of its
+       * applied settings. Absent when neither said. */
+      effort?: string;
     }
   /** `origin` and `cause` are stated by a session that tracks who started each turn; absent, the wire
    * says UNSPECIFIED. `cause` is only ever stated for an `origin` of `cli`. */
   | { type: 'turn_started'; turnId: string; origin?: TurnOrigin; cause?: TurnCause }
   /** `messageId` is the Claude API message id the text belongs to (see TextDelta.message_id in the
    * proto): a change of id between two deltas is a new assistant message. Absent when the provider
-   * reported none. */
-  | { type: 'text_delta'; turnId: string; text: string; messageId?: string; parentToolUseId?: string }
+   * reported none. `startsBlock` is true on the first delta of a content block (see TextDelta.starts_block):
+   * every complete block, and a streamed delta at a block index its message has not produced text under. */
+  | { type: 'text_delta'; turnId: string; text: string; messageId?: string; parentToolUseId?: string; startsBlock?: boolean }
   | { type: 'thinking_delta'; turnId: string; text: string; messageId?: string; parentToolUseId?: string }
   /** `parentToolUseId` on this and the next three events names the Agent tool call a subagent's frame
    * belongs under; absent for the main thread. */
@@ -428,6 +442,9 @@ export type ClaudeRuntimeEvent =
       numTurns?: number;
     } & TurnResultDetail)
   | { type: 'session_closed'; reason: SessionCloseReason }
+  /** The CLI said, in a `system/status` frame, that its permission mode moved by itself. Verbatim, in
+   * `session_ready.permissionMode`'s vocabulary, and only when it differs from the last report. */
+  | { type: 'cli_mode_reported'; permissionMode: string }
   /** A `setPermissionMode` the CLI acknowledged. `permissions` is the host-level mode now on the
    * gate, `permissionMode` the provider-level one the CLI accepted (SessionReady's vocabulary), and
    * `bypassDefaultDenyApplied` whether entering bypass applied the conservative floor. */
@@ -492,11 +509,48 @@ export type ClaudeRuntimeEvent =
   | ({ type: 'session_notice' } & SessionNoticePayload)
   /** The conversation was cleared; the session goes on under a new provider conversation id. */
   | { type: 'conversation_reset'; newConversationId: string; trigger?: string }
-  /** The model asked the user a question. `questions` is absent when the question could not be offered
-   * (`unsupportedReason` then says why). */
-  | { type: 'interaction_requested'; interactionId: string; toolUseId: string; questions?: InteractionQuestion[]; unsupportedReason?: string }
-  /** How an interaction ended; exactly one per `interaction_requested`. */
-  | { type: 'interaction_resolved'; interactionId: string; outcome: InteractionOutcome; answers?: ShownAnswer[]; reason?: string };
+  /** The model asked the user a question (`kind` `question`, with `questions`) or proposed a plan for
+   * review (`kind` `plan_approval`, with `plan`). Neither payload is present when the interaction could
+   * not be offered (`unsupportedReason` then says why). This kernel always sets `kind`; an event without
+   * one is a question. */
+  | {
+      type: 'interaction_requested';
+      interactionId: string;
+      toolUseId: string;
+      kind?: InteractionKind;
+      questions?: InteractionQuestion[];
+      plan?: PlanProposal;
+      unsupportedReason?: string;
+    }
+  /** How an interaction ended; exactly one per `interaction_requested`, of the same `kind` (always set
+   * by this kernel; absent reads as a question). `modeAfter` is set on an `approved` plan, the execution
+   * mode the person approved into; `feedback` on `kept_planning`, what the person asked to change. */
+  | {
+      type: 'interaction_resolved';
+      interactionId: string;
+      kind?: InteractionKind;
+      outcome: InteractionOutcome;
+      answers?: ShownAnswer[];
+      modeAfter?: PlanExecutionMode;
+      feedback?: string;
+      reason?: string;
+    }
+  /** The model called a tool the host declared. `toolUseId` is empty when the CLI gave none;
+   * `argumentsJson` is the call's arguments as JSON text, always an object and never checked against the
+   * declared schema. */
+  | { type: 'client_tool_call'; callId: string; toolUseId: string; tool: string; argumentsJson: string }
+  /** How a client tool call ended; exactly one per `client_tool_call` while the session's stream lives. */
+  | { type: 'client_tool_call_settled'; callId: string; outcome: ClientToolCallOutcome };
+
+/**
+ * `answered`, `interrupted` and `session_closed` are facts. `timed_out`, `withdrawn` and
+ * `provider_failed` are best-effort labels no host may branch on: every outcome means the call is over.
+ */
+export type ClientToolCallOutcome = 'answered' | 'interrupted' | 'session_closed' | 'timed_out' | 'withdrawn' | 'provider_failed';
+/** A `client_tool_call` event on its own, as the client tool port lists the open ones. */
+export type ClientToolCallEvent = Extract<ClaudeRuntimeEvent, { type: 'client_tool_call' }>;
+/** A `client_tool_call_settled` event on its own. */
+export type ClientToolCallSettledEvent = Extract<ClaudeRuntimeEvent, { type: 'client_tool_call_settled' }>;
 
 /** An `interaction_requested` event on its own, as the interaction port lists the pending ones. */
 export type InteractionRequestedEvent = Extract<ClaudeRuntimeEvent, { type: 'interaction_requested' }>;
@@ -637,10 +691,27 @@ export type InteractionQuestionOption = { label: string; description: string; pr
 /** One question of a structured question set, as the model asked it. */
 export type InteractionQuestion = { question: string; header: string; multiSelect: boolean; options: InteractionQuestionOption[] };
 
+/** What an interaction asks of the person: an answer to the model's questions, or a decision on its plan. */
+export type InteractionKind = 'question' | 'plan_approval';
+
+/** The execution mode a person approves a plan into, in the host's terms. The CLI itself only ever
+ * leaves plan mode for the mode the session was created in; this names the host's own policy after. */
+export type PlanExecutionMode = 'manual' | 'auto' | 'bypass';
+
+/** A plan the model proposed with `ExitPlanMode`: the text verbatim, the SHA-256 (lowercase hex) of its
+ * UTF-8 bytes that an approval must name, and the prompts the model listed as needing permission, which
+ * are shown as information and never become a permission. */
+export type PlanProposal = { plan: string; planSha256: string; allowedPrompts: PlanAllowedPrompt[] };
+
+/** One entry of a plan's `allowedPrompts`, as the model wrote it. */
+export type PlanAllowedPrompt = { tool: string; prompt: string };
+
 export type InteractionOutcome =
   | 'answered'
   | 'declined'
   | 'chat_requested'
+  | 'approved'
+  | 'kept_planning'
   | 'interrupted'
   | 'expired'
   | 'session_closed'
@@ -650,11 +721,27 @@ export type InteractionOutcome =
 /** What was sent to the model for one answered question. */
 export type ShownAnswer = { questionIndex: number; answer: string; notes?: string };
 
-/** The tail of a background task's output. */
+/** A background task's output, or the part of it that was asked for. */
 export type TaskOutputResult = {
   output: Uint8Array;
   /** The whole output's size in bytes. */
   totalBytes: number;
-  /** `output` is only the tail of it. */
+  /** `output` is only part of it. */
   truncated: boolean;
+  /** Where `output` starts in the whole output. */
+  offset: number;
+};
+
+/** What the CLI says it will use. Each is `''` when it did not say. */
+export type AppliedSettings = { model: string; effort: string };
+
+/** One model the CLI offers, in its own words. */
+export type ModelOption = {
+  value: string;
+  resolvedModel: string;
+  displayName: string;
+  description: string;
+  supportsEffort: boolean;
+  supportedEffortLevels: string[];
+  supportsAutoMode: boolean;
 };

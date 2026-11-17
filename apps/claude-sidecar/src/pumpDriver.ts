@@ -118,6 +118,9 @@ export class PumpDriver {
       if (event.type === 'commands_updated') {
         this.entry.latestCommands = sequenced;
       }
+      if (event.type === 'cli_mode_reported') {
+        this.entry.latestCliMode = sequenced;
+      }
       this.callbacks.onEvent(sequenced);
       if (event.type === 'session_closed') {
         sawTerminal = true;

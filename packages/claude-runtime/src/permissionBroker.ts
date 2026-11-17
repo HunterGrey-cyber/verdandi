@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, HookCallback, HookCallbackMatcher, PermissionResult, PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import type { ClientToolPort } from './clientToolBroker.js';
 import type { InteractionPort } from './interactionPort.js';
+import { PLAN_NOT_OFFERED_TEXT } from './planBroker.js';
+import { PLAN_TOOL } from './planOptions.js';
 import { QUESTION_NOT_OFFERED_TEXT, QUESTION_TOOL } from './questionBroker.js';
 import type { ClaudeRuntimeEvent, PermissionOrigin, PermissionOutcome, ProviderMatchedAskRule } from './types.js';
 
@@ -231,6 +234,24 @@ type PendingPermission = {
  */
 export type GateDecision = { kind: 'ask' } | { kind: 'abstain' } | { kind: 'deny'; reason: string };
 
+/**
+ * What a plan session's hook does beside the gate. `observeHook` hears every hook call as it is raised:
+ * its tool, the `permission_mode` it carried (the mode the CLI is in as it makes the call, which can be
+ * fresher than the last status frame the session has read; `undefined` when it carried no string), and
+ * whether it is the main thread's. `mark` is taken as a call is raised. `answerAllow` says, when the
+ * host has answered `allow` (or `defer`), what the hook sends instead while the CLI may be in plan mode:
+ * the allow, no decision (`abstain`), or the CLI's own prompt (`ask`). `raisedAt` is the mark taken for
+ * the call.
+ */
+export type PlanHookGuard = {
+  observeHook(toolName: string, hookMode: string | undefined, mainThread: boolean): void;
+  mark(): number;
+  answerAllow(toolName: string, hookMode: string | undefined, raisedAt: number, mainThread: boolean): 'allow' | 'abstain' | 'ask';
+};
+
+/** The reason a plan session's hook gives the CLI when it turns a host's answer into an ask. */
+export const PLAN_ASK_REASON = 'In plan mode this command needs the person\'s approval.';
+
 export class PermissionBroker {
   private readonly pending = new Map<string, PendingPermission>();
 
@@ -249,6 +270,11 @@ export class PermissionBroker {
     /** The route a session's structured questions take to the host, when it offers any. `canUseTool`
      * hands it the question tool's calls; absent, the question tool is refused. See `buildCanUseTool`. */
     private readonly interactionPort?: InteractionPort,
+    /** The session's client tools, when it has any. A `tools/call` carries no agent id, so the hook
+     * records which agent a call it let through belongs to. See `buildHookMatcher`. */
+    private readonly clientToolPort?: ClientToolPort,
+    /** A plan session's guard on host allows while the CLI is in plan mode. See `buildHookMatcher`. */
+    private readonly planGuard?: PlanHookGuard,
   ) {}
 
   /**
@@ -289,6 +315,12 @@ export class PermissionBroker {
   buildHookMatcher(timeoutSeconds?: number): HookCallbackMatcher {
     const callback: HookCallback = async (input, toolUseId, { signal }) => {
       const preToolUse = input as PreToolUseHookInput;
+      const reportedMode: unknown = (preToolUse as { permission_mode?: unknown }).permission_mode;
+      const hookMode = typeof reportedMode === 'string' && reportedMode !== '' ? reportedMode : undefined;
+      // A subagent's call may run in a mode of its own, so only the main thread's says the session's.
+      const mainThread = agentIdOf(preToolUse.agent_id) === undefined;
+      this.planGuard?.observeHook(preToolUse.tool_name, hookMode, mainThread);
+      const raisedAt = this.planGuard?.mark() ?? 0;
       const gated = this.gate?.(preToolUse.tool_name) ?? { kind: 'ask' };
       if (gated.kind === 'abstain') {
         // No decision at all: the CLI's own permission mode decides, as if no hook were installed.
@@ -314,10 +346,35 @@ export class PermissionBroker {
         },
         agentIdOf(preToolUse.agent_id),
       );
+      // Before the hook answers, so the record exists before the CLI can send the `tools/call`. A
+      // denied call never reaches the server and records nothing.
+      if (decision.allow || decision.deferred === true) {
+        this.clientToolPort?.noteAgent(preToolUse.tool_name, toolUseId ?? preToolUse.tool_use_id, agentIdOf(preToolUse.agent_id));
+      }
+      // While the CLI may be in plan mode, a plan session does not send an allow for a call that writes
+      // files or runs a command: a write gets no decision (the CLI's plan mode writes its own plan file
+      // and asks about any other), a command gets an ask (left alone, the CLI would hand one that is not
+      // read-only to its auto-mode classifier, which can run it with nobody asked). A deferral of a
+      // command is asked for the same reason. Each is said, so the host can tell why its answer went
+      // another way; neither is looser than what the host answered.
+      const planAnswer =
+        decision.allow || decision.deferred === true ? this.planGuard?.answerAllow(preToolUse.tool_name, hookMode, raisedAt, mainThread) : undefined;
+      if (planAnswer === 'ask') {
+        const subtype = decision.deferred === true ? 'plan_defer_asked' : 'plan_allow_asked';
+        this.emit({ type: 'provider_notice', kind: 'verdandi_policy', subtype, raw: { toolName: preToolUse.tool_name } });
+        const asked: SyncHookJSONOutput = {
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: PLAN_ASK_REASON },
+        };
+        return asked;
+      }
       if (decision.deferred === true) {
         // The host explicitly left this call to the CLI's own mode (the auto-mode classifier under
         // `auto`, the CLI's normal ask under `default`). Only `resolve()` with `defer` gets here: a
         // timeout, abort, interrupt, close or provider death settles with a plain denial instead.
+        return noDecision();
+      }
+      if (planAnswer === 'abstain') {
+        this.emit({ type: 'provider_notice', kind: 'verdandi_policy', subtype: 'plan_allow_deferred', raw: { toolName: preToolUse.tool_name } });
         return noDecision();
       }
       const output: SyncHookJSONOutput = {
@@ -378,26 +435,26 @@ export class PermissionBroker {
    * switch) the SDK documents that the CLI does not call it; if a CLI ever does, the host is asked
    * rather than the call being allowed on its behalf.
    *
-   * ### The question tool is never a permission request
+   * ### The question and plan tools are never permission requests
    *
    * `AskUserQuestion` is a question for the person, not a call to approve, and the CLI asks this
-   * callback for it even after a hook allowed it. It never reaches `ask`: on a session that offers
-   * questions it goes to the interaction port, where only the host's answer through
-   * `ResolveInteraction` settles it, so no path that answers permissions (a bypass switch, an
-   * approve-all, `resolve` on any id) can see it, let alone answer it. A session that does not offer
-   * questions has the tool on its deny list, so the call should not arrive; if it does, it is denied
-   * with no event, since nobody could be shown it.
+   * callback for it even after a hook allowed it; `ExitPlanMode` likewise carries a plan for the person
+   * to decide on. Neither reaches `ask`: on a session that offers them they go to the interaction port,
+   * where only the host's answer through `ResolveInteraction` settles them, so no path that answers
+   * permissions (a bypass switch, an approve-all, `resolve` on any id) can see them, let alone answer
+   * them. A session that does not offer one has the tool on its deny list, so the call should not
+   * arrive; if it does, it is denied with no event, since nobody could be shown it.
    */
   buildCanUseTool(): CanUseTool {
     return async (toolName, input, options): Promise<PermissionResult> => {
-      if (toolName === QUESTION_TOOL) {
+      if (toolName === QUESTION_TOOL || toolName === PLAN_TOOL) {
         const agentId = agentIdOf(options.agentID);
         const routed = this.interactionPort?.route(toolName, input, {
           signal: options.signal,
           ...(typeof options.toolUseID === 'string' ? { toolUseID: options.toolUseID } : {}),
           ...(agentId === undefined ? {} : { agentID: agentId }),
         });
-        return routed ?? { behavior: 'deny', message: QUESTION_NOT_OFFERED_TEXT };
+        return routed ?? { behavior: 'deny', message: toolName === QUESTION_TOOL ? QUESTION_NOT_OFFERED_TEXT : PLAN_NOT_OFFERED_TEXT };
       }
       const decision = await this.ask(
         {

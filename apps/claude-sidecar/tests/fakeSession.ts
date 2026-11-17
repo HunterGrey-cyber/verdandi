@@ -1,5 +1,35 @@
-import { createInteractionPort, TaskNotFoundError, type AccountIdentity, type ClaudeRuntimeEvent, type InteractionPort, type PermissionAnswer, type SendTurnOptions, type SessionCloseReason, type SteerTurnOptions, type TaskOutputResult } from '@verdandi/claude-runtime';
+import { createClientToolPort, createInteractionPort, TaskNotFoundError, type AccountIdentity, type AppliedSettings, type ModelOption, type OutputRange, type ClaudeRuntimeEvent, type ClientToolPort, type ClientTools, type InteractionPort, type PermissionAnswer, type SendTurnOptions, type SessionCloseReason, type SteerTurnOptions, type TaskOutputResult } from '@verdandi/claude-runtime';
 import type { MinimalKernelSession } from '../src/sessionRegistry.js';
+
+/** One JSON-RPC response of the in-process MCP server, as the CLI would read it. */
+export type McpResponse = { id?: number; result?: { content: Array<{ type: string; text: string }>; isError?: boolean }; error?: { code: number; message: string } };
+
+/** A transport the CLI's end of the in-process MCP server is played through. */
+export function fakeMcpTransport(responses: McpResponse[]) {
+  const transport = {
+    onmessage: undefined as ((message: unknown) => void) | undefined,
+    onclose: undefined as (() => void) | undefined,
+    onerror: undefined as ((error: Error) => void) | undefined,
+    async start(): Promise<void> {},
+    async send(message: McpResponse): Promise<void> {
+      responses.push(message);
+    },
+    async close(): Promise<void> {
+      transport.onclose?.();
+    },
+    /** Sends one frame and lets the server's handler run. */
+    async deliver(method: string, params: unknown, id?: number): Promise<void> {
+      transport.onmessage!({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, params });
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+  return transport;
+}
+
+/** The `tools/call` parameters the CLI sends, with the model's id where the CLI puts it. */
+export function toolsCallParams(tool: string, args: Record<string, unknown>, toolUseId?: string): Record<string, unknown> {
+  return { name: tool, arguments: args, ...(toolUseId === undefined ? {} : { _meta: { 'claudecode/toolUseId': toolUseId } }) };
+}
 
 export type FakeSessionController = {
   /** Makes the fake's pump() return this event on the next call (queued, drained in order). */
@@ -55,6 +85,17 @@ export type FakeSessionController = {
    * events come out of this fake's pump(); `undefined` otherwise. A test asks it questions with
    * `route('AskUserQuestion', input, options)`, as the kernel's `canUseTool` does. */
   readonly interactions: InteractionPort | undefined;
+  /** The session's client tool port: the kernel's own, for a fake made with `clientTools`, whose events
+   * come out of this fake's pump(); `undefined` otherwise. */
+  readonly clientTools: ClientToolPort | undefined;
+  /** Plays the CLI calling one declared tool, through a fake transport connected to the port's MCP
+   * server as the Agent SDK connects one. Resolves once the server's handler has run; the call's
+   * result, when there is one, lands in `mcpResponses`. */
+  callClientTool(tool: string, args: Record<string, unknown>, call: { id: number; toolUseId?: string }): Promise<void>;
+  /** Plays the CLI giving up on the request with this JSON-RPC id (`notifications/cancelled`). */
+  cancelClientTool(id: number): Promise<void>;
+  /** What the CLI got back from the MCP server, in order. */
+  readonly mcpResponses: McpResponse[];
   /** Every task id passed to stopTask(), in call order, refused ones included. */
   readonly stopTaskCalls: string[];
   /** Replaces what stopTask() answers (by default it resolves), e.g. with the kernel's
@@ -62,8 +103,17 @@ export type FakeSessionController = {
   answerStopTask(answer: (taskId: string) => Promise<void>): void;
   /** Every task id passed to taskOutput(), in call order. */
   readonly taskOutputCalls: string[];
+  /** The range passed with each taskOutput() call, `undefined` for a tail. */
+  readonly taskOutputRanges: Array<OutputRange | undefined>;
   /** Replaces what taskOutput() answers (by default the kernel's TaskNotFoundError). */
-  answerTaskOutput(answer: (taskId: string) => Promise<TaskOutputResult>): void;
+  answerTaskOutput(answer: (taskId: string, range?: OutputRange) => Promise<TaskOutputResult>): void;
+  /** Every id passed to setModel(), in call order, refused ones included. */
+  readonly setModelCalls: string[];
+  answerSetModel(answer: (model: string) => Promise<AppliedSettings>): void;
+  /** Every level passed to applyEffort(), in call order, refused ones included. */
+  readonly applyEffortCalls: string[];
+  answerApplyEffort(answer: (effort: string) => Promise<AppliedSettings>): void;
+  answerListModels(answer: () => Promise<{ models: ModelOption[]; applied: AppliedSettings }>): void;
 };
 
 /**
@@ -73,7 +123,7 @@ export type FakeSessionController = {
  * since the last call, synchronously available, no waiting-for-more-input behavior — PumpDriver
  * (Task 5) is the one polling in a loop, so the fake doesn't need to simulate blocking.
  */
-export function makeFakeSession(options: { questions?: boolean } = {}): { session: MinimalKernelSession; controller: FakeSessionController } {
+export function makeFakeSession(options: { questions?: boolean; clientTools?: ClientTools; clientToolClock?: () => number } = {}): { session: MinimalKernelSession; controller: FakeSessionController } {
   const pending: ClaudeRuntimeEvent[] = [];
   const interactions =
     options.questions === true
@@ -85,6 +135,21 @@ export function makeFakeSession(options: { questions?: boolean } = {}): { sessio
           (event) => pending.push(event),
         )
       : undefined;
+  const clientTools =
+    options.clientTools === undefined
+      ? undefined
+      : createClientToolPort(options.clientTools, (event) => pending.push(event), options.clientToolClock === undefined ? undefined : { now: options.clientToolClock });
+  const mcpResponses: McpResponse[] = [];
+  const mcpTransport = fakeMcpTransport(mcpResponses);
+  let mcpConnected: Promise<void> | undefined;
+  const connectedTransport = async () => {
+    if (clientTools === undefined) {
+      throw new Error('this fake was made without clientTools');
+    }
+    mcpConnected ??= (clientTools.sdkServer().instance as unknown as { connect(transport: unknown): Promise<void> }).connect(mcpTransport);
+    await mcpConnected;
+    return mcpTransport;
+  };
   const sentTurns: string[] = [];
   const sentTurnOptions: FakeSessionController['sentTurnOptions'] = [];
   const steeredTurns: FakeSessionController['steeredTurns'] = [];
@@ -107,7 +172,13 @@ export function makeFakeSession(options: { questions?: boolean } = {}): { sessio
   const stopTaskCalls: string[] = [];
   let stopTaskAnswer = (_taskId: string): Promise<void> => Promise.resolve();
   const taskOutputCalls: string[] = [];
-  let taskOutputAnswer = (taskId: string): Promise<TaskOutputResult> => Promise.reject(new TaskNotFoundError(taskId));
+  const taskOutputRanges: Array<OutputRange | undefined> = [];
+  let taskOutputAnswer = (taskId: string, _range?: OutputRange): Promise<TaskOutputResult> => Promise.reject(new TaskNotFoundError(taskId));
+  const setModelCalls: string[] = [];
+  let setModelAnswer = (model: string): Promise<AppliedSettings> => Promise.resolve({ model, effort: 'medium' });
+  const applyEffortCalls: string[] = [];
+  let applyEffortAnswer = (effort: string): Promise<AppliedSettings> => Promise.resolve({ model: 'm', effort });
+  let listModelsAnswer = (): Promise<{ models: ModelOption[]; applied: AppliedSettings }> => Promise.resolve({ models: [], applied: { model: '', effort: '' } });
 
   const session: MinimalKernelSession = {
     async pump() {
@@ -192,12 +263,27 @@ export function makeFakeSession(options: { questions?: boolean } = {}): { sessio
       stopTaskCalls.push(taskId);
       return stopTaskAnswer(taskId);
     },
-    taskOutput(taskId: string) {
+    setModel(model: string) {
+      setModelCalls.push(model);
+      return setModelAnswer(model);
+    },
+    listModels() {
+      return listModelsAnswer();
+    },
+    applyEffort(effort: string) {
+      applyEffortCalls.push(effort);
+      return applyEffortAnswer(effort);
+    },
+    taskOutput(taskId: string, range?: OutputRange) {
       taskOutputCalls.push(taskId);
-      return taskOutputAnswer(taskId);
+      taskOutputRanges.push(range);
+      return taskOutputAnswer(taskId, range);
     },
     interactions() {
       return interactions;
+    },
+    clientTools() {
+      return clientTools;
     },
   };
 
@@ -244,11 +330,31 @@ export function makeFakeSession(options: { questions?: boolean } = {}): { sessio
         nextPumpError = { err };
       },
       interactions,
+      clientTools,
+      callClientTool: async (tool, args, call) => {
+        await (await connectedTransport()).deliver('tools/call', toolsCallParams(tool, args, call.toolUseId), call.id);
+      },
+      cancelClientTool: async (id) => {
+        await (await connectedTransport()).deliver('notifications/cancelled', { requestId: id });
+      },
+      mcpResponses,
       stopTaskCalls,
       answerStopTask: (answer) => {
         stopTaskAnswer = answer;
       },
       taskOutputCalls,
+      taskOutputRanges,
+      setModelCalls,
+      answerSetModel: (answer) => {
+        setModelAnswer = answer;
+      },
+      applyEffortCalls,
+      answerApplyEffort: (answer) => {
+        applyEffortAnswer = answer;
+      },
+      answerListModels: (answer) => {
+        listModelsAnswer = answer;
+      },
       answerTaskOutput: (answer) => {
         taskOutputAnswer = answer;
       },

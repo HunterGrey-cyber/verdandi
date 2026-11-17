@@ -79,10 +79,12 @@ test('real gRPC server over a real UDS, driven entirely by a fake Claude session
     const { controller } = lastMade!;
 
     // 3. SendTurn
-    const sendTurnRes = await promisify<{ sessionId: string; commandId: string; text: string }, { turnId: string }>(client.sendTurn.bind(client), {
+    const sendTurnRes = await promisify<{ sessionId: string; commandId: string; text: string; content: [] }, { turnId: string }>(client.sendTurn.bind(client), {
       sessionId,
       commandId: 'cmd-1',
       text: 'hello',
+      // A repeated field: the generated encoder iterates it, so a plain object states it empty.
+      content: [],
     });
     assert.equal(sendTurnRes.turnId, 'fake-turn-1');
     assert.deepEqual(controller.sentTurns, ['hello']);

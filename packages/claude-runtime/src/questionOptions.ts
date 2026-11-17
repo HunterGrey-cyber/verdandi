@@ -56,7 +56,8 @@ export function interactionOptInProblem(config: Pick<ClaudeSessionConfig, 'polic
  * last in `policyToBaseOptions`, after the deny list and the account binding are built:
  *
  * - `AskUserQuestion` leaves the applied deny list, unless the caller's own `toolPolicy.deny` names it;
- *   `EnterPlanMode` and `ExitPlanMode` stay denied.
+ *   `EnterPlanMode` and `ExitPlanMode` stay denied unless the session also opts into plan mode, which
+ *   `applyPlanOptIn` applies after this.
  * - `toolConfig.askUserQuestion.previewFormat` is `markdown`, stated rather than left to the CLI.
  * - The question-schema variables are removed from `options.env`. When no `env` has been built yet, a
  *   copy of `baseEnv` (or the process environment) is made first, so the process's own is never touched.

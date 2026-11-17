@@ -201,6 +201,7 @@ async function main(): Promise<void> {
       watchFault,
       writeQueueStats,
       sdkBundledAvailable: canRunSdkBundled,
+      extraMcpServerNames: Object.keys(extraMcpServers ?? {}),
       // The same `account` sessionFactory pins every session to, so Handshake reports the binding
       // the sessions really have. Undefined (VERDANDI_CLAUDE_ACCOUNT unset) reports UNPINNED.
       account,

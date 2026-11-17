@@ -11,7 +11,8 @@ A host should import those constants rather than copy a string.
 - **Major** is a breaking change: a field's meaning, tag or type, an RPC, an enum number, a behaviour a
   correct host relied on. A sidecar answers a handshake only for its own major, so a major bump locks out
   every host built for the old one. Nothing short of that justifies one.
-- **Minor** is an additive change: a field, a message, an enum value, an RPC, a capability. Every additive
+- **Minor** is an additive change: a field, a message, an enum value (with the one exception for outcome
+  enums in "What a host relies on past the wire"), an RPC, a capability. Every additive
   change to the wire raises `protocol_minor` by one and adds a row to the `minors` ledger in
   `capabilities.json` (the next section of this file says how a test holds that).
 - **A capability per feature.** A host decides what it may use by the capability strings the handshake
@@ -93,12 +94,215 @@ says when a sidecar lists it. The order is the handshake's order.
 | `session_notices` | 22 | no | always | Allowlisted CLI notices with typed scalars and the CLI's own optional text; content is bounded to 2000 characters. Unknown peer hold states remain payload-less notices (see "Session notices and reset") |
 | `conversation_reset` | 22 | no | always | `ConversationReset.new_conversation_id` and optional `trigger`; the provider session id the conversation goes on under (the one resume needs) is the next `SessionReady`'s, which can differ from `new_conversation_id` |
 | `structured_questions_v1` | 22 | no | always | The model's `AskUserQuestion` as a typed interaction: `CreateSession.client_interactions.questions` offers the tool, `InteractionRequested`/`InteractionResolved` carry each question and its end, `ResolveInteraction` answers it and `GetInteractionState` lists the open ones (see "Structured questions") |
+| `client_tools` | 23 | no | always | `CreateSession.client_tools` declares tools the host answers itself: the CLI gets them from one in-process MCP server, `ClientToolCall` carries each call and exactly one `ClientToolCallSettled` its end while the stream lives, `AnswerClientToolCall` answers (the first answer wins) and `GetClientToolCallState` lists the open ids. The sidecar validates no arguments and decides nothing (see "Protocol 3.23") |
+| `set_model` | 24 | no | always | The `SetModel` RPC: changes the model of a running session, also during a turn |
+| `list_models` | 24 | no | always | The `ListModels` RPC: the models the CLI offers, needing no turn |
+| `apply_effort` | 24 | no | always | The `ApplyEffort` RPC: changes the effort of a running session, also during a turn |
+| `session_effort_report` | 24 | no | always | `SessionReady.effort`: the level the CLI will send on its next request, as last read |
+| `cli_mode_reports` | 24 | no | always | The `CliModeReported` event: the CLI moved its own permission mode, reported ahead of the next `SessionReady` |
+| `task_output_range` | 24 | no | when `task_output` is | `GetTaskOutputRequest.offset` and `max_bytes`, `GetTaskOutputResponse.offset`: a range of a task's output |
+| `text_block_start` | 25 | no | always | `TextDelta.starts_block`: true on the first delta of each text content block (every delta under `STREAMING_MODE_COMPLETE`; under `STREAMING_MODE_PARTIAL` the first delta at a block index the message has not produced text under). False on a block's later deltas and when the provider gave no index, so false never splits a block. Two text blocks of one message, with the same `message_id`, are told apart by it; what goes between them is the host's choice |
+| `plan_mode_v1` | 26 | no | always | Plan approval as a typed interaction, `CreateSession.client_interactions.plan_mode`, and `SetPlanning` (see "Plan mode") |
+| `turn_content_v1` | 26 | no | always | Image content on `SendTurn`, within the handshake's `turn_content_limits` (see "Image content (`turn_content_v1`)") |
 | `executable_host_cli` | 1 | no | always | This build can spawn the `claude` installed on the machine (`ClaudeHostPolicy.executable = HOST_CLI`) |
 | `executable_sdk_bundled` | 1 | no | only in a build that can run the SDK's own CLI (a checkout; not the packaged single-file build) | `ClaudeHostPolicy.executable = SDK_BUNDLED` |
 
 What each minor added, by date, is the `minors` array in `capabilities.json`. Minors 1 to 12 were assigned
 on 2026-09-30, one per additive feature in the order it landed, from the history; until then the handshake
 reported a literal 0 for all of them. Protocol 3.12 is the wire Eitri 0.2.0 was built against.
+
+## Protocol 3.26
+
+Minor 26 adds the wire for two features: a plan the model proposes, for the
+person to approve or to keep planning (`plan_mode_v1`), and images sent with a turn (`turn_content_v1`).
+**`plan_mode_v1` and `turn_content_v1` are advertised.** A capability that is not listed does not exist,
+whatever the minor says.
+
+**Wire.**
+
+| Where | What | Number | Capability |
+|---|---|---|---|
+| `ClientInteractions` | `plan_mode` | 2 | `plan_mode_v1` |
+| `InteractionKind` | `PLAN_APPROVAL` | 2 | `plan_mode_v1` |
+| `InteractionRequested.payload` | `plan` (`PlanProposal`: `plan`, `plan_sha256`, `allowed_prompts` of `PlanAllowedPrompt`) | 11 | `plan_mode_v1` |
+| `InteractionResolved` | `kind` | 5 | none: every settlement of a 3.26 sidecar carries it |
+| `InteractionResolved` | optional `mode_after` (`PlanExecutionMode`: `MANUAL`, `AUTO`, `BYPASS`), optional `feedback` | 6, 7 | `plan_mode_v1` |
+| `InteractionOutcome` | `APPROVED`, `KEPT_PLANNING` | 9, 10 | `plan_mode_v1` |
+| `ResolveInteractionRequest.result` | `approve` (`PlanApproval`: `mode`, `plan_sha256`), `keep_planning` (`PlanKeepPlanning`: `feedback`) | 12, 13 | `plan_mode_v1` |
+| RPC | `SetPlanning` (`SetPlanningRequest`: `session_id`, `command_id`, `enter`; `SetPlanningResponse`: `permission_mode`) | -- | `plan_mode_v1` |
+| `SendTurnRequest` | `content` (repeated `TurnContentBlock`, a oneof whose one kind is `image`, `ImageContent`: `media_type`, `data`) | 6 | `turn_content_v1` |
+| `HandshakeResponse` | `turn_content_limits` (`TurnContentLimits`: `image_media_types`, `max_images_per_turn`, `max_image_bytes`, `max_content_bytes`) | 20 | `turn_content_v1` |
+
+**Numbers.** The minor takes what 3.22 held for it: `HandshakeResponse` 20, `ClientInteractions` 2,
+`InteractionKind` 2 and `ResolveInteractionRequest` 12 and 13; `ResolveInteractionRequest` 14 to 19 stay
+reserved for later results. `TurnContentBlock` 2 is reserved for documents. `CreateSessionRequest` 12 stays
+reserved and unused (content travels per turn, not as a session switch), and so does `SessionEvent` 29: the
+CLI's moves into and out of plan mode are reported by `CliModeReported` (3.24) and the next `SessionReady`,
+so there is no planning-state event.
+
+**Every settlement names its kind.** A 3.26 sidecar sets `InteractionResolved.kind` on every settlement,
+questions included, so a host can read one without having kept the request. `UNSPECIFIED`, from an older
+sidecar, means `QUESTION`. `APPROVED` and `KEPT_PLANNING` are sent only on a session created with
+`client_interactions.plan_mode`, which a host that does not know them cannot ask for.
+
+**Advertised behaviour.** Plan opt-ins, decisions and `SetPlanning` are served as described in "Plan mode";
+image content is accepted within `turn_content_limits` as described in "Image content (`turn_content_v1`)".
+
+**An older sidecar.** One older than 3.26 does not know `plan_mode` or `content` and ignores them: the plan
+tools stay denied, and a turn's images never reach the model while its text does. It answers `SetPlanning`
+`UNIMPLEMENTED` without a reason and never sends a plan. So a host sends `plan_mode` and calls `SetPlanning`
+only when the handshake lists `plan_mode_v1`, and sends `content` only when it lists `turn_content_v1`, within
+`turn_content_limits`.
+
+## Image content (`turn_content_v1`)
+
+`SendTurnRequest.content` carries images as bytes, never paths. The sidecar checks the declared media
+type against magic bytes before calling the kernel. PNG, JPEG, GIF (`GIF87a` or `GIF89a`) and WebP are
+accepted, with media types `image/png`, `image/jpeg`, `image/gif` and `image/webp`. This check identifies
+the format; it does not decode the image.
+
+The handshake advertises these limits in `turn_content_limits`:
+
+| Field | Limit |
+|---|---|
+| `image_media_types` | `image/png`, `image/jpeg`, `image/gif`, `image/webp` |
+| `max_images_per_turn` | 8 |
+| `max_image_bytes` | 3,670,016 raw bytes per image |
+| `max_content_bytes` | 3,670,016 raw bytes across all images in the turn |
+
+These inclusive byte limits fit under the handshake's 4 MiB (4,194,304 byte) gRPC message ceiling;
+the full request, including text and protobuf overhead, must also fit that ceiling. The kernel encodes
+images as base64 blocks for the CLI, in their original order after a text block when the text is not empty
+or only whitespace (whitespace-only text is dropped on an image turn).
+With no images, the kernel sends the original text string unchanged. An attachment-only turn needs
+non-empty `content` and may have empty `text`; it sends no empty text block. `SteerTurn` takes no content.
+
+Invalid content is `INVALID_CONFIGURATION` with one of the reasons below, before the kernel is called
+or a result is recorded under the `command_id`. A block without a recognised kind is refused too.
+Idempotency includes each image's media type and SHA-256 in order, never a copy of its bytes; changed
+content under the same command id conflicts. Empty or absent content preserves older payload hashes.
+
+| Reason | Meaning |
+|---|---|
+| `turn_content_media_type` | Unsupported media type or a block without a recognised kind |
+| `turn_content_magic_mismatch` | Magic bytes do not match the declared media type |
+| `turn_content_empty_image` | An image has no bytes |
+| `turn_content_too_many` | More than 8 images |
+| `turn_content_image_too_large` | One image exceeds 3,670,016 bytes |
+| `turn_content_too_large` | The images together exceed 3,670,016 bytes |
+
+## Protocol 3.24
+
+Minor 24 lets a host change a running session's model and effort without a turn, reports what the CLI
+then does, and reads past the last 8 KiB of a task's output. The first three go through the CLI's control
+channel, so nothing is queued and they work while a turn runs.
+
+**Wire.**
+
+| Where | What | Number | Capability |
+|---|---|---|---|
+| RPCs | `SetModel`, idempotent per `command_id` (`AppliedSettings`) | -- | `set_model` |
+| RPCs | `ListModels` (`ModelOption`), a read with no `command_id` | -- | `list_models` |
+| RPCs | `ApplyEffort`, idempotent per `command_id` | -- | `apply_effort` |
+| `SessionReady` | `effort` | 13 | `session_effort_report` |
+| `SessionEvent` arm | `CliModeReported` | 60 | `cli_mode_reports` |
+| `GetTaskOutputRequest` | `offset`, `max_bytes` | 3, 4 | `task_output_range` |
+| `GetTaskOutputResponse` | `offset` | 4 | `task_output_range` |
+
+**What the CLI does.** `docs/measurements/2026-11-01-model-switch-cli-2.1.311.md` has every measured case.
+The response being generated finishes on the old model and the next request of the same turn uses the
+new one; a waiting permission request stays waiting; effort holds from the next request, inside the
+turn too. A refused id leaves the session as it was. The CLI lists no model as unable to run `auto`, but
+an id off its list can be: the move to `default` comes as a `system/status` frame, and the CLI does not
+move back when a later model could run `auto`, so a session created in `auto` stays out of it
+(`SetPermissionMode` stays refused there). The CLI sends that frame ahead of its acknowledgement, but a host
+reads it from the session's stream and the RPC's answer from the RPC: it may see them in either order, and
+the absence of a report when `SetModel` returns says nothing yet. A watcher that attaches after the last
+report is sent it again, as `CommandsUpdated` is. A `SetPermissionMode` the host made itself gives no report.
+
+**A sidecar without the capability.** One older than 3.24 answers the three RPCs `UNIMPLEMENTED`, leaves
+`SessionReady.effort` empty and ignores `offset`, so it answers the tail: a host asks for a range only
+when the handshake lists `task_output_range`.
+
+## Protocol 3.23
+
+Minor 23 adds the wire for tools a host declares and answers itself: the sidecar serves their schemas to
+the CLI as one in-process MCP server, carries each call to the host and each answer back, and decides
+nothing. As in 3.22, the wire came before the behaviour: the capability `client_tools` was advertised by
+the change that made it work.
+
+**Wire.**
+
+| Where | What | Number | Capability |
+|---|---|---|---|
+| `CreateSessionRequest` | `client_tools` (`ClientTools`, `ClientToolDeclaration`) | 13 | `client_tools` |
+| `InitMcpServer` | `source`, the CLI's own word for where the server came from, with no default of the sidecar's | 3 | `client_tools` |
+| `SessionEvent` arms | `ClientToolCall`, `ClientToolCallSettled` (`ClientToolCallOutcome`) | 50, 51 | `client_tools` |
+| RPCs | `AnswerClientToolCall` (`ClientToolContent`), idempotent per `command_id`; `GetClientToolCallState` (`OpenClientToolCall`), a read with no `command_id` | -- | `client_tools` |
+| `ErrorCode` | `CLIENT_TOOL_CALL_NOT_FOUND`, `CLIENT_TOOL_CALL_ALREADY_ANSWERED` | 32, 33 | -- |
+
+**Numbers.** `SessionEvent` 52 to 59 are free for later client-tool events.
+
+**A sidecar without the capability.** One older than 3.23 answers both RPCs `UNIMPLEMENTED` without a reason
+and ignores the field (unknown), so the session would run with no tools. A build of 3.23 from before the
+capability was listed answers them `UNIMPLEMENTED` with `reason` `not_wired`. A host sends the field and calls
+the RPCs only when the handshake lists the capability.
+
+**Declaration.** `CreateSession.client_tools` names the server (the model sees `mcp__<server_name>__<tool>`),
+the CLI's limit on one call (`timeout_ms`, at least 1000) and 1 to 32 tools, each with a JSON Schema of at most
+16 KiB that is an object whose `type` is `"object"`. A declaration that breaks a rule is `INVALID_CONFIGURATION`
+with a `client_tools_*` reason (see `ErrorDetail.reason`), and no session exists behind the refusal. An empty
+list is refused: a host declares a tool or leaves the field out. A session's `SessionReady.init_fingerprint`
+reports the server under `mcp_servers` with `source` `sdk`; a same-named server from another source shows as
+that one entry with its own `source`.
+
+**A call.** A tool call the permission gate let through becomes one `ClientToolCall`: a random single-use
+`call_id`, the model's `tool_use_id` (empty when the CLI gave none), the declared `tool` name and
+`arguments_json`, always a JSON object and never cut. Neither the CLI nor the sidecar checks arguments against
+the schema, so a host validates them. A call that cannot be shown fails to the model at once and never becomes
+an event, with no settled event owed: a name the server did not declare, a session closing, arguments over 1
+MiB (UTF-8), a `tool_use_id` over 128 bytes (UTF-8), or 64 calls already open on the session. Both events travel the channel the permission and
+question events use, so a `ClientToolCall` may come before or after the `ToolCallStarted` of the same
+`tool_use_id`: correlate by id. Neither carries a `turn_id` on the envelope.
+
+**An answer.** `AnswerClientToolCall` is idempotent per `(session_id, command_id)` over everything but those two
+ids: the same request answers OK again, even after the call is spent, and a different payload under a used id
+is `IDEMPOTENCY_CONFLICT`. Each `content` entry is one block of text, and `is_error` makes the model read them
+as the tool's error. The first answer to a call wins: the CLI gets one result. A later answer under another
+`command_id` is `CLIENT_TOOL_CALL_ALREADY_ANSWERED`, `reason` `answered`. An unknown `call_id`, one of another
+session and any on a session with no client tools are `CLIENT_TOOL_CALL_NOT_FOUND`. A `content` entry with no
+kind set is `INVALID_CONFIGURATION`, `reason` `client_tool_content_unknown`, which leaves the call open and
+records nothing under the `command_id`. The whole request must stay under the handshake's `max_message_bytes`:
+over it the RPC fails `RESOURCE_EXHAUSTED` with no `ErrorDetail`, and the call stays open.
+
+**Settling.** A call ends once, by the first of: an answer (`ANSWERED`), `InterruptTurn` (`INTERRUPTED`),
+`CloseSession` (`SESSION_CLOSED`, always before `SessionClosed` on the stream), the provider failing
+(`PROVIDER_FAILED`), or the CLI letting go of it, by its limit (`TIMED_OUT`) or earlier for a reason of its own
+(`WITHDRAWN`). `TIMED_OUT`, `WITHDRAWN` and `PROVIDER_FAILED` are best-effort labels read from how long the call
+had been open, and no host may branch on them: every outcome means the call is over. Under `per_task_stop` an
+interrupt leaves open a call a surviving background agent made on a gated session, which the PreToolUse hook
+placed; a call the sidecar cannot place settles, and that is every call of a session with no hook (bypass).
+An answer to a call that settled any other way is `CLIENT_TOOL_CALL_ALREADY_ANSWERED` with the outcome's name as
+`reason`. The last 1024 settled ids are remembered; an older one reads as unknown.
+
+**A stream that ends.** `ClientToolCallSettled` is sent exactly once per call while the session's stream lives.
+A stream that ends without `SessionClosed` (the sidecar died, the session's pump failed), an `EVENT_GAP` and
+`SESSION_NOT_FOUND` carry no settled event: to a host each of them ends every call it holds. After a session
+ends its entry goes away and every RPC on it answers `SESSION_NOT_FOUND`.
+
+**GetClientToolCallState.** The calls still open, oldest first, as `OpenClientToolCall` (ids, each bounded, and
+the tool's name, no arguments, so that 64 open calls of 1 MiB cannot pass `max_message_bytes`: a host that wants a
+call's arguments reads its event), and the event sequence they were read at (`through_sequence`). The open set comes
+from the session, not the ring, so a long-open call the ring has evicted is still listed. A host buffers live
+events, takes the snapshot, then applies the events after `through_sequence`, deduplicating by `call_id`. A
+`ClientToolCall` at or below `through_sequence` that is not in `open` has settled.
+
+**A client that never answers.** The sidecar has no timer and no default answer. The CLI's limit is the bound:
+at `timeout_ms` the model reads the CLI's own error, the call settles `TIMED_OUT`, and a later answer is refused.
+
+**The permission gate.** Nothing it does changes. A gated session asks `PermissionRequested` for
+`mcp__<server_name>__<tool>` first, as for any MCP tool, and the `ClientToolCall` exists only after the host
+allowed it; under bypass there is no request.
 
 ## Protocol 3.22
 
@@ -352,9 +556,9 @@ reach only a session that asked for questions, which an old client cannot do.
 refused with `INVALID_CONFIGURATION` `client_interactions_needs_provider_prompts` unless the policy is
 `INTERACTIVE` with `provider_permission_prompts`. On an opted-in session `AskUserQuestion` leaves the applied
 deny list (a caller's own `tool_policy.deny` of it still wins; `EnterPlanMode` and `ExitPlanMode` stay
-denied), the preview format is `markdown`, and `CLAUDE_CODE_QUESTION_EXTENDED`,
+denied unless plan mode is also offered), the preview format is `markdown`, and `CLAUDE_CODE_QUESTION_EXTENDED`,
 `CLAUDE_CODE_QUESTION_OPTIONAL_DESCRIPTIONS` and `CLAUDE_CODE_QUESTION_PREVIEW_FORMAT` are removed from the
-CLI's environment. A session that does not ask gets exactly the 3.21 tool set and options.
+CLI's environment. A session that asks for neither questions nor plan mode gets exactly the 3.21 tool set and options.
 
 **A question is an interaction, never a permission.** The PreToolUse gate makes no decision for the call,
 and no `PermissionRequested` exists for it. The CLI's own ask for it becomes one `InteractionRequested`
@@ -408,6 +612,71 @@ in the stream with a higher sequence, so a client that buffers live events, take
 the events after `through_sequence`, deduplicating by `interaction_id`, holds the session's open set. A
 question in neither is over; its outcome is read from the ring or, past it, unknown, never assumed
 answered.
+
+### Plan mode (`plan_mode_v1`)
+
+**Offer.** `CreateSession.client_interactions.plan_mode = true` offers `EnterPlanMode` and `ExitPlanMode`.
+The policy must be `INTERACTIVE` with `provider_permission_prompts`, otherwise the request is
+`INVALID_CONFIGURATION` `client_interactions_needs_provider_prompts`; `cli_permission_mode` must be stated
+(`DEFAULT` or `AUTO`), otherwise it is `client_interactions_plan_needs_cli_mode`; a policy that asks for a switchable
+permission mode is `client_interactions_plan_with_switchable` (a plan session's mode moves only through
+`SetPlanning`). Questions are an independent opt-in. The two plan tools leave the applied deny list, except where the caller's own `tool_policy.deny`
+names them. The CLI keeps its own plan instructions. A session without the opt-in keeps both tools denied.
+
+**A plan is an interaction.** In plan mode the CLI's `ExitPlanMode` becomes `InteractionRequested` with
+`kind` `PLAN_APPROVAL`, the CLI's `tool_use_id`, a fresh `interaction_id`, and `plan`: the complete text,
+`plan_sha256` (lowercase SHA-256 of its UTF-8 bytes) and `allowed_prompts` (`tool`, `prompt`). These prompts
+are information for the person only: approval creates no allow rule, saved prefix, permission update or
+approval-cache entry. No permission answer or mode switch settles a plan, and there is no default or human
+idle timeout. Only a person's explicit plan decision approves it or keeps planning; interruption, closure,
+provider failure and CLI withdrawal end it with `INTERRUPTED`, `SESSION_CLOSED`, `PROVIDER_FAILED` and
+`EXPIRED`, respectively. `GetInteractionState` lists pending plans and questions together, oldest first,
+at `through_sequence`, with the same replay and deduplication rules as questions.
+
+The plan must be nonempty and at most 262144 UTF-8 bytes; at most 32 allowed prompts, each `tool` and
+`prompt` at most 1000 UTF-16 code units; one plan may wait at a time. Invalid input produces a request
+with `unsupported_reason` and no payload, immediately followed by `HOST_REFUSED` with `reason`; the model
+is asked to shorten the plan and call `ExitPlanMode` again. Plan text is never cut. Reasons alone are
+bounded with the sidecar's text bounds. A call outside plan mode is denied without an interaction. A subagent's
+`ExitPlanMode` never becomes an interaction: it is denied with a fixed text telling the subagent to return its
+plan in its final response, so every waiting plan is the main thread's.
+
+**ResolveInteraction and what the model gets.** `approve` requires `MANUAL`, `AUTO` or `BYPASS` and the
+waiting plan's exact `plan_sha256`; it returns `APPROVED` (9). The resolved event names `PLAN_APPROVAL` and
+`mode_after`, the host's chosen execution mode. The CLI receives plain `allow`, without changed input or
+`updatedPermissions`, and restores the session's creation mode itself; `mode_after` does not switch the
+CLI into bypass. `keep_planning` takes feedback up to 16384 UTF-8 bytes, possibly empty, and returns
+`KEPT_PLANNING` (10); the resolved event carries `feedback` verbatim, including an empty string. The CLI
+receives its 2.1.311 rejection text with that feedback, without an interrupt, and the model keeps planning.
+While the CLI may be in plan mode (by the freshest of its status report, the main thread's hook input and an
+acknowledged `SetPlanning`, or if plan mode was seen since the call was raised; a main-thread hook that names no
+known permission mode, and the time between the model's own `EnterPlanMode` and the next hook that names a known
+mode, count as plan), a host allow for `Edit`,
+`Write` or `NotebookEdit` becomes an abstention, leaving the CLI's plan restrictions in force: the CLI allows
+its own plan file and asks through a `PROVIDER_PROMPT` permission for any other file. A host allow or defer
+for `Bash` becomes an ask, so it reaches a `PROVIDER_PROMPT` permission instead of the CLI's classifier. Each
+conversion sends a `verdandi_policy` notice (below).
+
+Resolve idempotency and unknown-id handling are the same as for questions. `plan_mode_unspecified`,
+`plan_digest_mismatch`, `feedback_too_long` and `kind_mismatch` are `INTERACTION_ANSWER_REFUSED` reasons;
+the plan keeps waiting and the command id stays reusable. Question arms on plans and plan arms on questions
+are `kind_mismatch`.
+
+**SetPlanning.** `SetPlanning(session_id, command_id, enter)` enters plan mode or leaves for the creation
+mode. It returns only the CLI-acknowledged `permission_mode`. A duplicate command joins an in-flight call
+or replays its success; another payload under that id is `IDEMPOTENCY_CONFLICT`. Failures are not cached.
+Refusals before asking the CLI are `INVALID_CONFIGURATION` with `planning_not_offered`,
+`planning_interaction_pending` or `planning_already`; `planning_turn_running` is `TURN_ALREADY_ACTIVE`.
+A CLI refusal is `INVALID_CONFIGURATION` `planning_cli_refused` with its own words. No acknowledgement
+within 15 seconds is `DEADLINE_EXCEEDED`; the switch may still occur. Closure is `SESSION_NOT_FOUND`.
+The old `SetPermissionMode` is refused on a plan session as `INVALID_CONFIGURATION`
+`set_permission_mode_plan_session`.
+
+**What confirms a move.** The CLI's `CliModeReported` and next `SessionReady` confirm its mode. Neither a
+plan decision nor a control acknowledgement invents such a report; a timed-out control request may still
+be followed by the CLI reporting the move. `plan_mode_v1` is advertised because the CLI 2.1.311 measurement
+found `DANGEROUS_RULES_AFTER_EXIT = stripped` on every measured exit route; approval does not preserve
+plan-supplied permission rules. See `docs/measurements/2026-11-12-plan-mode-cli-2.1.311.md`.
 
 ## Permission modes
 
@@ -533,7 +802,9 @@ written. `details` keys are listed where a code has them; a host must ignore key
 ### `ErrorDetail.reason`
 
 `ErrorDetail.reason` (string, tag 3) names which rule refused a request, for `INVALID_CONFIGURATION`,
-`STEER_UNAVAILABLE` and `INTERACTION_ANSWER_REFUSED`; it is empty
+`STEER_UNAVAILABLE` and `INTERACTION_ANSWER_REFUSED`, and how the call settled for
+`CLIENT_TOOL_CALL_ALREADY_ANSWERED` (those reasons are the call's outcomes, not rows of the table below,
+which holds rule names); it is empty
 when the sidecar has no name for the refusal, and on a sidecar older than `startup_report_file`. The text in
 `message` may be reworded; a reason may not. A host that meets one it does not know treats it as "some refusal
 with this error code".
@@ -578,7 +849,37 @@ with this error code".
 | `steer_client_message_id_reused` | `SteerTurn` with a `client_message_id` already accepted on the session |
 | `cli_lifecycle_not_reported` | (`STEER_UNAVAILABLE`) `SteerTurn` on a session whose CLI has not listed `msg_lifecycle_v1` in a `system/init` |
 | `first_turn_held` | (`STEER_UNAVAILABLE`) `SteerTurn` while the session's first turn is held for its account identity |
-| `client_interactions_needs_provider_prompts` | `client_interactions.questions = true` on a session that is not `INTERACTIVE` with `provider_permission_prompts` |
+| `client_interactions_needs_provider_prompts` | `client_interactions.questions = true` or `client_interactions.plan_mode = true` on a session that is not `INTERACTIVE` with `provider_permission_prompts` |
+| `client_interactions_plan_needs_cli_mode` | a plan opt-in without a stated `cli_permission_mode` |
+| `client_interactions_plan_with_switchable` | a plan opt-in on a policy that asks for a switchable permission mode |
+| `set_permission_mode_plan_session` | `SetPermissionMode` on a session that offers planning |
+| `planning_not_offered` | `SetPlanning` on a session that does not offer plan mode |
+| `planning_turn_running` | (`TURN_ALREADY_ACTIVE`) `SetPlanning` while a turn is running or held for the account probe |
+| `planning_interaction_pending` | `SetPlanning` while a question or plan waits for the person |
+| `planning_already` | `SetPlanning` asks to enter while already in plan mode, or to leave while outside it |
+| `planning_cli_refused` | the CLI refused `SetPlanning`; the message is its own words |
+| `turn_content_media_type` | `SendTurn` with an unsupported media type or a block without a recognised kind |
+| `turn_content_magic_mismatch` | An image's magic bytes do not match its media type |
+| `turn_content_empty_image` | An image has no bytes |
+| `turn_content_too_many` | More than 8 images on one turn |
+| `turn_content_image_too_large` | One image exceeds 3,670,016 bytes |
+| `turn_content_too_large` | All images on one turn exceed 3,670,016 bytes together |
+| `client_tools_server_name` | `client_tools.server_name` that breaks the extra-server name rule: `^[a-z][a-z0-9_]{0,40}$`, no `__`, no trailing `_` |
+| `client_tools_server_reserved` | `client_tools.server_name` `ide`: the CLI hides that server's tools from the model |
+| `client_tools_server_taken` | `client_tools.server_name` equal to a server `VERDANDI_CLAUDE_EXTRA_MCP_SERVERS` declares |
+| `client_tools_no_tools` | `client_tools.tools` empty |
+| `client_tools_too_many` | more than 32 entries in `client_tools.tools` |
+| `client_tools_tool_name` | a tool name outside `^[A-Za-z0-9_-]+$`, or one that makes `mcp__<server_name>__<name>` longer than 64 characters |
+| `client_tools_tool_duplicate` | two tools of `client_tools` with one name |
+| `client_tools_schema_too_large` | an `input_schema_json` longer than 16 KiB in UTF-8 bytes |
+| `client_tools_schema_invalid` | an `input_schema_json` that is not JSON, or not an object whose `type` is `"object"` |
+| `model_invalid` | `SetModel`: `model` is empty, longer than 256 characters, or holds white space or a control character; the CLI was not asked |
+| `model_refused` | `SetModel`: the CLI did not take the change, and the message is its own words; the session keeps its model |
+| `effort_unknown` | `ApplyEffort`: `effort` is not one of `low`, `medium`, `high`, `xhigh`, `max` or empty; the CLI was not asked |
+| `effort_refused` | `ApplyEffort`: the CLI did not take the change, and the message is its own words |
+| `models_unavailable` | `ListModels`: the CLI did not give its list |
+| `client_tools_timeout_too_small` | `client_tools.timeout_ms` below 1000 (the SDK ignores a smaller value, so the session would run with no limit) |
+| `client_tool_content_unknown` | an `AnswerClientToolCall` `content` entry with no kind set: a kind this sidecar does not know, which it refuses rather than drop. The call stays open and nothing is recorded under the `command_id` |
 | `unknown_question_index` | (`INTERACTION_ANSWER_REFUSED`) an answer for a question the set does not have |
 | `duplicate_question_index` | (`INTERACTION_ANSWER_REFUSED`) two answers for one question |
 | `unknown_option_index` | (`INTERACTION_ANSWER_REFUSED`) an option the question does not have |
@@ -588,7 +889,10 @@ with this error code".
 | `answer_too_long` | (`INTERACTION_ANSWER_REFUSED`) one serialized answer over 32768 UTF-16 code units |
 | `answers_too_long` | (`INTERACTION_ANSWER_REFUSED`) a set's serialized answers together over 32768 UTF-16 code units |
 | `notes_too_long` | (`INTERACTION_ANSWER_REFUSED`) `notes` over 8192 UTF-16 code units |
-| `kind_mismatch` | (`INTERACTION_ANSWER_REFUSED`) no result, a decline that is neither `CANCEL` nor `CHAT`, or a `CANCEL` carrying answers |
+| `kind_mismatch` | (`INTERACTION_ANSWER_REFUSED`) no result, a decline that is neither `CANCEL` nor `CHAT`, a `CANCEL` carrying answers, a question arm on a plan, or a plan arm on a question |
+| `plan_mode_unspecified` | (`INTERACTION_ANSWER_REFUSED`) an approval's execution mode is unspecified or unknown; checked before the interaction's kind, so it wins over `kind_mismatch` |
+| `plan_digest_mismatch` | (`INTERACTION_ANSWER_REFUSED`) an approval names a digest different from the waiting plan's |
+| `feedback_too_long` | (`INTERACTION_ANSWER_REFUSED`) keep-planning feedback exceeds 16384 UTF-8 bytes |
 
 ## Identifying a sidecar
 
@@ -635,6 +939,9 @@ sidecar's own code emits:
 
 - `verdandi_policy` (subtype `bypass_default_deny_applied`): a bypass session that stated no tool
   restriction was given the conservative deny list.
+- `verdandi_policy` (subtype `plan_allow_deferred`, `plan_allow_asked` or `plan_defer_asked`): in plan mode, a
+  host allow for `Edit`/`Write`/`NotebookEdit` was turned into an abstention, or a host allow or defer for
+  `Bash` into an ask (see "Plan mode").
 - `verdandi_commands` (subtype `unavailable` or `unreadable`): the session's slash-command list could not
   be read when it started (the SDK's `supportedCommands()` failed, or answered with something that is not a
   list), so no `CommandsUpdated` came then; a later `system/commands_changed` still sends one.
@@ -670,18 +977,56 @@ records such a mismatch: the reset names one id and the following inits another)
 carries `trigger: "clear"`. Malformed optional scalars are dropped with one counted
 diagnostic per frame. These events do not change turn, gate or lease state.
 
+## What a host relies on past the wire
+
+The proto states messages; a host also builds on how the sidecar behaves around them. A window that hands a
+chat to another window, for one, watches from two connections, answers a request on the second and replays
+from a cursor out of the sidecar's ring, and no message says any of that is allowed. While every host shipped
+with the one sidecar it was tested against, these held because the sidecar was pinned. A sidecar can now be
+newer than the host that starts it, so they are part of the contract: **changing one is a major**, as the rule
+above says of a behaviour a correct host relied on. Each has a test that fails when it breaks, in
+`apps/claude-sidecar/tests/compat/` (`run.sh`); a quoted name below is a phrase from the test's title.
+
+| Behaviour | What a host builds on | Test |
+|---|---|---|
+| Several watchers per session | `WatchSessionEvents` adds each call to the session's watchers. Every watcher is sent every event, in the same order and bytes; ending one watch does not touch the session or the other watchers; a watcher that comes later replays from its cursor and then goes live | `hostReliance.conformance`: "several watchers per session" |
+| `ResolvePermission` from any connection | A request is keyed by session and permission id, not by the connection that watched it. Another connection answers it, even after the watching one has gone, and a repeat of the same `command_id` from a third is idempotent | `hostReliance.conformance`: "ResolvePermission from any connection" |
+| Exit only on stdin EOF, SIGTERM or SIGINT | EOF is the last holder of the write end letting go: a duplicate held by another process keeps the sidecar alive. SIGTERM and SIGINT stop it with exit 0 and a line saying which. A client connecting and leaving, or a session's CLI dying, does not stop it | `hostReliance.process`: "exit on SIGTERM", "exit on SIGINT", "exit only on those", "stdin EOF means every holder"; the default parent watch is `oldClient.process`: "stdin is the parent watch by default" |
+| Replay out of the ring | `after_sequence` replays the events after it out of a per-session ring of at least the size `event_buffer_policy` reports (`bounded-<events>`), and that size is at least 1,000. A host that hands a chat over replays from up to 500 events behind its fold and needs the rest of the ring for the move itself | `hostReliance.conformance`: "replay from after_sequence comes out of a ring"; `hostReliance.process`: "with the sizing and fault seams unset"; a cursor older than the ring is an `EVENT_GAP`, never a silent skip: `oldClient.conformance`: "EVENT_GAP" |
+| Steered messages queued in answer order | The kernel puts a steered message on the CLI's input before it answers `SteerTurn`, so messages answered in order reach the CLI in order, and a host sends them one at a time | `hostReliance.conformance`: "steered messages are queued for the CLI in the order they are answered" |
+| Exit within 6 s of stdin closing; bind within 15 s | The host's budgets: it kills a sidecar that outlives its 6 s grace, and gives up on one that has not bound its socket in 15 s. Held tighter: exit inside the 6 s with a CLI that ignores SIGTERM, bind inside 3 s (and inside a 1.5 s regression budget) | `oldClient.process`: "stdin closed while a session's CLI ignores SIGTERM", "stdin is the parent watch by default", "the sidecar binds inside Eitri's 3 s window" |
+| The stderr texts a host matches | The refusal to start for a CLI outside the range (`refusing to start: host claude CLI version ...`), the CLI whose version cannot be read, the pinned account that is not logged in, and the one `CLI version diagnostic` line of an in-range CLI that was never tested, within the last 40 stderr lines at bind time. Byte for byte, because a host matches them as text | `oldClient.process`: the four "stderr text" tests, and "environment: the real process honours an absolute VERDANDI_CLAUDE_CONFIG_DIR" |
+| The variables a host sets and removes | Set: `VERDANDI_CLAUDE_SIDECAR_SOCKET` (required), `VERDANDI_CLAUDE_ACCOUNT`, `BASH_MAX_TIMEOUT_MS` and `CLAUDE_CODE_AUTO_CONNECT_IDE`, which the sidecar passes on to the CLI it starts. Removed: `VERDANDI_CLAUDE_EXTRA_MCP_SERVERS` (unset adds no MCP server to a session), `VERDANDI_CLAUDE_SIDECAR_PARENT_WATCH` (unset is the stdin watch) and the sizing and fault seams (unset is the default ring) | `oldClient.process`: the "environment" tests; `hostReliance.process`: "variables a host sets", "variables a host removes" |
+
+**An outcome enum gets no new value for a host that did not opt in.** A host that does not know a value of
+`TurnOutcome` reads it as Unspecified and treats the turn as failed, and one that does not know a value of
+`PermissionOutcome` reads it as expired (`translate.rs` on the Eitri side), so a new value of either is sent only
+to a host that opted in. "An enum value" alone is additive for every other enum, not for these two.
+
+These tests are additive: they ask nothing of `runtime.proto`, add no capability and move no minor.
+
 ## What guards this
 
 - `apps/claude-sidecar/tests/compat/` (`run.sh`): a client generated from the frozen proto Eitri 0.2.0 was
   built against drives the sidecar and asserts what that host relies on. It must stay green, unchanged,
-  through every change described here.
+  through every change described here. Its `hostReliance.*` tests hold the behaviours in "What a host relies
+  on past the wire", which no message states.
 - `apps/claude-sidecar/tests/protocolSource.test.ts`, `protocolMinorLedger.test.ts`,
   `protocolDocs.test.ts` and this crate's `tests/protocol_constants.rs`: the one-source rule, the ledger
   below, and this file's own tables.
 
-Minors 13 to 22 are unreleased: none of their ledger entries carries a `released` mark or a
-`wire_fingerprint`. So the only wire frozen by test today is 3.12's, the proto the breaking-change check
-compares against. What a client built against a later minor relies on (Eitri's main branch sends 3.14's
+Minor 24 is released: `claude-sidecar-v0.3.0` (a627993) shipped protocol 3.24. That release did not write
+its mark into the ledger; the `released` mark and `wire_fingerprint` of minor 24 were added afterwards
+from the tag's own `runtime.proto` (the same wire as every commit after it until minor 25). Minors
+13 to 23 carry no mark (each was followed by another minor before any release). Minor 25 is released:
+`claude-sidecar-v0.4.0` shipped protocol 3.25 (`text_block_start`), with its mark and fingerprint written in the
+release commit. Minor 26 is released: `claude-sidecar-v0.5.0` shipped protocol 3.26 (`plan_mode_v1`,
+`turn_content_v1`), with its mark and fingerprint written in the release commit, so the live proto is pinned by
+minor 26's fingerprint and the next wire change starts minor 27.
+The unmerged branch `feat/2026-11-06-turn-scoped-interrupt` also wrote a minor-25 entry
+(`turn_scoped_interrupt`); it was to take minor 26 when next worked on, and since 26 went to
+plan approval and image content and was released first, it takes minor 27. What a client built
+against a later minor relies on (Eitri's main branch sends 3.14's
 `cli_permission_mode` and `defer`; its `release/v0.3` branch also sends 3.21's `system_prompt_preset`,
 field 10, when the `system_prompt_preset` capability is offered, until that branch is merged forward
 into main) is held only by that check's "additions only" rule and by review, not pinned tag by tag,

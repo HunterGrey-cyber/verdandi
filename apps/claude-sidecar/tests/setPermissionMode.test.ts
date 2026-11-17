@@ -169,9 +169,9 @@ test('translateEvent: permission_mode_changed, and message ids present only when
   assert.deepEqual(translateEvent({ type: 'permission_mode_changed', permissions: 'bypass', permissionMode: 'bypassPermissions', bypassDefaultDenyApplied: true }), {
     permissionModeChanged: { mode: PermissionMode.PERMISSION_MODE_BYPASS, permissionMode: 'bypassPermissions', bypassDefaultDenyApplied: true },
   });
-  assert.deepEqual(translateEvent({ type: 'text_delta', turnId: 't', text: 'x', messageId: 'msg_1' }), { textDelta: { turnId: 't', text: 'x', messageId: 'msg_1' } });
+  assert.deepEqual(translateEvent({ type: 'text_delta', turnId: 't', text: 'x', messageId: 'msg_1' }), { textDelta: { turnId: 't', text: 'x', messageId: 'msg_1', startsBlock: false } });
   assert.deepEqual(translateEvent({ type: 'thinking_delta', turnId: 't', text: 'y', messageId: 'msg_1' }), { thinkingDelta: { turnId: 't', text: 'y', messageId: 'msg_1' } });
-  assert.deepEqual(translateEvent({ type: 'text_delta', turnId: 't', text: 'x' }), { textDelta: { turnId: 't', text: 'x' } });
+  assert.deepEqual(translateEvent({ type: 'text_delta', turnId: 't', text: 'x' }), { textDelta: { turnId: 't', text: 'x', startsBlock: false } });
 });
 
 function promisify<Res>(fn: (req: any, cb: (err: grpc.ServiceError | null, res?: any) => void) => void, req: unknown): Promise<Res> {

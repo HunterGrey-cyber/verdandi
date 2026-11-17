@@ -661,6 +661,7 @@ test('every frozen client\'s request decodes with the 3.22 request fields at the
     if (name.includes('create')) {
       const request = CreateSessionRequest.decode(bytes);
       assert.equal(request.clientInteractions, undefined, `${name}: client_interactions`);
+      assert.equal(request.clientTools, undefined, `${name}: client_tools`);
       assert.equal(request.policy?.perTaskStop, false, `${name}: per_task_stop`);
       creates += 1;
     } else if (name.includes('send_turn')) {

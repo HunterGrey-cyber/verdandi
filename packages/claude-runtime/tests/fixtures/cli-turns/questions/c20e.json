@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "Which C20E layout reads better?",
+      "header": "Layout",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Grid",
+          "description": "C20E grid",
+          "preview": "# Grid\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+        },
+        {
+          "label": "List",
+          "description": "C20E list",
+          "preview": "# List\n\n- C20E-PREVIEW one\n- two"
+        }
+      ]
+    }
+  ],
+  "answer": {
+    "kind": "answers",
+    "answers": [
+      {
+        "questionIndex": 0,
+        "optionIndexes": [
+          1
+        ],
+        "notes": "C20E-NOTE keep it short"
+      }
+    ]
+  },
+  "outcome": "answered",
+  "updatedInput": {
+    "questions": [
+      {
+        "question": "Which C20E layout reads better?",
+        "header": "Layout",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "Grid",
+            "description": "C20E grid",
+            "preview": "# Grid\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+          },
+          {
+            "label": "List",
+            "description": "C20E list",
+            "preview": "# List\n\n- C20E-PREVIEW one\n- two"
+          }
+        ]
+      }
+    ],
+    "answers": {
+      "Which C20E layout reads better?": "List"
+    },
+    "annotations": {
+      "Which C20E layout reads better?": {
+        "preview": "# List\n\n- C20E-PREVIEW one\n- two",
+        "notes": "C20E-NOTE keep it short"
+      }
+    }
+  }
+}

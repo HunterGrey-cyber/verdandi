@@ -79,6 +79,33 @@ test('translateMessage: system/init yields the fingerprint verbatim; no tools ar
   assert.equal('initFingerprint' in bare, false);
 });
 
+function initWithServers(servers: unknown) {
+  const [ready] = translateMessage({
+    type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/c', permissionMode: 'bypassPermissions',
+    tools: ['StructuredOutput'], mcp_servers: servers, apiKeySource: 'none',
+  } as unknown as SDKMessage, { currentTurnId: undefined });
+  assert.ok(ready?.type === 'session_ready');
+  return ready.initFingerprint;
+}
+
+test("initFingerprint keeps each server's source, and an entry without one has no such key", () => {
+  const fingerprint = initWithServers([{ name: 'eitri', status: 'connected', source: 'sdk' }, { name: 'plain', status: 'connected' }]);
+  assert.deepEqual(fingerprint?.mcpServers, [{ name: 'eitri', status: 'connected', source: 'sdk' }, { name: 'plain', status: 'connected' }]);
+  assert.equal('source' in (fingerprint?.mcpServers[1] ?? {}), false);
+  assert.equal('source' in (initWithServers([{ name: 'empty', status: 'connected', source: '' }])?.mcpServers[0] ?? {}), false);
+});
+
+test('a server the CLI reports as project keeps project, whatever the session declared', () => {
+  const fingerprint = initWithServers([{ name: 'eitri', status: 'connected', source: 'project' }]);
+  assert.equal(fingerprint?.mcpServers[0]?.source, 'project');
+});
+
+test('a source of the wrong type is absent, and the list stays readable', () => {
+  const fingerprint = initWithServers([{ name: 'eitri', status: 'connected', source: 7 }, { name: 'other', status: 'connected', source: { kind: 'sdk' } }]);
+  assert.deepEqual(fingerprint?.mcpServers, [{ name: 'eitri', status: 'connected' }, { name: 'other', status: 'connected' }]);
+  assert.equal(fingerprint?.mcpServersUnreadable, undefined);
+});
+
 test('translateMessage: a tools array with a non-string entry yields no fingerprint, not a filtered one', () => {
   const [drifted] = translateMessage({
     type: 'system', subtype: 'init', session_id: 's', model: 'm', cwd: '/c', permissionMode: 'bypassPermissions',
@@ -277,6 +304,37 @@ const REMOTE_SERVERS = Object.freeze({
 test('expectedInitMcpServers: the extra servers merged into the session, sorted; none is the empty set', () => {
   assert.deepEqual(expectedInitMcpServers({}), []);
   assert.deepEqual(expectedInitMcpServers({ extraMcpServers: { zeta: { command: '/bin/z' }, alpha: { command: '/bin/a' } } }), ['alpha', 'zeta']);
+});
+
+const CLIENT_TOOLS = Object.freeze({
+  serverName: 'editor',
+  timeoutMs: 60_000,
+  tools: [{ name: 'open_file', description: 'Open a file', inputSchemaJson: '{"type":"object"}', alwaysLoad: false }],
+});
+
+test('expectedInitMcpServers adds the client server to the extra servers, sorted', () => {
+  assert.deepEqual(expectedInitMcpServers({ clientTools: CLIENT_TOOLS }), ['editor']);
+  assert.deepEqual(expectedInitMcpServers({ extraMcpServers: { zeta: { command: '/bin/z' }, alpha: { command: '/bin/a' } }, clientTools: CLIENT_TOOLS }), ['alpha', 'editor', 'zeta']);
+});
+
+test('a verified session passes with the client server connected with a tool, and fails when it is missing', async () => {
+  const done = { type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { ok: true }, session_id: 'prov-1', num_turns: 1, duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [] };
+  const passing = await replay(
+    { policy: COMPLETION, outputFormat: SCHEMA, clientTools: CLIENT_TOOLS },
+    [mcpInit(['StructuredOutput', 'mcp__editor__open_file'], [{ name: 'editor', status: 'connected', source: 'sdk' }]), done],
+  );
+  assert.equal(passing.events.some((e) => e.type === 'session_closed'), false, JSON.stringify(passing.events.filter((e) => e.type === 'session_closed')));
+  assert.ok(passing.events.some((e) => e.type === 'turn_completed' && e.outcome === 'completed'));
+  passing.session.close();
+  // a CLI that dropped the server, or reports it without a tool, is not a session that has its tools
+  for (const [tools, servers] of [
+    [['StructuredOutput'], []],
+    [['StructuredOutput'], [{ name: 'editor', status: 'connected' }]],
+    [['StructuredOutput', 'mcp__editor__open_file'], [{ name: 'editor', status: 'failed' }]],
+  ] as const) {
+    const { events } = await replay({ policy: COMPLETION, outputFormat: SCHEMA, clientTools: CLIENT_TOOLS }, [mcpInit([...tools], [...servers])]);
+    assert.deepEqual(events.at(-1), { type: 'session_closed', reason: 'tool_policy_violation' }, JSON.stringify(servers));
+  }
 });
 
 test('initToolViolation with expected MCP servers: the rule both checks apply', () => {

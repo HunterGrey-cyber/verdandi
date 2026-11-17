@@ -1,30 +1,19 @@
-import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AccountIdentity as KernelAccountIdentity,
   BackgroundTask as KernelBackgroundTask,
   ClaudeRuntimeEvent,
-  InteractionOutcome as KernelInteractionOutcome,
-  NoticeLevel as KernelNoticeLevel,
-  PeerHoldState as KernelPeerHoldState,
-  PermissionOrigin as KernelPermissionOrigin,
-  RateLimitStatus as KernelRateLimitStatus,
-  SessionNoticeKind as KernelSessionNoticeKind,
-  SteerDropReason as KernelSteerDropReason,
-  TaskEdge as KernelTaskEdge,
-  TaskKind as KernelTaskKind,
-  TaskStatus as KernelTaskStatus,
   TaskUsage as KernelTaskUsage,
   TurnCause as KernelTurnCause,
-  TurnCauseKind as KernelTurnCauseKind,
-  TurnOrigin as KernelTurnOrigin,
   TurnUsage as KernelTurnUsage,
   WorkflowProgress as KernelWorkflowProgress,
 } from '@verdandi/claude-runtime';
 import {
   CliPermissionModeKind,
+  ClientToolCallOutcome,
   ConfigurationProfile,
   InteractionKind,
   InteractionOutcome,
+  PlanExecutionMode,
   NoticeLevel,
   PeerHoldState,
   PermissionMode,
@@ -106,70 +95,29 @@ function turnUsageToProto(usage: KernelTurnUsage): TurnUsage {
   };
 }
 
-const PERMISSION_OUTCOME_MAP: Record<string, PermissionOutcome> = {
-  allowed: PermissionOutcome.PERMISSION_OUTCOME_ALLOWED,
-  denied: PermissionOutcome.PERMISSION_OUTCOME_DENIED,
-  cancelled_by_interrupt: PermissionOutcome.PERMISSION_OUTCOME_CANCELLED_BY_INTERRUPT,
-  cancelled_by_session_close: PermissionOutcome.PERMISSION_OUTCOME_CANCELLED_BY_SESSION_CLOSE,
-  provider_failed: PermissionOutcome.PERMISSION_OUTCOME_PROVIDER_FAILED,
-  expired: PermissionOutcome.PERMISSION_OUTCOME_EXPIRED,
-  deferred: PermissionOutcome.PERMISSION_OUTCOME_DEFERRED,
-};
-
-// Keyed by the kernel's own union, so a new kernel origin fails to compile here instead of falling
-// back to UNSPECIFIED -- which a client reads as HOOK, the origin a host's ordinary policy may answer
-// by itself.
-const PERMISSION_ORIGIN_MAP: Record<KernelPermissionOrigin, PermissionOrigin> = {
-  hook: PermissionOrigin.PERMISSION_ORIGIN_HOOK,
-  provider_prompt: PermissionOrigin.PERMISSION_ORIGIN_PROVIDER_PROMPT,
-};
-
-const RESUME_STATUS_MAP: Record<string, ResumeStatus> = {
-  attached: ResumeStatus.RESUME_STATUS_ATTACHED,
-  rejected: ResumeStatus.RESUME_STATUS_REJECTED,
-  initialization_failed: ResumeStatus.RESUME_STATUS_INITIALIZATION_FAILED,
-};
-
-const PERMISSION_MODE_MAP: Record<string, PermissionMode> = {
-  interactive: PermissionMode.PERMISSION_MODE_INTERACTIVE,
-  verdandi_rules: PermissionMode.PERMISSION_MODE_VERDANDI_RULES,
-  bypass: PermissionMode.PERMISSION_MODE_BYPASS,
-};
-
-const TURN_OUTCOME_MAP: Record<string, TurnOutcome> = {
-  completed: TurnOutcome.TURN_OUTCOME_COMPLETED,
-  interrupted: TurnOutcome.TURN_OUTCOME_INTERRUPTED,
-  failed: TurnOutcome.TURN_OUTCOME_FAILED,
-  limit_reached: TurnOutcome.TURN_OUTCOME_LIMIT_REACHED,
-};
-
-const SESSION_CLOSE_REASON_MAP: Record<string, SessionCloseReason> = {
-  closed_by_host: SessionCloseReason.SESSION_CLOSE_REASON_CLOSED_BY_HOST,
-  provider_exited: SessionCloseReason.SESSION_CLOSE_REASON_PROVIDER_EXITED,
-  provider_failed: SessionCloseReason.SESSION_CLOSE_REASON_PROVIDER_FAILED,
-  tool_policy_violation: SessionCloseReason.SESSION_CLOSE_REASON_TOOL_POLICY_VIOLATION,
-};
-
-/** Total over the kernel's reasons, so a new one fails to compile here rather than reach the wire as
- * UNSPECIFIED. */
-const USER_MESSAGE_DROP_REASON_MAP: Record<KernelSteerDropReason, UserMessageDropReason> = {
-  cancelled: UserMessageDropReason.USER_MESSAGE_DROP_REASON_CANCELLED,
-  discarded: UserMessageDropReason.USER_MESSAGE_DROP_REASON_DISCARDED,
-  refused: UserMessageDropReason.USER_MESSAGE_DROP_REASON_REFUSED,
-  session_closed: UserMessageDropReason.USER_MESSAGE_DROP_REASON_SESSION_CLOSED,
-};
-
-/** The tiers the kernel recorded, as the wire's enum. Total over the SDK's own `SettingSource` union. */
-const SETTING_SOURCE_TO_PROTO: Record<SettingSource, SettingSourceProto> = {
-  user: SettingSourceProto.SETTING_SOURCE_USER,
-  project: SettingSourceProto.SETTING_SOURCE_PROJECT,
-  local: SettingSourceProto.SETTING_SOURCE_LOCAL,
-};
-
-const CONFIGURATION_TO_PROTO = {
-  native: ConfigurationProfile.CONFIGURATION_PROFILE_NATIVE,
-  isolated: ConfigurationProfile.CONFIGURATION_PROFILE_ISOLATED,
-} as const;
+/**
+ * The wire member for a kernel word. A wire enum spells its members `<PREFIX>_<WORD>`, with the kernel's
+ * word in upper case, so a kernel union and its enum stay in step by name.
+ *
+ * The enum must have a member for every word of the union, so a word added to the kernel fails to
+ * compile here instead of reaching the wire as UNSPECIFIED, which for a permission origin a client
+ * reads as HOOK, the origin a host's ordinary policy may answer by itself. A word that names no member
+ * at runtime still reads as UNSPECIFIED, never `undefined`: that would make the event unserializable
+ * and end every watch that reaches it. The key is always prefixed and looked up as the object's own,
+ * so neither a prototype member nor a numeric reverse mapping can answer.
+ */
+export function wireEnum<
+  const Prefix extends string,
+  const Word extends string,
+  E extends Record<`${NoInfer<Prefix>}_${Uppercase<NoInfer<Word>>}` | `${NoInfer<Prefix>}_UNSPECIFIED`, number>,
+>(enumObject: E, prefix: Prefix, word: Word): E[keyof E] {
+  const fallback = enumObject[`${prefix}_UNSPECIFIED` as keyof E];
+  if (typeof word !== 'string') {
+    return fallback;
+  }
+  const key = `${prefix}_${word.toUpperCase()}` as keyof E;
+  return Object.hasOwn(enumObject, key) ? enumObject[key] : fallback;
+}
 
 /** The SDK's `PermissionMode` spellings, keyed by the CLI's own string (a test reads them out of the
  * SDK's type declaration, so a mode it gains cannot go unmapped unnoticed). */
@@ -226,95 +174,12 @@ function putValue<T, K extends keyof T>(out: T, key: K, value: T[K] | undefined)
   }
 }
 
-// The enum maps below are keyed by the kernel's own unions, so a value added there fails to compile
-// here instead of reaching the wire as UNSPECIFIED.
-const TURN_ORIGIN_MAP: Record<KernelTurnOrigin, TurnOrigin> = {
-  client: TurnOrigin.TURN_ORIGIN_CLIENT,
-  follow_up: TurnOrigin.TURN_ORIGIN_FOLLOW_UP,
-  cli: TurnOrigin.TURN_ORIGIN_CLI,
-};
-
-const TURN_CAUSE_KIND_MAP: Record<KernelTurnCauseKind, TurnCauseKind> = {
-  task: TurnCauseKind.TURN_CAUSE_KIND_TASK,
-  scheduled: TurnCauseKind.TURN_CAUSE_KIND_SCHEDULED,
-  peer: TurnCauseKind.TURN_CAUSE_KIND_PEER,
-  other: TurnCauseKind.TURN_CAUSE_KIND_OTHER,
-  unknown: TurnCauseKind.TURN_CAUSE_KIND_UNKNOWN,
-};
-
-const TASK_KIND_MAP: Record<KernelTaskKind, TaskKind> = {
-  shell: TaskKind.TASK_KIND_SHELL,
-  monitor: TaskKind.TASK_KIND_MONITOR,
-  local_agent: TaskKind.TASK_KIND_LOCAL_AGENT,
-  workflow: TaskKind.TASK_KIND_WORKFLOW,
-  other: TaskKind.TASK_KIND_OTHER,
-};
-
-const TASK_STATUS_MAP: Record<KernelTaskStatus, TaskStatus> = {
-  pending: TaskStatus.TASK_STATUS_PENDING,
-  running: TaskStatus.TASK_STATUS_RUNNING,
-  paused: TaskStatus.TASK_STATUS_PAUSED,
-  completed: TaskStatus.TASK_STATUS_COMPLETED,
-  failed: TaskStatus.TASK_STATUS_FAILED,
-  stopped: TaskStatus.TASK_STATUS_STOPPED,
-  killed: TaskStatus.TASK_STATUS_KILLED,
-};
-
-const TASK_EDGE_MAP: Record<KernelTaskEdge, TaskEdge> = {
-  started: TaskEdge.TASK_EDGE_STARTED,
-  progress: TaskEdge.TASK_EDGE_PROGRESS,
-  updated: TaskEdge.TASK_EDGE_UPDATED,
-  notified: TaskEdge.TASK_EDGE_NOTIFIED,
-};
-
-const SESSION_NOTICE_KIND_MAP: Record<KernelSessionNoticeKind, SessionNoticeKind> = {
-  api_retry: SessionNoticeKind.SESSION_NOTICE_KIND_API_RETRY,
-  rate_limit: SessionNoticeKind.SESSION_NOTICE_KIND_RATE_LIMIT,
-  model_fallback: SessionNoticeKind.SESSION_NOTICE_KIND_MODEL_FALLBACK,
-  model_refusal: SessionNoticeKind.SESSION_NOTICE_KIND_MODEL_REFUSAL,
-  compacting: SessionNoticeKind.SESSION_NOTICE_KIND_COMPACTING,
-  compact_boundary: SessionNoticeKind.SESSION_NOTICE_KIND_COMPACT_BOUNDARY,
-  informational: SessionNoticeKind.SESSION_NOTICE_KIND_INFORMATIONAL,
-  notification: SessionNoticeKind.SESSION_NOTICE_KIND_NOTIFICATION,
-  peer_hold: SessionNoticeKind.SESSION_NOTICE_KIND_PEER_HOLD,
-};
-
-const NOTICE_LEVEL_MAP: Record<KernelNoticeLevel, NoticeLevel> = {
-  info: NoticeLevel.NOTICE_LEVEL_INFO,
-  notice: NoticeLevel.NOTICE_LEVEL_NOTICE,
-  suggestion: NoticeLevel.NOTICE_LEVEL_SUGGESTION,
-  warning: NoticeLevel.NOTICE_LEVEL_WARNING,
-};
-
-const RATE_LIMIT_STATUS_MAP: Record<KernelRateLimitStatus, RateLimitStatus> = {
-  allowed: RateLimitStatus.RATE_LIMIT_STATUS_ALLOWED,
-  allowed_warning: RateLimitStatus.RATE_LIMIT_STATUS_ALLOWED_WARNING,
-  rejected: RateLimitStatus.RATE_LIMIT_STATUS_REJECTED,
-};
-
-const PEER_HOLD_STATE_MAP: Record<KernelPeerHoldState, PeerHoldState> = {
-  held: PeerHoldState.PEER_HOLD_STATE_HELD,
-  released: PeerHoldState.PEER_HOLD_STATE_RELEASED,
-  dropped: PeerHoldState.PEER_HOLD_STATE_DROPPED,
-};
-
-const INTERACTION_OUTCOME_MAP: Record<KernelInteractionOutcome, InteractionOutcome> = {
-  answered: InteractionOutcome.INTERACTION_OUTCOME_ANSWERED,
-  declined: InteractionOutcome.INTERACTION_OUTCOME_DECLINED,
-  chat_requested: InteractionOutcome.INTERACTION_OUTCOME_CHAT_REQUESTED,
-  interrupted: InteractionOutcome.INTERACTION_OUTCOME_INTERRUPTED,
-  expired: InteractionOutcome.INTERACTION_OUTCOME_EXPIRED,
-  session_closed: InteractionOutcome.INTERACTION_OUTCOME_SESSION_CLOSED,
-  provider_failed: InteractionOutcome.INTERACTION_OUTCOME_PROVIDER_FAILED,
-  host_refused: InteractionOutcome.INTERACTION_OUTCOME_HOST_REFUSED,
-};
-
 /** A cause as the wire states it: only the facts the kernel gave, each string cut to its limit. */
 export function turnCauseToProto(cause: KernelTurnCause): TurnCause {
-  const out: TurnCause = { kind: TURN_CAUSE_KIND_MAP[cause.kind] ?? TurnCauseKind.TURN_CAUSE_KIND_UNSPECIFIED };
+  const out: TurnCause = { kind: wireEnum(TurnCauseKind, 'TURN_CAUSE_KIND', cause.kind) };
   putText(out, 'taskId', cause.taskId, ID_MAX_CHARS);
-  putValue(out, 'taskKind', cause.taskKind === undefined ? undefined : (TASK_KIND_MAP[cause.taskKind] ?? TaskKind.TASK_KIND_UNSPECIFIED));
-  putValue(out, 'taskStatus', cause.taskStatus === undefined ? undefined : (TASK_STATUS_MAP[cause.taskStatus] ?? TaskStatus.TASK_STATUS_UNSPECIFIED));
+  putValue(out, 'taskKind', cause.taskKind === undefined ? undefined : wireEnum(TaskKind, 'TASK_KIND', cause.taskKind));
+  putValue(out, 'taskStatus', cause.taskStatus === undefined ? undefined : wireEnum(TaskStatus, 'TASK_STATUS', cause.taskStatus));
   putText(out, 'description', cause.description, DESCRIPTION_MAX_CHARS);
   putText(out, 'summary', cause.summary, TEXT_MAX_CHARS);
   putText(out, 'peerName', cause.peerName, ID_MAX_CHARS);
@@ -330,7 +195,7 @@ export function turnCauseToProto(cause: KernelTurnCause): TurnCause {
 function backgroundTaskToProto(task: KernelBackgroundTask): BackgroundTask {
   const out: BackgroundTask = {
     taskId: cut(task.taskId, ID_MAX_CHARS),
-    kind: TASK_KIND_MAP[task.kind] ?? TaskKind.TASK_KIND_UNSPECIFIED,
+    kind: wireEnum(TaskKind, 'TASK_KIND', task.kind),
     taskType: cut(task.taskType, WORD_MAX_CHARS),
     description: cut(task.description, DESCRIPTION_MAX_CHARS),
     ambient: task.ambient,
@@ -374,14 +239,14 @@ function workflowProgressToProto(progress: KernelWorkflowProgress): WorkflowProg
 
 function taskEventToProto(event: Extract<ClaudeRuntimeEvent, { type: 'task_event' }>): TaskEvent {
   const out: TaskEvent = {
-    edge: TASK_EDGE_MAP[event.edge] ?? TaskEdge.TASK_EDGE_UNSPECIFIED,
+    edge: wireEnum(TaskEdge, 'TASK_EDGE', event.edge),
     taskId: cut(event.taskId, ID_MAX_CHARS),
     task: event.task === undefined ? undefined : backgroundTaskToProto(event.task),
     usage: event.usage === undefined ? undefined : taskUsageToProto(event.usage),
     workflowProgress: event.workflowProgress === undefined ? undefined : workflowProgressToProto(event.workflowProgress),
   };
   putText(out, 'runId', event.runId, ID_MAX_CHARS);
-  putValue(out, 'status', event.status === undefined ? undefined : (TASK_STATUS_MAP[event.status] ?? TaskStatus.TASK_STATUS_UNSPECIFIED));
+  putValue(out, 'status', event.status === undefined ? undefined : wireEnum(TaskStatus, 'TASK_STATUS', event.status));
   putText(out, 'summary', event.summary, TEXT_MAX_CHARS);
   putText(out, 'lastToolName', event.lastToolName, WORD_MAX_CHARS);
   putValue(out, 'endTimeMs', event.endTimeMs === undefined ? undefined : toInt64(event.endTimeMs));
@@ -394,8 +259,8 @@ function taskEventToProto(event: Extract<ClaudeRuntimeEvent, { type: 'task_event
 
 function sessionNoticeToProto(event: Extract<ClaudeRuntimeEvent, { type: 'session_notice' }>): SessionNotice {
   const out: SessionNotice = {
-    kind: SESSION_NOTICE_KIND_MAP[event.kind] ?? SessionNoticeKind.SESSION_NOTICE_KIND_UNSPECIFIED,
-    level: NOTICE_LEVEL_MAP[event.level] ?? NoticeLevel.NOTICE_LEVEL_UNSPECIFIED,
+    kind: wireEnum(SessionNoticeKind, 'SESSION_NOTICE_KIND', event.kind),
+    level: wireEnum(NoticeLevel, 'NOTICE_LEVEL', event.level),
   };
   putText(out, 'content', event.content, TEXT_MAX_CHARS);
   putValue(out, 'attempt', event.attempt === undefined ? undefined : toUint32(event.attempt));
@@ -406,12 +271,12 @@ function sessionNoticeToProto(event: Extract<ClaudeRuntimeEvent, { type: 'sessio
   putText(out, 'toModel', event.toModel, ID_MAX_CHARS);
   putValue(out, 'preTokens', event.preTokens === undefined ? undefined : toUint64(event.preTokens));
   putValue(out, 'postTokens', event.postTokens === undefined ? undefined : toUint64(event.postTokens));
-  putValue(out, 'rateStatus', event.rateStatus === undefined ? undefined : (RATE_LIMIT_STATUS_MAP[event.rateStatus] ?? RateLimitStatus.RATE_LIMIT_STATUS_UNSPECIFIED));
+  putValue(out, 'rateStatus', event.rateStatus === undefined ? undefined : wireEnum(RateLimitStatus, 'RATE_LIMIT_STATUS', event.rateStatus));
   putValue(out, 'resetsAtMs', event.resetsAtMs === undefined ? undefined : toInt64(event.resetsAtMs));
   putValue(out, 'utilization', event.utilization);
   putText(out, 'trigger', event.trigger, WORD_MAX_CHARS);
   putText(out, 'peerName', event.peerName, ID_MAX_CHARS);
-  putValue(out, 'holdState', event.holdState === undefined ? undefined : (PEER_HOLD_STATE_MAP[event.holdState] ?? PeerHoldState.PEER_HOLD_STATE_UNSPECIFIED));
+  putValue(out, 'holdState', event.holdState === undefined ? undefined : wireEnum(PeerHoldState, 'PEER_HOLD_STATE', event.holdState));
   putText(out, 'errorKind', event.errorKind, WORD_MAX_CHARS);
   putText(out, 'fallbackScope', event.fallbackScope, WORD_MAX_CHARS);
   return out;
@@ -440,6 +305,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           // than it believes, and this is the only place it can find that out -- see the proto
           // field's own comment for why a behavioural check does not substitute.
           permissionMode: event.permissionMode,
+          effort: cut(event.effort ?? '', WORD_MAX_CHARS),
           // Absent only for a kernel session built without an account probe; createSession always
           // builds one.
           accountIdentity: event.accountIdentity === undefined ? undefined : accountIdentityToProto(event.accountIdentity),
@@ -448,7 +314,13 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
               ? undefined
               : {
                   tools: [...event.initFingerprint.tools],
-                  mcpServers: event.initFingerprint.mcpServers.map((server) => ({ name: server.name, status: server.status })),
+                  // `source` is the CLI's own word for where the server came from, cut like the
+                  // other short strings and never mapped: a consumer compares it with `sdk`.
+                  mcpServers: event.initFingerprint.mcpServers.map((server) => ({
+                    name: server.name,
+                    status: server.status,
+                    source: cut(server.source ?? '', WORD_MAX_CHARS),
+                  })),
                   apiKeySource: event.initFingerprint.apiKeySource ?? '',
                 },
           // What the session handed the SDK, recorded when it was created. Empty and absent for a
@@ -457,12 +329,13 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           effectiveTools: event.effectiveToolOptions?.tools === undefined ? undefined : { tools: [...event.effectiveToolOptions.tools] },
           // The tiers and profile the session handed the SDK, recorded when it was created; empty and
           // UNSPECIFIED for a kernel session that recorded nothing (createSession always records).
-          effectiveSettingSources: (event.effectiveSessionOptions?.settingSources ?? []).map((tier) => SETTING_SOURCE_TO_PROTO[tier]),
+          effectiveSettingSources: (event.effectiveSessionOptions?.settingSources ?? []).map((tier) => wireEnum(SettingSourceProto, 'SETTING_SOURCE', tier)),
           // A profile with no wire spelling reads as UNSPECIFIED too: an undefined int32 would make
           // the whole event unserializable, and with it every watch that reaches it, replays included.
           effectiveConfiguration:
-            (event.effectiveSessionOptions === undefined ? undefined : CONFIGURATION_TO_PROTO[event.effectiveSessionOptions.configuration])
-            ?? ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED,
+            event.effectiveSessionOptions === undefined
+              ? ConfigurationProfile.CONFIGURATION_PROFILE_UNSPECIFIED
+              : wireEnum(ConfigurationProfile, 'CONFIGURATION_PROFILE', event.effectiveSessionOptions.configuration),
           // Next to the verbatim string above, never instead of it.
           cliPermissionModeKind: cliPermissionModeKind(event.permissionMode),
         },
@@ -473,7 +346,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
       return {
         turnStarted: {
           turnId: event.turnId,
-          origin: event.origin === undefined ? TurnOrigin.TURN_ORIGIN_UNSPECIFIED : (TURN_ORIGIN_MAP[event.origin] ?? TurnOrigin.TURN_ORIGIN_UNSPECIFIED),
+          origin: event.origin === undefined ? TurnOrigin.TURN_ORIGIN_UNSPECIFIED : wireEnum(TurnOrigin, 'TURN_ORIGIN', event.origin),
           cause: event.cause === undefined ? undefined : turnCauseToProto(event.cause),
         },
       };
@@ -486,6 +359,8 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           text: event.text,
           ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
           ...(event.parentToolUseId === undefined ? {} : { parentToolUseId: cut(event.parentToolUseId, ID_MAX_CHARS) }),
+          // proto3's false is the zero value, so a delta that continues a block encodes as it always did.
+          startsBlock: event.startsBlock === true,
         },
       };
     case 'thinking_delta':
@@ -532,7 +407,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
           inputJson: JSON.stringify(event.input ?? null),
           // Always stated. UNSPECIFIED is what a sidecar older than the field sends, so it is never
           // chosen here for a known origin.
-          origin: PERMISSION_ORIGIN_MAP[event.origin] ?? PermissionOrigin.PERMISSION_ORIGIN_UNSPECIFIED,
+          origin: wireEnum(PermissionOrigin, 'PERMISSION_ORIGIN', event.origin),
           // proto3 `optional`: absent stays absent, never an empty string a client would show as
           // "the CLI gave an empty reason". `typeof`, not `!== undefined`: a non-string here would
           // throw inside the encoder at broadcast time (the kernel already filters; this is the
@@ -554,7 +429,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
       return {
         permissionResolved: {
           permissionId: event.permissionId,
-          outcome: PERMISSION_OUTCOME_MAP[event.outcome] ?? PermissionOutcome.PERMISSION_OUTCOME_UNSPECIFIED,
+          outcome: wireEnum(PermissionOutcome, 'PERMISSION_OUTCOME', event.outcome),
         },
       };
     case 'usage_updated':
@@ -566,7 +441,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
       return {
         turnCompleted: {
           turnId: event.turnId,
-          outcome: TURN_OUTCOME_MAP[event.outcome] ?? TurnOutcome.TURN_OUTCOME_UNSPECIFIED,
+          outcome: wireEnum(TurnOutcome, 'TURN_OUTCOME', event.outcome),
           resultText: event.resultText,
           isError: event.isError,
           stopReason: event.stopReason ?? undefined,
@@ -587,23 +462,25 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
     case 'session_closed':
       return {
         sessionClosed: {
-          reason: SESSION_CLOSE_REASON_MAP[event.reason] ?? SessionCloseReason.SESSION_CLOSE_REASON_UNSPECIFIED,
+          reason: wireEnum(SessionCloseReason, 'SESSION_CLOSE_REASON', event.reason),
         },
       };
     case 'resume_outcome':
       return {
         resumeOutcome: {
           requestedProviderSessionId: event.requestedProviderSessionId,
-          status: RESUME_STATUS_MAP[event.status] ?? ResumeStatus.RESUME_STATUS_UNSPECIFIED,
+          status: wireEnum(ResumeStatus, 'RESUME_STATUS', event.status),
           attachedProviderSessionId: event.attachedProviderSessionId ?? '',
           forked: event.forked,
           detail: event.detail ?? '',
         },
       };
+    case 'cli_mode_reported':
+      return { cliModeReported: { permissionMode: cut(event.permissionMode, WORD_MAX_CHARS) } };
     case 'permission_mode_changed':
       return {
         permissionModeChanged: {
-          mode: PERMISSION_MODE_MAP[event.permissions] ?? PermissionMode.PERMISSION_MODE_UNSPECIFIED,
+          mode: wireEnum(PermissionMode, 'PERMISSION_MODE', event.permissions),
           permissionMode: event.permissionMode,
           bypassDefaultDenyApplied: event.bypassDefaultDenyApplied,
         },
@@ -626,7 +503,7 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
       return {
         userMessageDropped: {
           clientMessageId: event.clientMessageId,
-          reason: USER_MESSAGE_DROP_REASON_MAP[event.reason] ?? UserMessageDropReason.USER_MESSAGE_DROP_REASON_UNSPECIFIED,
+          reason: wireEnum(UserMessageDropReason, 'USER_MESSAGE_DROP_REASON', event.reason),
         },
       };
     case 'commands_updated':
@@ -662,13 +539,12 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
         },
       };
     case 'interaction_requested':
-      // The questions themselves are passed whole: a question over its limits is refused before this
-      // event exists, never cut here.
+      // Payloads are passed whole: each broker refuses input over its limits before showing it.
       return {
         interactionRequested: {
           interactionId: event.interactionId,
           toolUseId: event.toolUseId,
-          kind: InteractionKind.INTERACTION_KIND_QUESTION,
+          kind: wireEnum(InteractionKind, 'INTERACTION_KIND', event.kind ?? 'question'),
           questions:
             event.questions === undefined
               ? undefined
@@ -684,20 +560,42 @@ export function translateEvent(event: ClaudeRuntimeEvent): Partial<SessionEvent>
                     })),
                   })),
                 },
+          ...(event.plan === undefined
+            ? {}
+            : { plan: {
+                plan: event.plan.plan,
+                planSha256: event.plan.planSha256,
+                allowedPrompts: event.plan.allowedPrompts.map((prompt) => ({ tool: prompt.tool, prompt: prompt.prompt })),
+              } }),
           ...(event.unsupportedReason === undefined ? {} : { unsupportedReason: cut(event.unsupportedReason, TEXT_MAX_CHARS) }),
         },
       };
     case 'interaction_resolved':
+      // Every settlement names its kind, so a host can read one without having kept the request.
       return {
         interactionResolved: {
           interactionId: event.interactionId,
-          outcome: INTERACTION_OUTCOME_MAP[event.outcome] ?? InteractionOutcome.INTERACTION_OUTCOME_UNSPECIFIED,
+          kind: wireEnum(InteractionKind, 'INTERACTION_KIND', event.kind ?? 'question'),
+          outcome: wireEnum(InteractionOutcome, 'INTERACTION_OUTCOME', event.outcome),
           answers: (event.answers ?? []).map((answer) => ({
             questionIndex: toUint32(answer.questionIndex),
             answer: answer.answer,
             ...(answer.notes === undefined ? {} : { notes: answer.notes }),
           })),
+          ...(event.modeAfter === undefined ? {} : { modeAfter: wireEnum(PlanExecutionMode, 'PLAN_EXECUTION_MODE', event.modeAfter) }),
+          ...(event.feedback === undefined ? {} : { feedback: event.feedback }),
           ...(event.reason === undefined ? {} : { reason: cut(event.reason, TEXT_MAX_CHARS) }),
+        },
+      };
+    case 'client_tool_call':
+      // Nothing is cut: the broker refused any call whose arguments pass its limit, and a host
+      // validates what it gets.
+      return { clientToolCall: { callId: event.callId, toolUseId: event.toolUseId, tool: event.tool, argumentsJson: event.argumentsJson } };
+    case 'client_tool_call_settled':
+      return {
+        clientToolCallSettled: {
+          callId: event.callId,
+          outcome: wireEnum(ClientToolCallOutcome, 'CLIENT_TOOL_CALL_OUTCOME', event.outcome),
         },
       };
     default:

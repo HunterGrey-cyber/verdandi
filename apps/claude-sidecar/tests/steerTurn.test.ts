@@ -282,6 +282,20 @@ test('a watcher whose cursor is past the newest list gets nothing again; one who
   assert.equal(fresh.written.at(-1)!.commandsUpdated?.commands[0]?.name, 'review');
 });
 
+test('a watcher that attaches after the CLI moved its mode is told, as it is of the command list', async () => {
+  const { impl, registry, sessionId, controller } = await sessionWithCommands();
+  controller.emit({ type: 'cli_mode_reported', permissionMode: 'default' });
+  await new Promise((r) => setTimeout(r, 60));
+  const reports = (events: SessionEvent[]) => events.filter((event) => event.cliModeReported !== undefined);
+  const late = watchCall(sessionId, ReplayStart.REPLAY_START_FROM_NOW);
+  impl.watchSessionEvents(late.call);
+  assert.equal(reports(late.written).length, 1);
+  assert.equal(reports(late.written)[0]!.cliModeReported!.permissionMode, 'default');
+  const caughtUp = watchCall(sessionId, ReplayStart.REPLAY_START_AFTER_SEQUENCE, registry.get(sessionId)!.latestCliMode!.sequence);
+  impl.watchSessionEvents(caughtUp.call);
+  assert.equal(reports(caughtUp.written).length, 0, 'a cursor past it needs nothing');
+});
+
 test('a session that never sent a list re-sends nothing', async () => {
   const { impl } = setup();
   const { sessionId } = await callResult<{ sessionId: string }>(impl.createSession.bind(impl), { cwd: '/tmp', policy: {} });

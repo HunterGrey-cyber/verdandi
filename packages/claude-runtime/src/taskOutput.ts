@@ -7,6 +7,9 @@ import type { TaskOutputResult } from './types.js';
  * running or finished command wants to see. */
 export const TASK_OUTPUT_TAIL_BYTES = 8192;
 
+/** The most one ranged read returns, well inside a gRPC message's default limit. */
+export const TASK_OUTPUT_RANGE_MAX_BYTES = 1024 * 1024;
+
 /**
  * The SDK has no request for a task's output, so the output is read from the file the CLI writes it
  * to, which the CLI names in the session's own frames. Reading a file a frame names is reading a path a
@@ -40,14 +43,19 @@ export function taskOutputReadable(): boolean {
 /** Why an accepted path still gave no output when it was opened. */
 export type OutputReadRefusal = 'unsupported' | 'symlink' | 'unopenable' | 'not_regular_file' | 'foreign_owner' | 'unreadable';
 
+/** Which bytes to read: `offset` and at most `maxBytes` of them, cut to `TASK_OUTPUT_RANGE_MAX_BYTES`
+ * (0 means that much). */
+export type OutputRange = { offset: number; maxBytes: number };
+
 /**
  * The tail of the file at `path`: at most `TASK_OUTPUT_TAIL_BYTES`, read from `max(0, size - limit)`,
- * with the size `fstat` reported. The file is opened without following a symbolic link at its last
- * component and without blocking (a FIFO planted at the path would otherwise hold the call forever),
- * then must be a regular file owned by `ownerUid` (this process's uid unless a caller states another).
- * A file that shrinks between `fstat` and the read gives the bytes that were there.
+ * with the size `fstat` reported; or with `range` the bytes it names, none past the end. The file is
+ * opened without following a symbolic link at its last component and without blocking (a FIFO planted
+ * at the path would otherwise hold the call forever), then must be a regular file owned by `ownerUid`
+ * (this process's uid unless a caller states another). A file that shrinks between `fstat` and the read
+ * gives the bytes that were there.
  */
-export async function readOutputTail(path: string, ownerUid?: number): Promise<TaskOutputResult | { refused: OutputReadRefusal }> {
+export async function readOutput(path: string, range?: OutputRange, ownerUid?: number): Promise<TaskOutputResult | { refused: OutputReadRefusal }> {
   if (!taskOutputReadable()) return { refused: 'unsupported' };
   const uid = ownerUid ?? process.getuid!();
   let handle: FileHandle;
@@ -61,15 +69,17 @@ export async function readOutputTail(path: string, ownerUid?: number): Promise<T
     if (!stat.isFile()) return { refused: 'not_regular_file' };
     if (stat.uid !== uid) return { refused: 'foreign_owner' };
     const size = stat.size;
-    const start = Math.max(0, size - TASK_OUTPUT_TAIL_BYTES);
-    const buffer = Buffer.alloc(size - start);
+    const limit = range === undefined ? TASK_OUTPUT_TAIL_BYTES : range.maxBytes === 0 ? TASK_OUTPUT_RANGE_MAX_BYTES : Math.min(range.maxBytes, TASK_OUTPUT_RANGE_MAX_BYTES);
+    const start = range === undefined ? Math.max(0, size - limit) : Math.min(range.offset, size);
+    const end = range === undefined ? size : Math.min(size, start + limit);
+    const buffer = Buffer.alloc(end - start);
     let filled = 0;
     while (filled < buffer.length) {
       const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, start + filled);
       if (bytesRead === 0) break;
       filled += bytesRead;
     }
-    return { output: new Uint8Array(buffer.subarray(0, filled)), totalBytes: size, truncated: size > TASK_OUTPUT_TAIL_BYTES };
+    return { output: new Uint8Array(buffer.subarray(0, filled)), totalBytes: size, truncated: filled < size, offset: start };
   } catch {
     return { refused: 'unreadable' };
   } finally {

@@ -89,7 +89,8 @@ test('3.22: the new fields of existing messages are at their numbers, with their
   }
   assert.deepEqual(fieldsOf('ClaudeHostPolicy', [12]), [one('bool', 'per_task_stop', 12)]);
   assert.deepEqual(fieldsOf('CreateSessionRequest', [11]), [one(`${T}ClientInteractions`, 'client_interactions', 11)]);
-  assert.deepEqual(fieldsOf('ClientInteractions'), [one('bool', 'questions', 1)]);
+  // 3.26 took the number this minor held for plan approval (protocol326.test.ts).
+  assert.deepEqual(fieldsOf('ClientInteractions'), [one('bool', 'questions', 1), one('bool', 'plan_mode', 2)]);
 });
 
 test('3.22: the new messages carry exactly their fields', () => {
@@ -131,20 +132,28 @@ test('3.22: the new messages carry exactly their fields', () => {
     ConversationReset: [one('string', 'new_conversation_id', 1), opt('string', 'trigger', 2)],
     StopTaskRequest: [one('string', 'session_id', 1), one('string', 'command_id', 2), one('string', 'task_id', 3)],
     StopTaskResponse: [],
-    GetTaskOutputRequest: [one('string', 'session_id', 1), one('string', 'task_id', 2)],
-    GetTaskOutputResponse: [one('bytes', 'output', 1), one('uint64', 'total_bytes', 2), one('bool', 'truncated', 3)],
+    GetTaskOutputRequest: [one('string', 'session_id', 1), one('string', 'task_id', 2), opt('uint64', 'offset', 3), one('uint32', 'max_bytes', 4)],
+    GetTaskOutputResponse: [one('bytes', 'output', 1), one('uint64', 'total_bytes', 2), one('bool', 'truncated', 3), one('uint64', 'offset', 4)],
     InteractionRequested: [
       one('string', 'interaction_id', 1), one('string', 'tool_use_id', 2), one(`${T}InteractionKind`, 'kind', 3), opt('string', 'unsupported_reason', 4),
       `optional ${T}QuestionSet questions = 10 (oneof payload)`,
+      // 3.26's plan payload.
+      `optional ${T}PlanProposal plan = 11 (oneof payload)`,
     ],
     QuestionSet: [many(`${T}Question`, 'questions', 1)],
     Question: [one('string', 'question', 1), one('string', 'header', 2), one('bool', 'multi_select', 3), many(`${T}QuestionOption`, 'options', 4)],
     QuestionOption: [one('string', 'label', 1), one('string', 'description', 2), opt('string', 'preview', 3)],
-    InteractionResolved: [one('string', 'interaction_id', 1), one(`${T}InteractionOutcome`, 'outcome', 2), many(`${T}ShownAnswer`, 'answers', 3), opt('string', 'reason', 4)],
+    InteractionResolved: [
+      one('string', 'interaction_id', 1), one(`${T}InteractionOutcome`, 'outcome', 2), many(`${T}ShownAnswer`, 'answers', 3), opt('string', 'reason', 4),
+      // 3.26's kind, mode after an approval and feedback.
+      one(`${T}InteractionKind`, 'kind', 5), opt(`${T}PlanExecutionMode`, 'mode_after', 6), opt('string', 'feedback', 7),
+    ],
     ShownAnswer: [one('uint32', 'question_index', 1), one('string', 'answer', 2), opt('string', 'notes', 3)],
     ResolveInteractionRequest: [
       one('string', 'session_id', 1), one('string', 'command_id', 2), one('string', 'interaction_id', 3),
       `optional ${T}QuestionAnswers answers = 10 (oneof result)`, `optional ${T}QuestionDecline decline = 11 (oneof result)`,
+      // 3.26's plan results, at the start of the range this minor held for them.
+      `optional ${T}PlanApproval approve = 12 (oneof result)`, `optional ${T}PlanKeepPlanning keep_planning = 13 (oneof result)`,
     ],
     QuestionAnswers: [many(`${T}QuestionAnswer`, 'answers', 1)],
     QuestionAnswer: [one('uint32', 'question_index', 1), many('uint32', 'option_indexes', 2), opt('string', 'other_text', 3), opt('string', 'notes', 4)],
@@ -169,15 +178,16 @@ test('3.22: the new enums have exactly their values, each prefixed with its enum
     NoticeLevel: ['UNSPECIFIED', 'INFO', 'NOTICE', 'SUGGESTION', 'WARNING'],
     RateLimitStatus: ['UNSPECIFIED', 'ALLOWED', 'ALLOWED_WARNING', 'REJECTED'],
     PeerHoldState: ['UNSPECIFIED', 'HELD', 'RELEASED', 'DROPPED'],
-    InteractionKind: ['UNSPECIFIED', 'QUESTION'],
-    InteractionOutcome: ['UNSPECIFIED', 'ANSWERED', 'DECLINED', 'CHAT_REQUESTED', 'INTERRUPTED', 'EXPIRED', 'SESSION_CLOSED', 'PROVIDER_FAILED', 'HOST_REFUSED'],
+    // PLAN_APPROVAL, APPROVED and KEPT_PLANNING are 3.26's.
+    InteractionKind: ['UNSPECIFIED', 'QUESTION', 'PLAN_APPROVAL'],
+    InteractionOutcome: ['UNSPECIFIED', 'ANSWERED', 'DECLINED', 'CHAT_REQUESTED', 'INTERRUPTED', 'EXPIRED', 'SESSION_CLOSED', 'PROVIDER_FAILED', 'HOST_REFUSED', 'APPROVED', 'KEPT_PLANNING'],
     QuestionDeclineKind: ['UNSPECIFIED', 'CANCEL', 'CHAT'],
   };
   for (const [enumeration, names] of Object.entries(expected)) {
     const prefix = enumeration.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
     assert.deepEqual(valuesOf(enumeration), names.map((name, number) => [number, `${prefix}_${name}`]), enumeration);
   }
-  assert.deepEqual(live.enums.get(`${PKG}.InteractionKind`)?.reservedRanges, [[2, 2]], 'InteractionKind holds 2');
+  assert.deepEqual(live.enums.get(`${PKG}.InteractionKind`)?.reservedRanges, [], 'InteractionKind 2, held here, is 3.26\'s PLAN_APPROVAL');
 });
 
 test('3.22: the new error codes are 16, 17, 30 and 31', () => {
@@ -186,7 +196,7 @@ test('3.22: the new error codes are 16, 17, 30 and 31', () => {
   assert.equal(codes.get(17), 'ERROR_CODE_TASK_OUTPUT_UNAVAILABLE');
   assert.equal(codes.get(30), 'ERROR_CODE_INTERACTION_NOT_FOUND');
   assert.equal(codes.get(31), 'ERROR_CODE_INTERACTION_ANSWER_REFUSED');
-  assert.deepEqual([...codes.keys()].filter((n) => n > 15).sort((a, b) => a - b), [16, 17, 30, 31], 'no other code past 15');
+  assert.deepEqual([...codes.keys()].filter((n) => n > 15 && n <= 31).sort((a, b) => a - b), [16, 17, 30, 31], 'no other code from 16 to 31');
 });
 
 test('3.22: the new SessionEvent arms are at 30-35, 40 and 41, and 27-29 are reserved', () => {
@@ -203,11 +213,13 @@ test('3.22: the new SessionEvent arms are at 30-35, 40 and 41, and 27-29 are res
   assert.deepEqual(live.messages.get(`${PKG}.SessionEvent`)?.reservedRanges, [[27, 29]]);
 });
 
-test('3.22: the numbers held for later work are reserved where the minor says', () => {
+test('3.22: the numbers held for later work are reserved where the minor says, less what 3.26 took', () => {
   assert.deepEqual(live.messages.get(`${PKG}.CreateSessionRequest`)?.reservedRanges, [[12, 12]]);
-  assert.deepEqual(live.messages.get(`${PKG}.HandshakeResponse`)?.reservedRanges, [[20, 20]]);
-  assert.deepEqual(live.messages.get(`${PKG}.ClientInteractions`)?.reservedRanges, [[2, 2]]);
-  assert.deepEqual(live.messages.get(`${PKG}.ResolveInteractionRequest`)?.reservedRanges, [[12, 19]]);
+  // 3.26 took HandshakeResponse 20 (turn_content_limits), ClientInteractions 2 (plan_mode) and
+  // ResolveInteractionRequest 12 and 13 (the plan results).
+  assert.deepEqual(live.messages.get(`${PKG}.HandshakeResponse`)?.reservedRanges, []);
+  assert.deepEqual(live.messages.get(`${PKG}.ClientInteractions`)?.reservedRanges, []);
+  assert.deepEqual(live.messages.get(`${PKG}.ResolveInteractionRequest`)?.reservedRanges, [[14, 19]]);
 });
 
 test('3.22: the four new RPCs are in the service with their request and response types', () => {
@@ -259,7 +271,7 @@ const ARMS: Array<[tag: number, event: Partial<SessionEvent>]> = [
   [34, { sessionNotice: { kind: SessionNoticeKind.SESSION_NOTICE_KIND_RATE_LIMIT, level: NoticeLevel.NOTICE_LEVEL_WARNING, rateStatus: RateLimitStatus.RATE_LIMIT_STATUS_ALLOWED_WARNING, holdState: PeerHoldState.PEER_HOLD_STATE_HELD, errorKind: 'overloaded', fallbackScope: 'local' } }],
   [35, { conversationReset: { newConversationId: 'conv-2' } }],
   [40, { interactionRequested: { interactionId: 'i1', toolUseId: 'tu1', kind: InteractionKind.INTERACTION_KIND_QUESTION, questions: { questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] } } }],
-  [41, { interactionResolved: { interactionId: 'i1', outcome: InteractionOutcome.INTERACTION_OUTCOME_ANSWERED, answers: [{ questionIndex: 0, answer: 'A' }] } }],
+  [41, { interactionResolved: { interactionId: 'i1', kind: InteractionKind.INTERACTION_KIND_QUESTION, outcome: InteractionOutcome.INTERACTION_OUTCOME_ANSWERED, answers: [{ questionIndex: 0, answer: 'A' }] } }],
 ];
 
 for (const [tag, arm] of ARMS) {
@@ -428,7 +440,7 @@ const NEW_RPCS: Array<[name: string, request: unknown]> = [
 test('3.22: the task RPCs reach the session: StopTask stops the named task, GetTaskOutput reads it', async () => {
   const { impl, made } = setup();
   const sessionId = await sessionOn(impl);
-  made[0].controller.answerTaskOutput(async () => ({ output: new Uint8Array([104, 105]), totalBytes: 2, truncated: false }));
+  made[0].controller.answerTaskOutput(async () => ({ output: new Uint8Array([104, 105]), totalBytes: 2, truncated: false, offset: 0 }));
   for (const [name, request] of NEW_RPCS) {
     const handler = (impl as unknown as Record<string, Handler>)[name];
     assert.equal(typeof handler, 'function', name);
@@ -481,7 +493,7 @@ test('3.22: over a real socket the task RPCs answer, and their refusals reach th
     assert.equal(stopped.error, null);
     // The tail's bytes go out as bytes, the total as a 64-bit count, the cut as its own flag.
     const tail = new Uint8Array([0xe2, 0x82, 0xac, 0x0a]).subarray(1);
-    controller.answerTaskOutput(async () => ({ output: tail, totalBytes: 20000, truncated: true }));
+    controller.answerTaskOutput(async () => ({ output: tail, totalBytes: 20000, truncated: true, offset: 19997 }));
     const read = await call<{ output: Buffer; totalBytes: bigint; truncated: boolean }>('getTaskOutput', GetTaskOutputRequest.fromPartial({ sessionId, taskId: 'b1' }));
     assert.equal(read.error, null);
     assert.deepEqual([...read.response!.output], [0x82, 0xac, 0x0a]);
@@ -568,8 +580,11 @@ const CAPABILITIES_OF_3_22 = [
   'conversation_reset', 'structured_questions_v1',
 ];
 
-test('3.22: the handshake reports minor 22, and apart from 3.22\'s own capabilities it lists exactly what 3.21 listed', () => {
-  assert.equal(PROTOCOL_MINOR, 22);
+/** Capabilities of later minors: this file holds 3.21's list against the live one, which keeps growing. */
+const CAPABILITIES_AFTER_3_22 = ['client_tools', 'set_model', 'list_models', 'apply_effort', 'session_effort_report', 'cli_mode_reports', 'task_output_range', 'text_block_start', 'plan_mode_v1', 'turn_content_v1'];
+
+test('3.22: the handshake reports minor 22 or later, and apart from 3.22\'s own capabilities it lists exactly what 3.21 listed', () => {
+  assert.ok(PROTOCOL_MINOR >= 22);
   for (const egressRestricted of [false, true]) {
     for (const sdkBundledAvailable of [false, true]) {
       for (const cliMessageLifecycle of [false, true]) {
@@ -577,7 +592,7 @@ test('3.22: the handshake reports minor 22, and apart from 3.22\'s own capabilit
         const held = { egress_restricted: egressRestricted, sdk_bundled: sdkBundledAvailable, cli_message_lifecycle: cliMessageLifecycle };
         const before = CAPABILITIES_AT_3_21.filter(([, when]) => when === undefined || held[when]).map(([name]) => name);
         const advertised = handshakeCapabilities(facts);
-        assert.deepEqual(advertised.filter((name) => !CAPABILITIES_OF_3_22.includes(name)), before, JSON.stringify(facts));
+        assert.deepEqual(advertised.filter((name) => !CAPABILITIES_OF_3_22.includes(name) && !CAPABILITIES_AFTER_3_22.includes(name)), before, JSON.stringify(facts));
       }
     }
   }
@@ -591,7 +606,7 @@ test('3.22: of the minor\'s capabilities, only those whose behaviour works are a
   ]);
   // A process that cannot read an output file safely does not claim to.
   const withoutRead = handshakeCapabilities({ egressRestricted: true, sdkBundledAvailable: true, cliMessageLifecycle: true, taskOutputRead: false });
-  assert.deepEqual(advertised.filter((name) => name !== 'task_output'), withoutRead);
+  assert.deepEqual(advertised.filter((name) => name !== 'task_output' && name !== 'task_output_range'), withoutRead);
 });
 
 test('3.22: BackgroundTasksChanged with no tasks is an empty roster, not an absent one', () => {

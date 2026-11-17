@@ -50,6 +50,8 @@ export type SpawnOptions = {
   /** Set (string) or remove (undefined) environment variables after the defaults. */
   env?: Record<string, string | undefined>;
   args?: string[];
+  /** A file descriptor to hand the process as its stdin instead of a pipe it owns the other end of (then `child.stdin` is null). */
+  stdin?: number;
   /** Runs before the process starts, with the paths it will see (to put an account directory or a stale socket in place). */
   prepare?: (paths: { dir: string; home: string; socketPath: string }) => void;
 };
@@ -83,7 +85,7 @@ export function spawnSidecar(options: SpawnOptions = {}): Spawned {
   }
 
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, [SIDECAR_ENTRY, ...(options.args ?? [])], { env, stdio: ['pipe', 'ignore', 'pipe'] });
+  const child = spawn(process.execPath, [SIDECAR_ENTRY, ...(options.args ?? [])], { env, stdio: [options.stdin ?? 'pipe', 'ignore', 'pipe'] });
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
@@ -174,6 +176,8 @@ export type CliSession = {
   sidecar: Spawned;
   /** The arguments the real SDK started the stub CLI with, one per element. */
   argv: string[];
+  /** The environment the stub CLI was started with, by name. */
+  cliEnv: Record<string, string>;
   cliPid: number;
   /** The directory the session was opened in (it exists, so the SDK can start the CLI there). */
   cwd: string;
@@ -192,10 +196,12 @@ export async function startCliSession(options: { ignoreSigterm?: boolean; env?: 
   const cwd = mkdtempSync(join(tmpdir(), 'v1p-session-'));
   const pidFile = join(cwd, 'cli.pid');
   const argvFile = join(cwd, 'cli.argv');
+  const envFile = join(cwd, 'cli.env');
   const aliveFile = join(cwd, 'cli.alive');
   writeFileSync(aliveFile, '');
   const body = [
     `printf '%s\\n' "$@" > '${argvFile}'`,
+    `env > '${envFile}'`,
     `echo $$ > '${pidFile}.tmp' && mv '${pidFile}.tmp' '${pidFile}'`,
     ...(options.ignoreSigterm === true ? ["trap '' TERM"] : []),
     `while [ -e '${aliveFile}' ]; do sleep 0.05; done`,
@@ -238,7 +244,14 @@ export async function startCliSession(options: { ignoreSigterm?: boolean; env?: 
       throw new Error(`the session's CLI never started; stderr:\n${sidecar.stderr()}`);
     }
     cliPid = Number(readFileSync(pidFile, 'utf8').trim());
-    return { sidecar, argv: readFileSync(argvFile, 'utf8').split('\n').slice(0, -1), cliPid, cwd, close };
+    const cliEnv: Record<string, string> = {};
+    for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+      const at = line.indexOf('=');
+      if (at > 0) {
+        cliEnv[line.slice(0, at)] = line.slice(at + 1);
+      }
+    }
+    return { sidecar, argv: readFileSync(argvFile, 'utf8').split('\n').slice(0, -1), cliEnv, cliPid, cwd, close };
   } catch (error) {
     close();
     throw error;

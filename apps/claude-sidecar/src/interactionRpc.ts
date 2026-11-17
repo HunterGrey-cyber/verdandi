@@ -4,6 +4,7 @@ import { InteractionAnswerError, InteractionNotFoundError, type InteractionAnswe
 import {
   ErrorCode,
   QuestionDeclineKind,
+  PlanExecutionMode,
   ResolveInteractionRequest,
   type GetInteractionStateRequest,
   type InteractionOutcome,
@@ -47,14 +48,27 @@ function answerInputs(answers: QuestionAnswer[]): InteractionAnswerInput[] {
   }));
 }
 
-/**
- * The request's result arm as the kernel takes it. A question takes answers or a decline that is a
- * cancel or a request to chat; any other shape -- no arm, or a decline kind this sidecar does not know
- * -- does not fit it.
- */
+/** The request's result arm in the kernel's terms. Unknown execution modes are refused before they
+ * can settle a plan; question and plan arms are checked against the waiting interaction by the port. */
 function resultOf(request: ResolveInteractionRequest): InteractionResult {
   if (request.answers !== undefined) {
     return { kind: 'answers', answers: answerInputs(request.answers.answers) };
+  }
+  if (request.approve !== undefined) {
+    const { mode, planSha256 } = request.approve;
+    switch (mode) {
+      case PlanExecutionMode.PLAN_EXECUTION_MODE_MANUAL:
+        return { kind: 'plan_approve', mode: 'manual', planSha256 };
+      case PlanExecutionMode.PLAN_EXECUTION_MODE_AUTO:
+        return { kind: 'plan_approve', mode: 'auto', planSha256 };
+      case PlanExecutionMode.PLAN_EXECUTION_MODE_BYPASS:
+        return { kind: 'plan_approve', mode: 'bypass', planSha256 };
+      default:
+        throw new SidecarError(ErrorCode.ERROR_CODE_INTERACTION_ANSWER_REFUSED, 'a plan approval needs an execution mode (MANUAL, AUTO or BYPASS)', 'plan_mode_unspecified');
+    }
+  }
+  if (request.keepPlanning !== undefined) {
+    return { kind: 'plan_keep', feedback: request.keepPlanning.feedback };
   }
   const decline = request.decline;
   if (decline?.kind === QuestionDeclineKind.QUESTION_DECLINE_KIND_CANCEL) {
@@ -65,7 +79,7 @@ function resultOf(request: ResolveInteractionRequest): InteractionResult {
   }
   throw new SidecarError(
     ErrorCode.ERROR_CODE_INTERACTION_ANSWER_REFUSED,
-    'a question is resolved with answers, or with a decline whose kind is CANCEL or CHAT',
+    'an interaction needs answers, a CANCEL or CHAT decline, a plan approval or keep_planning',
     'kind_mismatch',
   );
 }
@@ -74,11 +88,11 @@ function resultOf(request: ResolveInteractionRequest): InteractionResult {
 export function createInteractionRpc(deps: InteractionRpcDeps) {
   return {
     /**
-     * Settles one open question with the host's answer. Idempotent per `(session_id, command_id)`: the
+     * Settles one open interaction with the host's answer. Idempotent per `(session_id, command_id)`: the
      * same request again returns the outcome the first one had, even after the interaction is spent,
      * and a different payload under the same id is IDEMPOTENCY_CONFLICT. An id that is not open on
      * this session -- unknown, settled, or another session's -- is INTERACTION_NOT_FOUND. An answer that
-     * breaks a rule is INTERACTION_ANSWER_REFUSED with the rule's name as `reason`; the question keeps
+     * breaks a rule is INTERACTION_ANSWER_REFUSED with the rule's name as `reason`; the interaction keeps
      * waiting and nothing is recorded under the command id, so a corrected answer may reuse it.
      */
     resolveInteraction(call: { request: ResolveInteractionRequest }, callback: Callback): void {
@@ -119,10 +133,10 @@ export function createInteractionRpc(deps: InteractionRpcDeps) {
     },
 
     /**
-     * The questions still waiting on a session and the event sequence the answer was read at, both
+     * The interactions still waiting on a session and the event sequence the answer was read at, both
      * read in one synchronous step. An event the session produced but has not yet sequenced comes
      * later in the stream with a sequence above `through_sequence`, so a client that applies the
-     * events after it and deduplicates by `interaction_id` reaches the session's state; a question
+     * events after it and deduplicates by `interaction_id` reaches the session's state; an interaction
      * absent from the snapshot and not in the events has ended.
      */
     getInteractionState(call: { request: GetInteractionStateRequest }, callback: Callback): void {

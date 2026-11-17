@@ -1,6 +1,6 @@
 {
   "//": "The one source for the protocol numbers, the capability strings and the permission-mode strings. Read by crates/claude-runtime-protocol/build.rs (Rust constants) and by apps/claude-sidecar/scripts/generateProtocolConstants.mjs (TypeScript constants); tests on both sides fail if either drifts from this file. Rules and the meaning of each field: COMPATIBILITY.md next to this file.",
-  "protocol": {"major": 3, "minor": 22},
+  "protocol": {"major": 3, "minor": 26},
   "capabilities": [
     {"name": "handshake", "since_minor": 0, "baseline": true},
     {"name": "create_session", "since_minor": 0, "baseline": true},
@@ -54,6 +54,16 @@
     {"name": "session_notices", "since_minor": 22},
     {"name": "conversation_reset", "since_minor": 22},
     {"name": "structured_questions_v1", "since_minor": 22},
+    {"name": "client_tools", "since_minor": 23},
+    {"name": "set_model", "since_minor": 24},
+    {"name": "list_models", "since_minor": 24},
+    {"name": "apply_effort", "since_minor": 24},
+    {"name": "session_effort_report", "since_minor": 24},
+    {"name": "cli_mode_reports", "since_minor": 24},
+    {"name": "task_output_range", "since_minor": 24, "when": "task_output_read"},
+    {"name": "text_block_start", "since_minor": 25},
+    {"name": "plan_mode_v1", "since_minor": 26},
+    {"name": "turn_content_v1", "since_minor": 26},
     {"name": "executable_host_cli", "since_minor": 1},
     {"name": "executable_sdk_bundled", "since_minor": 1, "when": "sdk_bundled"}
   ],
@@ -202,6 +212,61 @@
       "verdandi.claude.runtime.v1.RuntimeService: new rpc GetTaskOutput",
       "verdandi.claude.runtime.v1.RuntimeService: new rpc ResolveInteraction",
       "verdandi.claude.runtime.v1.RuntimeService: new rpc GetInteractionState"
+    ]},
+    {"minor": 23, "date": "2026-10-31", "summary": "Wire for tools a host declares and answers itself, ahead of their behaviour: no capability of this minor is advertised until the change that makes it work. CreateSessionRequest.client_tools (ClientTools, ClientToolDeclaration), the ClientToolCall and ClientToolCallSettled events (ClientToolCallOutcome), the AnswerClientToolCall and GetClientToolCallState RPCs (ClientToolContent, OpenClientToolCall) and InitMcpServer.source (client_tools); error codes CLIENT_TOOL_CALL_NOT_FOUND and CLIENT_TOOL_CALL_ALREADY_ANSWERED. Until client_tools is advertised the two RPCs answer UNIMPLEMENTED. SessionEvent 52-59 are free for later client-tool events.", "wire_additions": [
+      "verdandi.claude.runtime.v1.CreateSessionRequest: new field optional .verdandi.claude.runtime.v1.ClientTools client_tools = 13",
+      "verdandi.claude.runtime.v1.InitMcpServer: new field optional string source = 3",
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.ClientToolCall client_tool_call = 50 (oneof event)",
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.ClientToolCallSettled client_tool_call_settled = 51 (oneof event)",
+      "new message verdandi.claude.runtime.v1.ClientTools",
+      "new message verdandi.claude.runtime.v1.ClientToolDeclaration",
+      "new message verdandi.claude.runtime.v1.ClientToolCall",
+      "new message verdandi.claude.runtime.v1.ClientToolCallSettled",
+      "new message verdandi.claude.runtime.v1.ClientToolContent",
+      "new message verdandi.claude.runtime.v1.AnswerClientToolCallRequest",
+      "new message verdandi.claude.runtime.v1.AnswerClientToolCallResponse",
+      "new message verdandi.claude.runtime.v1.OpenClientToolCall",
+      "new message verdandi.claude.runtime.v1.GetClientToolCallStateRequest",
+      "new message verdandi.claude.runtime.v1.GetClientToolCallStateResponse",
+      "new enum verdandi.claude.runtime.v1.ClientToolCallOutcome",
+      "verdandi.claude.runtime.v1.ErrorCode: new value ERROR_CODE_CLIENT_TOOL_CALL_NOT_FOUND = 32",
+      "verdandi.claude.runtime.v1.ErrorCode: new value ERROR_CODE_CLIENT_TOOL_CALL_ALREADY_ANSWERED = 33",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc AnswerClientToolCall",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc GetClientToolCallState"
+    ]},
+    {"minor": 24, "date": "2026-11-01", "released": "claude-sidecar-v0.3.0", "wire_fingerprint": "83c062f9c0846acec631555050b50852db4e2d79ca2a4f0bc0dadaa37465079e", "summary": "A running session's model (set_model) and effort (apply_effort), changed through the CLI's control channel with no turn; the models the CLI offers (list_models); the effort a session runs at (session_effort_report); the CLI's own move out of a permission mode, reported ahead of the next turn (cli_mode_reports); and a range of a task's output (task_output_range: GetTaskOutputRequest.offset and max_bytes, GetTaskOutputResponse.offset, fields of messages that are new since the frozen proto, so the additions below do not list them).", "wire_additions": [
+      "verdandi.claude.runtime.v1.SessionReady: new field optional string effort = 13",
+      "verdandi.claude.runtime.v1.SessionEvent: new field optional .verdandi.claude.runtime.v1.CliModeReported cli_mode_reported = 60 (oneof event)",
+      "new message verdandi.claude.runtime.v1.AppliedSettings",
+      "new message verdandi.claude.runtime.v1.SetModelRequest",
+      "new message verdandi.claude.runtime.v1.SetModelResponse",
+      "new message verdandi.claude.runtime.v1.ListModelsRequest",
+      "new message verdandi.claude.runtime.v1.ModelOption",
+      "new message verdandi.claude.runtime.v1.ListModelsResponse",
+      "new message verdandi.claude.runtime.v1.ApplyEffortRequest",
+      "new message verdandi.claude.runtime.v1.ApplyEffortResponse",
+      "new message verdandi.claude.runtime.v1.CliModeReported",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc SetModel",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc ListModels",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc ApplyEffort"
+    ]},
+    {"minor": 25, "date": "2026-11-12", "released": "claude-sidecar-v0.4.0", "wire_fingerprint": "1c2fb08fba05e5ad7667a58a837848ef5c241dfef13935d693cc7f2d609e3b60", "summary": "The first text_delta of each content block says so (text_block_start: TextDelta.starts_block), so a host can keep two text blocks of one message apart.", "wire_additions": [
+      "verdandi.claude.runtime.v1.TextDelta: new field optional bool starts_block = 5"
+    ]},
+    {"minor": 26, "date": "2026-11-12", "released": "claude-sidecar-v0.5.0", "wire_fingerprint": "fb50b469d6415761c03ae6a6af6fdc140a2932b35202e4e95234a78c002211d6", "summary": "Plan approval and image content on turns, both advertised (plan_mode_v1, turn_content_v1). ClientInteractions.plan_mode, InteractionKind.PLAN_APPROVAL, InteractionRequested.plan (PlanProposal, PlanAllowedPrompt), InteractionResolved.kind, mode_after and feedback (PlanExecutionMode), InteractionOutcome APPROVED and KEPT_PLANNING, ResolveInteractionRequest.approve and keep_planning (PlanApproval, PlanKeepPlanning) and the SetPlanning RPC (plan_mode_v1); SendTurnRequest.content (TurnContentBlock, ImageContent) and HandshakeResponse.turn_content_limits (TurnContentLimits) (turn_content_v1). The fields and values added to the 3.22 interaction messages and enums are not in wire_additions, since those messages are new since the frozen proto. InteractionResolved.kind is set on every settlement, questions included. HandshakeResponse 20, ClientInteractions 2, InteractionKind 2 and ResolveInteractionRequest 12-13 leave their reservations; CreateSessionRequest 12 and SessionEvent 27-29 stay reserved, ResolveInteractionRequest 14-19 and TurnContentBlock 2 are reserved.", "wire_additions": [
+      "verdandi.claude.runtime.v1.HandshakeResponse: new field optional .verdandi.claude.runtime.v1.TurnContentLimits turn_content_limits = 20",
+      "verdandi.claude.runtime.v1.SendTurnRequest: new field repeated .verdandi.claude.runtime.v1.TurnContentBlock content = 6",
+      "new message verdandi.claude.runtime.v1.TurnContentLimits",
+      "new message verdandi.claude.runtime.v1.TurnContentBlock",
+      "new message verdandi.claude.runtime.v1.ImageContent",
+      "new message verdandi.claude.runtime.v1.PlanProposal",
+      "new message verdandi.claude.runtime.v1.PlanAllowedPrompt",
+      "new message verdandi.claude.runtime.v1.PlanApproval",
+      "new message verdandi.claude.runtime.v1.PlanKeepPlanning",
+      "new message verdandi.claude.runtime.v1.SetPlanningRequest",
+      "new message verdandi.claude.runtime.v1.SetPlanningResponse",
+      "new enum verdandi.claude.runtime.v1.PlanExecutionMode",
+      "verdandi.claude.runtime.v1.RuntimeService: new rpc SetPlanning"
     ]}
   ]
 }

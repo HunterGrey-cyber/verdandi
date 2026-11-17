@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import { SidecarError, toGrpcMetadata } from '../src/errorMapping.js';
 import { startSidecar } from '../src/lifecycle.js';
-import { validatePolicy, validateEffort, validateResumeRequest, validateSystemPrompt, validateOutputFormat, validateClientInteractions } from '../src/runtimeServiceImpl.js';
+import { validatePolicy, validateEffort, validateResumeRequest, validateSystemPrompt, validateOutputFormat, validateClientInteractions, validateClientTools } from '../src/runtimeServiceImpl.js';
 import { replayRequestFromProto } from '../src/replayRequest.js';
 import {
   ClaudeHostPolicy,
@@ -47,6 +47,32 @@ function refusal(run: () => void): SidecarError {
 
 const policy = (partial: Partial<ClaudeHostPolicy>): ClaudeHostPolicy => ClaudeHostPolicy.fromPartial(partial);
 
+const CLIENT_TOOLS_SCHEMA = '{"type":"object"}';
+const clientTool = (name: string, inputSchemaJson = CLIENT_TOOLS_SCHEMA) => ({ name, description: '', inputSchemaJson, alwaysLoad: false });
+const clientTools = (change: Partial<{ serverName: string; timeoutMs: number; tools: Array<ReturnType<typeof clientTool>> }>) => ({
+  serverName: 'editor',
+  timeoutMs: 60_000,
+  tools: [clientTool('open_file')],
+  ...change,
+});
+const clientToolsRow = (reason: string, change: Parameters<typeof clientTools>[0], extraServerNames: string[] = []): [string, () => void] => [
+  reason,
+  () => validateClientTools({ cwd: '/', policy: undefined, clientTools: clientTools(change) }, extraServerNames),
+];
+
+const CLIENT_TOOLS_ROWS: Array<[reason: string, run: () => void]> = [
+  clientToolsRow('client_tools_server_name', { serverName: 'Editor' }),
+  clientToolsRow('client_tools_server_reserved', { serverName: 'ide' }),
+  clientToolsRow('client_tools_server_taken', {}, ['editor']),
+  clientToolsRow('client_tools_no_tools', { tools: [] }),
+  clientToolsRow('client_tools_too_many', { tools: Array.from({ length: 33 }, (_, i) => clientTool(`t${i}`)) }),
+  clientToolsRow('client_tools_tool_name', { tools: [clientTool('not valid')] }),
+  clientToolsRow('client_tools_tool_duplicate', { tools: [clientTool('a'), clientTool('a')] }),
+  clientToolsRow('client_tools_schema_too_large', { tools: [clientTool('a', `{"type":"object","d":"${'x'.repeat(16 * 1024)}"}`)] }),
+  clientToolsRow('client_tools_schema_invalid', { tools: [clientTool('a', '[]')] }),
+  clientToolsRow('client_tools_timeout_too_small', { timeoutMs: 999 }),
+];
+
 const POLICY_ROWS: Array<[reason: string, run: () => void]> = [
   ['configuration_unknown', () => validatePolicy(policy({ configuration: 99 as ConfigurationProfile }))],
   ['permissions_unknown', () => validatePolicy(policy({ permissions: 99 as PermissionMode }))],
@@ -70,6 +96,7 @@ const POLICY_ROWS: Array<[reason: string, run: () => void]> = [
       ),
   ],
   ['client_interactions_needs_provider_prompts', () => validateClientInteractions({ cwd: '/', policy: undefined, clientInteractions: { questions: true } })],
+  ...CLIENT_TOOLS_ROWS,
   ['effort_unknown', () => validateEffort({ cwd: '/', policy: undefined, effort: 'enormous' })],
   ['system_prompt_blank', () => validateSystemPrompt({ cwd: '/', policy: undefined, systemPrompt: '  ' })],
   ['output_schema_not_json', () => validateOutputFormat({ cwd: '/', policy: undefined, outputFormat: { jsonSchemaJson: '{' } })],
@@ -259,7 +286,7 @@ function splitArguments(args: string): string[] {
 
 test('reason: every INVALID_CONFIGURATION a sidecar source can throw carries a reason', () => {
   let seen = 0;
-  for (const file of ['runtimeServiceImpl.ts', 'replayRequest.ts', 'lifecycle.ts', 'eventTranslation.ts', 'pumpDriver.ts', 'sessionRegistry.ts']) {
+  for (const file of ['runtimeServiceImpl.ts', 'replayRequest.ts', 'lifecycle.ts', 'eventTranslation.ts', 'pumpDriver.ts', 'sessionRegistry.ts', 'clientToolRpc.ts', 'turnContentRpc.ts']) {
     const source = readFileSync(join(SIDECAR_DIR, 'src', file), 'utf8');
     for (const args of sidecarErrorArguments(source)) {
       if (!args.includes('ERROR_CODE_INVALID_CONFIGURATION')) {
@@ -315,6 +342,48 @@ test('reason: COMPATIBILITY.md documents exactly the reasons the sources can pro
     'first_turn_held',
     // The question opt-in's: the kernel's `interactionOptInProblem`, passed through.
     'client_interactions_needs_provider_prompts',
+    // The plan opt-in's: the kernel's `planOptInProblem`, passed through.
+    'client_interactions_plan_needs_cli_mode',
+    'client_interactions_plan_with_switchable',
+    // SetPlanning's: the kernel's `PlanningError` reasons, and planningRpc.ts's own, which the scan does not read.
+    'planning_not_offered',
+    'planning_turn_running',
+    'planning_interaction_pending',
+    'planning_already',
+    'planning_cli_refused',
+    // SetPermissionMode on a plan session (chosen through a variable in runtimeServiceImpl.ts).
+    'set_permission_mode_plan_session',
+    // A plan answer's refusals: the kernel's `InteractionAnswerRefusal`, passed through.
+    'plan_mode_unspecified',
+    'plan_digest_mismatch',
+    'feedback_too_long',
+    // The `client_tools` refusals: the kernel's `ClientToolsRefusal`, passed through.
+    'client_tools_server_name',
+    'client_tools_server_reserved',
+    'client_tools_server_taken',
+    'client_tools_no_tools',
+    'client_tools_too_many',
+    'client_tools_tool_name',
+    'client_tools_tool_duplicate',
+    'client_tools_schema_too_large',
+    'client_tools_schema_invalid',
+    'client_tools_timeout_too_small',
+    // SendTurn's content refusals: the kernel's `checkTurnContent` reasons, passed through by turnContentRpc.ts
+    // (which also refuses a block without a recognised kind as turn_content_media_type).
+    'turn_content_media_type',
+    'turn_content_magic_mismatch',
+    'turn_content_empty_image',
+    'turn_content_too_many',
+    'turn_content_image_too_large',
+    'turn_content_too_large',
+    // SetModel's, ListModels' and ApplyEffort's own, in settingsRpc.ts, which the scan above does not read.
+    'model_invalid',
+    'model_refused',
+    'effort_unknown',
+    'effort_refused',
+    'models_unavailable',
+    // AnswerClientToolCall's own, in clientToolRpc.ts, which the scan above does not read.
+    'client_tool_content_unknown',
     // ResolveInteraction's (INTERACTION_ANSWER_REFUSED): the kernel's `InteractionAnswerRefusal`,
     // passed through, and `kind_mismatch`, which the sidecar also gives for a result arm that fits no
     // question.

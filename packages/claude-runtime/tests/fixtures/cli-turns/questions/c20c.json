@@ -1,0 +1,56 @@
+{
+  "questions": [
+    {
+      "question": "Which colour should the C20 banner use?",
+      "header": "Colour",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Blue",
+          "description": "C20 calm"
+        },
+        {
+          "label": "Green",
+          "description": "C20 fresh"
+        }
+      ]
+    },
+    {
+      "question": "Which C20 checks should run?",
+      "header": "Checks",
+      "multiSelect": true,
+      "options": [
+        {
+          "label": "Lint",
+          "description": "C20 style"
+        },
+        {
+          "label": "Unit",
+          "description": "C20 fast tests"
+        },
+        {
+          "label": "Fuzz",
+          "description": "C20 slow"
+        },
+        {
+          "label": "Bench",
+          "description": "C20 timing"
+        }
+      ]
+    }
+  ],
+  "answer": {
+    "kind": "decline",
+    "decline": "chat",
+    "soFar": [
+      {
+        "questionIndex": 0,
+        "optionIndexes": [
+          0
+        ]
+      }
+    ]
+  },
+  "outcome": "chat_requested",
+  "updatedInput": null
+}

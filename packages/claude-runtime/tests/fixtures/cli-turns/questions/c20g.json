@@ -1,0 +1,22 @@
+{
+  "questions": [
+    {
+      "question": "Should the C20 change go ahead?",
+      "header": "Go",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Yes",
+          "description": "C20 go ahead"
+        },
+        {
+          "label": "No",
+          "description": "C20 stop here"
+        }
+      ]
+    }
+  ],
+  "answer": null,
+  "outcome": "session_closed",
+  "updatedInput": null
+}

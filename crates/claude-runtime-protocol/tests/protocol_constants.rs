@@ -142,7 +142,7 @@ fn preset_presence_survives_wire_round_trip() {
 #[test]
 fn protocol_3_22_messages_compile_and_survive_a_round_trip() {
     use v1::session_event::Event;
-    assert_eq!(PROTOCOL_MINOR, 22);
+    assert!(PROTOCOL_MINOR >= 22);
     let events = [
         Event::TurnCauseUpdated(v1::TurnCauseUpdated {
             turn_id: "t1".into(),
@@ -191,6 +191,145 @@ fn protocol_3_22_messages_compile_and_survive_a_round_trip() {
     assert_eq!(v1::SendTurnRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
     let stop = v1::StopTaskRequest { session_id: "s".into(), command_id: "c".into(), task_id: "b1".into() };
     assert_eq!(v1::StopTaskRequest::decode(stop.encode_to_vec().as_slice()).unwrap(), stop);
-    let output = v1::GetTaskOutputResponse { output: vec![0xe2, 0x82], total_bytes: 2, truncated: true };
+    let output = v1::GetTaskOutputResponse { output: vec![0xe2, 0x82], total_bytes: 2, truncated: true, offset: 0 };
     assert_eq!(v1::GetTaskOutputResponse::decode(output.encode_to_vec().as_slice()).unwrap(), output);
+}
+
+#[test]
+fn protocol_3_23_messages_compile_and_survive_a_round_trip() {
+    use v1::session_event::Event;
+    assert!(PROTOCOL_MINOR >= 23);
+    let events = [
+        Event::ClientToolCall(v1::ClientToolCall {
+            call_id: "c1".into(),
+            tool_use_id: "toolu_1".into(),
+            tool: "open_file".into(),
+            arguments_json: "{}".into(),
+        }),
+        Event::ClientToolCallSettled(v1::ClientToolCallSettled {
+            call_id: "c1".into(),
+            outcome: v1::ClientToolCallOutcome::TimedOut as i32,
+        }),
+    ];
+    for event in events {
+        let sent = v1::SessionEvent { session_id: "s".into(), event: Some(event), ..Default::default() };
+        let decoded = v1::SessionEvent::decode(sent.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, sent);
+    }
+    assert_eq!(v1::ErrorCode::ClientToolCallNotFound as i32, 32);
+    assert_eq!(v1::ErrorCode::ClientToolCallAlreadyAnswered as i32, 33);
+    let tools = v1::ClientTools {
+        server_name: "eitri".into(),
+        timeout_ms: 900_000,
+        tools: vec![v1::ClientToolDeclaration {
+            name: "open_file".into(),
+            description: "Opens a file".into(),
+            input_schema_json: r#"{"type":"object"}"#.into(),
+            always_load: true,
+        }],
+    };
+    let request = v1::CreateSessionRequest { client_tools: Some(tools), ..Default::default() };
+    assert_eq!(v1::CreateSessionRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
+    let answer = v1::AnswerClientToolCallRequest {
+        session_id: "s".into(),
+        command_id: "c".into(),
+        call_id: "c1".into(),
+        content: vec![v1::ClientToolContent { kind: Some(v1::client_tool_content::Kind::Text("done".into())) }],
+        is_error: true,
+    };
+    assert_eq!(v1::AnswerClientToolCallRequest::decode(answer.encode_to_vec().as_slice()).unwrap(), answer);
+    let state = v1::GetClientToolCallStateResponse {
+        through_sequence: 7,
+        open: vec![v1::OpenClientToolCall { call_id: "c1".into(), tool_use_id: "toolu_1".into(), tool: "open_file".into() }],
+    };
+    assert_eq!(v1::GetClientToolCallStateResponse::decode(state.encode_to_vec().as_slice()).unwrap(), state);
+    let server = v1::InitMcpServer { name: "eitri".into(), status: "connected".into(), source: "sdk".into() };
+    assert_eq!(v1::InitMcpServer::decode(server.encode_to_vec().as_slice()).unwrap(), server);
+}
+
+#[test]
+fn protocol_3_26_messages_compile_and_survive_a_round_trip() {
+    use v1::session_event::Event;
+    assert!(PROTOCOL_MINOR >= 26);
+    let plan = "# Plan\n\n1. Change one line.\n";
+    let events = [
+        Event::InteractionRequested(v1::InteractionRequested {
+            interaction_id: "i1".into(),
+            tool_use_id: "toolu_p".into(),
+            kind: v1::InteractionKind::PlanApproval as i32,
+            payload: Some(v1::interaction_requested::Payload::Plan(v1::PlanProposal {
+                plan: plan.into(),
+                plan_sha256: "0".repeat(64),
+                allowed_prompts: vec![v1::PlanAllowedPrompt { tool: "Bash".into(), prompt: "run the tests".into() }],
+            })),
+            unsupported_reason: None,
+        }),
+        Event::InteractionResolved(v1::InteractionResolved {
+            interaction_id: "i1".into(),
+            outcome: v1::InteractionOutcome::Approved as i32,
+            kind: v1::InteractionKind::PlanApproval as i32,
+            mode_after: Some(v1::PlanExecutionMode::Auto as i32),
+            ..Default::default()
+        }),
+        Event::InteractionResolved(v1::InteractionResolved {
+            interaction_id: "i2".into(),
+            outcome: v1::InteractionOutcome::KeptPlanning as i32,
+            kind: v1::InteractionKind::PlanApproval as i32,
+            feedback: Some("split step 1".into()),
+            ..Default::default()
+        }),
+    ];
+    for event in events {
+        let sent = v1::SessionEvent { session_id: "s".into(), event: Some(event), ..Default::default() };
+        let decoded = v1::SessionEvent::decode(sent.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, sent);
+    }
+    assert_eq!(v1::InteractionKind::PlanApproval as i32, 2);
+    assert_eq!(v1::InteractionOutcome::Approved as i32, 9);
+    assert_eq!(v1::InteractionOutcome::KeptPlanning as i32, 10);
+    assert_eq!(v1::PlanExecutionMode::Bypass as i32, 3);
+    let interactions = v1::ClientInteractions { questions: true, plan_mode: true };
+    assert_eq!(v1::ClientInteractions::decode(interactions.encode_to_vec().as_slice()).unwrap(), interactions);
+    for result in [
+        v1::resolve_interaction_request::Result::Approve(v1::PlanApproval {
+            mode: v1::PlanExecutionMode::Manual as i32,
+            plan_sha256: "0".repeat(64),
+        }),
+        v1::resolve_interaction_request::Result::KeepPlanning(v1::PlanKeepPlanning { feedback: "more".into() }),
+    ] {
+        let request = v1::ResolveInteractionRequest {
+            session_id: "s".into(),
+            command_id: "c".into(),
+            interaction_id: "i1".into(),
+            result: Some(result),
+        };
+        assert_eq!(v1::ResolveInteractionRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
+    }
+    let planning = v1::SetPlanningRequest { session_id: "s".into(), command_id: "c".into(), enter: true };
+    assert_eq!(v1::SetPlanningRequest::decode(planning.encode_to_vec().as_slice()).unwrap(), planning);
+    let acknowledged = v1::SetPlanningResponse { permission_mode: "plan".into() };
+    assert_eq!(v1::SetPlanningResponse::decode(acknowledged.encode_to_vec().as_slice()).unwrap(), acknowledged);
+    let turn = v1::SendTurnRequest {
+        session_id: "s".into(),
+        command_id: "c".into(),
+        content: vec![v1::TurnContentBlock {
+            block: Some(v1::turn_content_block::Block::Image(v1::ImageContent {
+                media_type: "image/png".into(),
+                data: vec![0x89, b'P', b'N', b'G'],
+            })),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(v1::SendTurnRequest::decode(turn.encode_to_vec().as_slice()).unwrap(), turn);
+    let handshake = v1::HandshakeResponse {
+        protocol_minor: PROTOCOL_MINOR,
+        turn_content_limits: Some(v1::TurnContentLimits {
+            image_media_types: vec!["image/png".into()],
+            max_images_per_turn: 8,
+            max_image_bytes: 3_670_016,
+            max_content_bytes: 3_670_016,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(v1::HandshakeResponse::decode(handshake.encode_to_vec().as_slice()).unwrap(), handshake);
 }

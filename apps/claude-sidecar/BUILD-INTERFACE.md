@@ -43,10 +43,10 @@ comes from a build that finished: a failed rebuild leaves none, never the last g
 {
   "v": 1,
   "artifact": {
-    "file": "verdandi-claude-sidecar-0.2.0-linux-x64",
+    "file": "verdandi-claude-sidecar-0.3.0-linux-x64",
     "platform": "linux",
     "arch": "x64",
-    "sidecar_version": "0.2.0",
+    "sidecar_version": "0.3.0",
     "sha256": "<hex>",
     "size_bytes": 110299968
   },
